@@ -459,17 +459,34 @@ export function linkAction(label, onClick) {
 
 /** Copia texto al portapapeles avisando el resultado. */
 export async function copyText(value, label = 'Valor copiado al portapapeles.') {
-  try {
-    if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(value);
-    else {
-      const area = el('textarea', { value, style: { position: 'fixed', opacity: '0' } });
-      document.body.append(area);
+  const fallback = () => {
+    const area = el('textarea', {
+      value, readonly: 'readonly', 'aria-hidden': 'true', tabindex: '-1',
+      style: { position: 'fixed', top: '0', left: '-9999px' },
+    });
+    document.body.append(area);
+    try {
       area.select();
-      document.execCommand('copy');
+      if (typeof document.execCommand !== 'function' || !document.execCommand('copy')) {
+        throw new Error('copiado no disponible');
+      }
+    } finally {
       area.remove();
+    }
+  };
+  try {
+    if (typeof navigator.clipboard?.writeText === 'function' && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+    } else {
+      fallback();
     }
     toast(label, { type: 'success', duration: 2600 });
   } catch {
-    notifyError('El navegador no permitió copiar el texto.');
+    try {
+      fallback();
+      toast(label, { type: 'success', duration: 2600 });
+    } catch {
+      notifyError('El navegador no permitió copiar el texto. Selecciónelo y cópielo manualmente.');
+    }
   }
 }

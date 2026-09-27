@@ -13,6 +13,8 @@
  */
 
 export function createRouter({ routes, fallback, onNavigate }) {
+  /** Ruta recordada cuando el navegador no permite modificar el historial. */
+  let memoryTarget = null;
   const compiled = routes.map((route) => {
     const segments = route.path.split('/').filter(Boolean);
     return { ...route, segments };
@@ -33,12 +35,36 @@ export function createRouter({ routes, fallback, onNavigate }) {
     return null;
   }
 
+  /** Dirección vigente: la del historial o, si está bloqueado, la de memoria. */
+  function locationNow() {
+    return memoryTarget || `${window.location.pathname}${window.location.search}`;
+  }
+
   function current() {
-    const found = match(window.location.pathname);
-    const query = Object.fromEntries(new URLSearchParams(window.location.search).entries());
+    const [pathname, search] = locationNow().split('?');
+    const found = match(pathname);
+    const query = Object.fromEntries(new URLSearchParams(search || '').entries());
     if (found) return { ...found, query };
     const target = match(fallback) || { route: compiled[0], params: {}, path: fallback };
     return { ...target, query };
+  }
+
+  /**
+   * Actualiza la barra de direcciones sin recargar. Algunos contextos
+   * restringidos (por ejemplo, una página incrustada) bloquean el historial:
+   * en ese caso la navegación continúa solo en memoria.
+   */
+  function pushHistory(target, replace) {
+    try {
+      if (replace) window.history.replaceState({ ipv: true }, '', target);
+      else window.history.pushState({ ipv: true }, '', target);
+      memoryTarget = null;
+      return true;
+    } catch {
+      /* Historial bloqueado por el navegador: se navega solo en memoria. */
+      memoryTarget = target;
+      return false;
+    }
   }
 
   function navigate(path, { replace = false, query } = {}) {
@@ -52,9 +78,8 @@ export function createRouter({ routes, fallback, onNavigate }) {
     }
     const suffix = searchParams.toString();
     const target = `${pathname}${suffix ? `?${suffix}` : ''}`;
-    if (`${window.location.pathname}${window.location.search}` === target) return;
-    if (replace) window.history.replaceState({ ipv: true }, '', target);
-    else window.history.pushState({ ipv: true }, '', target);
+    if (locationNow() === target) return;
+    pushHistory(target, replace);
     onNavigate(current());
   }
 

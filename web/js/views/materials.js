@@ -8,7 +8,7 @@ import { clear, el, frag, icon, mount } from '../core/dom.js';
 import { api } from '../core/api.js';
 import { data } from '../core/data.js';
 import { daysUntil, exportCsv, fmtAmount, fmtDate, fmtNumber, timestampForFilename } from '../core/format.js';
-import { button, field, openModal, readForm, runAction, setFormBusy, statusPill, tag, toast } from '../core/ui.js';
+import { button, copyText, field, openModal, readForm, runAction, setFormBusy, statusPill, tag, toast } from '../core/ui.js';
 import { dataTable } from '../components/data-table.js';
 import { catalogCell } from '../components/cells.js';
 import { printTableReport } from '../components/print.js';
@@ -143,12 +143,7 @@ function buildTable() {
           }, icon('edit', { size: 16 })),
           el('button', {
             class: 'icon-btn', type: 'button', title: 'Copiar código', 'aria-label': 'Copiar código',
-            on: {
-              click: async () => {
-                try { await navigator.clipboard.writeText(row.code); toast(`Código ${row.code} copiado.`, { type: 'success', duration: 2000 }); }
-                catch { toast('El navegador no permitió copiar el código.', { type: 'warning' }); }
-              },
-            },
+            on: { click: () => copyText(row.code, `Código ${row.code} copiado al portapapeles.`) },
           }, icon('copy', { size: 16 }))),
       },
     ],

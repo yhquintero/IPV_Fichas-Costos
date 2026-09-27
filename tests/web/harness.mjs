@@ -104,7 +104,7 @@ export async function stopServer({ child, tempDir } = {}) {
  * Carga el cliente en un DOM simulado: descarga el documento, publica los
  * objetos globales del navegador y arranca el módulo principal de la interfaz.
  */
-export async function openClient(base, { route = '/resumen', quiet = true } = {}) {
+export async function openClient(base, { route = '/resumen', quiet = true, beforeBoot = null } = {}) {
   const html = await (await fetch(`${base}/`)).text();
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', (error) => {
@@ -146,6 +146,7 @@ export async function openClient(base, { route = '/resumen', quiet = true } = {}
   window.print = () => { window.__printCalls = (window.__printCalls || 0) + 1; };
   window.URL.createObjectURL = () => 'blob:prueba';
   window.URL.revokeObjectURL = () => {};
+  if (typeof beforeBoot === 'function') beforeBoot({ window, document: window.document, base });
 
   const app = await import(`${pathToFileURL(path.join(WEB_ROOT, 'js/app.js')).href}?t=${Date.now()}`);
   return { dom, window, document: window.document, app, html };

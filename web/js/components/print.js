@@ -6,6 +6,7 @@
 
 import { clear, el, mount, qs } from '../core/dom.js';
 import { fmtAmount, fmtDate, fmtFullStamp, fmtMoney, fmtPercent, fmtQuantity } from '../core/format.js';
+import { toast } from '../core/ui.js';
 
 const APP = {
   name: 'IPV · Fichas y Costos',
@@ -103,7 +104,14 @@ function run(documentNode) {
     window.removeEventListener('afterprint', cleanup);
   };
   window.addEventListener('afterprint', cleanup);
-  setTimeout(() => window.print(), 120);
+  setTimeout(() => {
+    try {
+      window.print();
+    } catch {
+      toast('El navegador bloqueó el diálogo de impresión. Use Ctrl+P para imprimir el documento.', { type: 'warning' });
+      cleanup();
+    }
+  }, 120);
   setTimeout(cleanup, 120000);
 }
 
