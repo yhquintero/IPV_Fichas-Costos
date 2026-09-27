@@ -160,6 +160,8 @@ npm run test:resilience   # solo las pruebas de resiliencia
 
 Las pruebas del cliente web requieren Node 18 o superior y `python3` disponibles en el `PATH` (puedes indicar otro intérprete con la variable `PYTHON`).
 
+Las tres suites se ejecutan con garantías de cierre: crean el servidor de prueba en su propio grupo de procesos, lo terminan por completo al finalizar o al interrumpir con `Ctrl+C`, borran siempre sus archivos temporales y se detienen solas transcurridos 240 segundos (ajustable con `IPV_TEST_TIMEOUT`, en milisegundos), de modo que ninguna ejecución queda colgada ni deja procesos en segundo plano. Si falta la dependencia `jsdom`, la prueba lo indica con el comando exacto para instalarla en lugar de mostrar un error interno.
+
 ## Datos, respaldos y seguridad
 
 - La base de datos vive en `data/ipv.db` (excluida de Git). Los respaldos manuales se guardan en `data/backups/`.

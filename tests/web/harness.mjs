@@ -5,6 +5,13 @@
  * simulado (jsdom) con los servicios del navegador y ofrece un reportero de
  * comprobaciones reutilizable por las distintas suites.
  *
+ * Garantías de ejecución:
+ *  · El servidor de prueba se crea en su propio grupo de procesos y se termina
+ *    por completo (grupo incluido) al finalizar, al recibir Ctrl+C o ante un fallo.
+ *  · Un vigilante (watchdog) cierra la prueba transcurrido IPV_TEST_TIMEOUT
+ *    segundos (240 por omisión), de modo que ninguna ejecución queda colgada.
+ *  · Los directorios temporales se eliminan siempre, incluso en salidas abruptas.
+ *
  * Autor: Ing. Yosvany Hernández Quintero
  */
 import assert from 'node:assert/strict';
@@ -13,12 +20,94 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { JSDOM, VirtualConsole } from 'jsdom';
 
 export const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(HERE, '..', '..');
 export const WEB_ROOT = path.join(REPO_ROOT, 'web');
 export const PYTHON = process.env.PYTHON || 'python3';
+
+const WATCHDOG_MS = Number(process.env.IPV_TEST_TIMEOUT || 240000);
+
+/* -------------------------------------------------------------------------- */
+/* Dependencias                                                               */
+/* -------------------------------------------------------------------------- */
+let JSDOM;
+let VirtualConsole;
+try {
+  ({ JSDOM, VirtualConsole } = await import('jsdom'));
+} catch {
+  console.error([
+    '',
+    'No se encontró la dependencia «jsdom», necesaria para simular el navegador.',
+    'Instálela una sola vez con:',
+    '',
+    '    cd tests/web && npm install',
+    '',
+    'Requiere Node 18 o superior.',
+    '',
+  ].join('\n'));
+  process.exit(2);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Limpieza garantizada                                                       */
+/* -------------------------------------------------------------------------- */
+/** Servidores y directorios temporales creados por la suite en curso. */
+const registry = { children: new Set(), dirs: new Set() };
+let cleaned = false;
+
+/** Termina el servidor de prueba con su grupo de procesos y borra lo temporal. */
+export function cleanup({ silent = false } = {}) {
+  if (cleaned) return;
+  cleaned = true;
+  for (const child of registry.children) {
+    try {
+      if (child.pid && !child.killed) process.kill(-child.pid, 'SIGKILL'); // grupo completo
+    } catch {
+      try { child.kill('SIGKILL'); } catch { /* ya terminado */ }
+    }
+  }
+  registry.children.clear();
+  for (const dir of registry.dirs) {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* sin efecto */ }
+  }
+  registry.dirs.clear();
+  if (!silent) process.stderr.write('');
+}
+
+process.on('exit', () => cleanup({ silent: true }));
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, () => {
+    console.error(`\nPrueba interrumpida (${signal}): se detienen los servidores de prueba y se limpian los archivos temporales.`);
+    cleanup({ silent: true });
+    process.exit(130);
+  });
+}
+process.on('uncaughtException', (error) => {
+  console.error('\nFallo inesperado en la prueba:', error?.message || error);
+  cleanup({ silent: true });
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('\nPromesa rechazada sin manejar en la prueba:', reason?.message || reason);
+  cleanup({ silent: true });
+  process.exit(1);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Vigilante                                                                  */
+/* -------------------------------------------------------------------------- */
+const watchdog = setTimeout(() => {
+  console.error([
+    '',
+    `La prueba superó el tiempo máximo de ${Math.round(WATCHDOG_MS / 1000)} s y se detuvo automáticamente.`,
+    'No es necesario interrumpirla a mano. Para ampliar el límite use la variable IPV_TEST_TIMEOUT.',
+    '',
+  ].join('\n'));
+  cleanup({ silent: true });
+  process.exit(3);
+}, WATCHDOG_MS);
+if (typeof watchdog.unref === 'function') watchdog.unref();
 
 const SERVER_SNIPPET = `
 import server
@@ -74,11 +163,15 @@ export function createReporter(title) {
 /** Inicia `server.py` con una base de datos temporal y devuelve su dirección. */
 export async function startServer() {
   const tempDir = mkdtempSync(path.join(tmpdir(), 'ipv-web-'));
+  registry.dirs.add(tempDir);
   const child = spawn(PYTHON, ['-c', SERVER_SNIPPET], {
     cwd: REPO_ROOT,
     env: { ...process.env, PYTHONPATH: REPO_ROOT, IPV_DB_PATH: path.join(tempDir, 'prueba.db') },
     stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true, // grupo propio: se puede terminar por completo, sin huérfanos
   });
+  registry.children.add(child);
+
   const port = await new Promise((resolve, reject) => {
     let buffer = '';
     const timer = setTimeout(() => reject(new Error('El servidor de prueba no informó el puerto')), 20000);
@@ -93,11 +186,20 @@ export async function startServer() {
   return { child, base: `http://127.0.0.1:${port}`, tempDir };
 }
 
-/** Detiene el servidor y elimina los archivos temporales. */
+/** Detiene el servidor de prueba y elimina sus archivos temporales. */
 export async function stopServer({ child, tempDir } = {}) {
-  if (child) child.kill('SIGTERM');
+  if (child && child.pid) {
+    try { process.kill(-child.pid, 'SIGTERM'); } catch { try { child.kill('SIGTERM'); } catch { /* ya terminado */ } }
+  }
   await settle(150);
-  if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+  if (child && child.pid) {
+    try { process.kill(-child.pid, 'SIGKILL'); } catch { /* ya terminado */ }
+  }
+  registry.children.delete(child);
+  if (tempDir) {
+    registry.dirs.delete(tempDir);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -174,10 +276,11 @@ export function accessibleName(element, document_) {
   return '';
 }
 
-/** Ejecuta el cierre ordenado de la suite y devuelve el código de salida. */
+/** Cierra la suite de forma ordenada y devuelve el código de salida. */
 export async function closeSuite({ dom, server, failures }) {
   try { if (dom) dom.window.close(); } catch { /* sin efecto */ }
   await stopServer(server);
+  cleanup({ silent: true });
   await new Promise((resolve) => process.stdout.write('', resolve));
   process.exit(failures ? 1 : 0);
 }
