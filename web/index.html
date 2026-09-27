@@ -1,61 +1,167 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="es" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#183b34">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#0d3a2f">
+  <meta name="description" content="IPV · Fichas y Costos: gestión de productos y servicios, valores de referencia del IPV, Fichas de Costo versionadas y Controles de IPV con trazabilidad completa.">
+  <meta name="author" content="Ing. Yosvany Hernández Quintero">
+  <meta name="application-name" content="IPV · Fichas y Costos">
   <title>IPV · Fichas y Costos</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/styles.css">
+
+  <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+  <link rel="apple-touch-icon" href="/assets/favicon.svg">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/styles/tokens.css">
+  <link rel="stylesheet" href="/styles/base.css">
+  <link rel="stylesheet" href="/styles/components.css">
+  <link rel="stylesheet" href="/styles/views.css">
+  <link rel="stylesheet" href="/styles/print.css">
+  <script src="/js/theme-boot.js"></script>
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Saltar al contenido principal</a>
+  <div class="app-progress" id="app-progress" aria-hidden="true"><span></span></div>
+
   <div class="app-shell">
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar" aria-label="Navegación principal">
       <div class="brand-lockup">
-        <div class="brand-mark"><span>i</span><span>v</span></div>
-        <div><div class="brand-name">IPV<span>.</span></div><div class="brand-caption">GESTIÓN DE COSTOS</div></div>
+        <div class="brand-mark" aria-hidden="true">iv</div>
+        <div class="brand-text">
+          <div class="brand-name">IPV<span>.</span></div>
+          <div class="brand-caption">Fichas y costos</div>
+        </div>
       </div>
-      <div class="sidebar-label">ESPACIO DE TRABAJO</div>
-      <div class="workspace-switcher"><span class="workspace-icon">C</span><span class="workspace-copy"><b>Centro de gestión</b><small>Unidad principal</small></span><span class="chevron">⌄</span></div>
-      <div class="sidebar-label nav-label">MENÚ PRINCIPAL</div>
-      <nav class="side-nav" aria-label="Navegación principal">
-        <button class="nav-item active" data-view="dashboard"><span class="nav-icon">◫</span><span>Resumen</span></button>
-        <button class="nav-item" data-view="products"><span class="nav-icon">▦</span><span>Productos y servicios</span><span class="nav-count" id="nav-products">—</span></button>
-        <button class="nav-item" data-view="materials"><span class="nav-icon">◈</span><span>Valores del IPV</span></button>
-        <button class="nav-item" data-view="fichas"><span class="nav-icon">▤</span><span>Fichas de costo</span><span class="nav-count" id="nav-fichas">—</span></button>
-        <button class="nav-item" data-view="controls"><span class="nav-icon">✓</span><span>Controles de IPV</span><span class="nav-dot" id="nav-pending-dot"></span></button>
+
+      <p class="sidebar-section-label" id="nav-label-workspace">Espacio de trabajo</p>
+      <nav class="side-nav" aria-labelledby="nav-label-workspace">
+        <a class="nav-item" href="/resumen" data-route="/resumen">
+          <span class="nav-icon" data-icon="dashboard" aria-hidden="true"></span>
+          <span class="nav-label">Resumen</span>
+        </a>
+        <a class="nav-item" href="/productos" data-route="/productos">
+          <span class="nav-icon" data-icon="package" aria-hidden="true"></span>
+          <span class="nav-label">Productos y servicios</span>
+          <span class="nav-count" data-count="products" hidden>0</span>
+        </a>
+        <a class="nav-item" href="/valores" data-route="/valores">
+          <span class="nav-icon" data-icon="tag" aria-hidden="true"></span>
+          <span class="nav-label">Valores del IPV</span>
+          <span class="nav-count" data-count="materials" hidden>0</span>
+        </a>
+        <a class="nav-item" href="/fichas" data-route="/fichas">
+          <span class="nav-icon" data-icon="file" aria-hidden="true"></span>
+          <span class="nav-label">Fichas de costo</span>
+          <span class="nav-count" data-count="fichas" hidden>0</span>
+        </a>
+        <a class="nav-item" href="/controles" data-route="/controles">
+          <span class="nav-icon" data-icon="shield" aria-hidden="true"></span>
+          <span class="nav-label">Controles de IPV</span>
+          <span class="nav-badge" data-badge="controls" hidden></span>
+        </a>
       </nav>
-      <div class="sidebar-bottom">
-        <div class="help-card"><div class="help-mark">✦</div><b>Entorno de prueba</b><p>Los importes de muestra son ficticios y no representan una tarifa oficial.</p><button id="about-btn">Acerca de esta demo <span>↗</span></button></div>
-        <div class="profile-row"><div class="avatar">IP</div><div class="profile-copy"><b>Equipo IPV</b><small>Administrador de prueba</small></div><button class="more-button" aria-label="Opciones">···</button></div>
+
+      <p class="sidebar-section-label">Administración</p>
+      <nav class="side-nav" aria-label="Administración">
+        <a class="nav-item" href="/bitacora" data-route="/bitacora">
+          <span class="nav-icon" data-icon="history" aria-hidden="true"></span>
+          <span class="nav-label">Bitácora de auditoría</span>
+        </a>
+        <a class="nav-item" href="/sistema" data-route="/sistema">
+          <span class="nav-icon" data-icon="settings" aria-hidden="true"></span>
+          <span class="nav-label">Sistema y respaldos</span>
+        </a>
+        <a class="nav-item" href="/acerca-de" data-route="/acerca-de">
+          <span class="nav-icon" data-icon="info" aria-hidden="true"></span>
+          <span class="nav-label">Acerca de</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-spacer"></div>
+
+      <div class="sidebar-note">
+        <b>Trazabilidad documental</b>
+        Cada ficha conserva su versión, su estado de aprobación y los valores aplicados; los controles guardan una instantánea del período revisado.
+        <button type="button" data-action="about">
+          Acerca de esta aplicación
+          <span data-icon="chevron-right" aria-hidden="true"></span>
+        </button>
+      </div>
+
+      <div class="operator-card">
+        <div class="operator-avatar" id="operator-initials" aria-hidden="true">OL</div>
+        <div class="operator-copy">
+          <b id="operator-name">Operador local</b>
+          <small>Registro en la bitácora</small>
+        </div>
+        <button class="icon-btn" type="button" id="operator-btn" title="Cambiar operador" aria-label="Cambiar operador">
+          <span data-icon="edit" aria-hidden="true"></span>
+        </button>
       </div>
     </aside>
 
-    <main class="main-shell">
+    <div class="main-shell">
       <header class="topbar">
-        <div class="mobile-brand"><div class="brand-mark small"><span>i</span><span>v</span></div><b>IPV<span>.</span></b></div>
-        <div class="breadcrumbs"><span>Gestión</span><span class="crumb-sep">/</span><b id="crumb-current">Resumen</b></div>
-        <div class="topbar-actions">
-          <div class="connection-pill"><span class="connection-dot" id="connection-dot"></span><span id="connection-label">Conectando con SQLite…</span></div>
-          <button class="icon-button" id="refresh-btn" title="Actualizar datos" aria-label="Actualizar datos">↻</button>
-          <div class="top-avatar">IP</div>
+        <div class="topbar-left">
+          <button class="icon-btn icon-btn--outlined" type="button" id="sidebar-toggle" aria-label="Mostrar u ocultar el menú" aria-expanded="false" aria-controls="sidebar">
+            <span data-icon="menu" aria-hidden="true"></span>
+          </button>
+          <nav class="breadcrumb" aria-label="Ruta de navegación">
+            <a href="/resumen" data-route="/resumen">IPV</a>
+            <span class="breadcrumb-sep" aria-hidden="true">/</span>
+            <b id="breadcrumb-current">Resumen</b>
+          </nav>
+        </div>
+        <div class="topbar-right">
+          <button class="command-trigger" type="button" id="command-trigger" aria-label="Abrir la búsqueda global">
+            <span data-icon="search" aria-hidden="true"></span>
+            <span class="label">Buscar productos, fichas o controles…</span>
+            <kbd>Ctrl K</kbd>
+          </button>
+          <span class="connection-pill" id="connection-pill" role="status">
+            <span class="status-dot status-dot--checking" id="connection-dot" aria-hidden="true"></span>
+            <span class="connection-text" id="connection-text">Conectando…</span>
+          </span>
+          <button class="icon-btn icon-btn--outlined" type="button" id="refresh-btn" title="Actualizar datos (R)" aria-label="Actualizar datos">
+            <span data-icon="refresh" aria-hidden="true"></span>
+          </button>
+          <button class="icon-btn icon-btn--outlined" type="button" id="theme-btn" title="Cambiar tema claro/oscuro" aria-label="Cambiar tema">
+            <span data-icon="moon" aria-hidden="true"></span>
+          </button>
         </div>
       </header>
 
-      <div class="mobile-nav" aria-label="Navegación móvil">
-        <button class="active" data-view="dashboard">Resumen</button><button data-view="products">Catálogo</button><button data-view="materials">Valores</button><button data-view="fichas">Fichas</button><button data-view="controls">Controles</button>
-      </div>
+      <main class="page-area" id="main-content" tabindex="-1">
+        <div class="view-root" id="view-root"></div>
+      </main>
 
-      <section class="page-area">
-        <div id="page-content" aria-live="polite"></div>
-        <footer class="page-footer"><span>IPV · Fichas y Costos</span><span>Datos centralizados en SQLite <i class="footer-sep">·</i> Prototipo funcional</span></footer>
-      </section>
-    </main>
+      <footer class="page-footer">
+        <span>
+          <strong>IPV · Fichas y Costos</strong> · versión <span id="footer-version">2.0.0</span>
+          · desarrollado por <strong>Ing. Yosvany Hernández Quintero</strong>
+        </span>
+        <nav aria-label="Enlaces del pie de página">
+          <a href="/acerca-de" data-route="/acerca-de">Acerca de</a>
+          <a href="/sistema" data-route="/sistema">Sistema</a>
+          <a href="/bitacora" data-route="/bitacora">Bitácora</a>
+        </nav>
+      </footer>
+    </div>
   </div>
-  <div class="modal-layer" id="modal-layer" hidden></div>
-  <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
-  <script src="/app.js" defer></script>
+
+  <div id="overlay-root"></div>
+  <div id="palette-root"></div>
+  <div class="toast-stack" id="toast-stack" role="status" aria-live="polite"></div>
+  <div id="print-root" aria-hidden="true"></div>
+
+  <noscript>
+    <div class="fatal" style="margin: 10vh auto; max-width: 560px;">
+      <h1>JavaScript está deshabilitado</h1>
+      <p>Esta aplicación requiere JavaScript para mostrar y actualizar la información. Habilítelo en el navegador y vuelva a cargar la página.</p>
+    </div>
+  </noscript>
+
+  <script type="module" src="/js/app.js"></script>
 </body>
 </html>

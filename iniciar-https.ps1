@@ -15,9 +15,9 @@ function Test-IsAdministrator {
 function Configure-LocalNetwork {
     $hostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
     if (Test-Path $hostsPath) {
-        $hasAlias = Select-String -Path $hostsPath -Pattern '^\s*(?!#)\S+\s+.*\bsitioweb\b' -Quiet
+        $hasAlias = Select-String -Path $hostsPath -Pattern '^\s*(?!#)\S+\s+.*\bsqlserver\b' -Quiet
         if (-not $hasAlias) {
-            Add-Content -Path $hostsPath -Value "`r`n127.0.0.1`t sitioweb # IPV Fichas y Costos local" -Encoding ASCII
+            Add-Content -Path $hostsPath -Value "`r`n127.0.0.1`t sqlserver # IPV Fichas y Costos local" -Encoding ASCII
             try { & ipconfig.exe /flushdns | Out-Null } catch { }
         }
     }
@@ -37,7 +37,7 @@ function Configure-LocalNetwork {
 if ($ConfigureNetworkOnly) {
     if (-not (Test-IsAdministrator)) { throw 'La configuración de red requiere permisos de administrador.' }
     Configure-LocalNetwork
-    Write-Host 'Alias sitioweb y regla del firewall configurados para la red local.' -ForegroundColor Green
+    Write-Host 'Alias sqlserver y regla del firewall configurados para la red local.' -ForegroundColor Green
     exit 0
 }
 
@@ -182,17 +182,17 @@ try {
 }
 
 $sanEntries = [System.Collections.Generic.List[string]]::new()
-$sanEntries.Add('DNS=sitioweb')
+$sanEntries.Add('DNS=sqlserver')
 $sanEntries.Add('DNS=localhost')
 if ($env:COMPUTERNAME) { $sanEntries.Add("DNS=$($env:COMPUTERNAME)") }
 $ips = @('127.0.0.1', '10.0.2.2') + $lanIps
 foreach ($ip in ($ips | Select-Object -Unique)) { $sanEntries.Add("IPAddress=$ip") }
 $sanExtension = '2.5.29.17={text}' + ($sanEntries -join '&')
 
-Write-Host 'Creando certificado HTTPS para sitioweb y las direcciones locales…' -ForegroundColor Cyan
+Write-Host 'Creando certificado HTTPS para sqlserver y las direcciones locales…' -ForegroundColor Cyan
 $leaf = New-SelfSignedCertificate `
     -Type Custom `
-    -Subject 'CN=sitioweb' `
+    -Subject 'CN=sqlserver' `
     -Signer $root `
     -KeyAlgorithm RSA `
     -KeyLength 2048 `
@@ -221,7 +221,7 @@ try {
 
 # Borra certificados de servidor anteriores firmados por esta misma CA; conserva el actual.
 Get-ChildItem Cert:\CurrentUser\My | Where-Object {
-    $_.Thumbprint -ne $leaf.Thumbprint -and $_.Subject -eq 'CN=sitioweb' -and $_.Issuer -eq $root.Subject
+    $_.Thumbprint -ne $leaf.Thumbprint -and $_.Subject -eq 'CN=sqlserver' -and $_.Issuer -eq $root.Subject
 } | Remove-Item -ErrorAction SilentlyContinue
 
 $python = Get-Command python -ErrorAction SilentlyContinue
@@ -241,7 +241,7 @@ $env:PYTHONUNBUFFERED = '1'
 
 Write-Host ''
 Write-Host 'Servidor HTTPS listo en la red local.' -ForegroundColor Green
-Write-Host 'En esta PC:       https://sitioweb:8443'
+Write-Host 'En esta PC:       https://sqlserver:8443'
 Write-Host 'También:          https://localhost:8443'
 foreach ($ip in ($lanIps | Select-Object -Unique)) { Write-Host "Desde la red:     https://${ip}:8443" }
 Write-Host ''

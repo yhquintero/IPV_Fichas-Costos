@@ -1,0 +1,168 @@
+/* ==========================================================================
+   IPV · Fichas y Costos — Tokens de diseño
+   Sistema visual centralizado: color, tipografía, espaciado, elevación.
+   Autor: Ing. Yosvany Hernández Quintero
+   ========================================================================== */
+:root {
+  /* Tipografía ---------------------------------------------------------- */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --text-2xs: 0.6875rem;   /* 11px */
+  --text-xs: 0.75rem;      /* 12px */
+  --text-sm: 0.8125rem;    /* 13px */
+  --text-base: 0.875rem;   /* 14px */
+  --text-md: 0.9375rem;    /* 15px */
+  --text-lg: 1.0625rem;    /* 17px */
+  --text-xl: 1.25rem;      /* 20px */
+  --text-2xl: 1.5rem;      /* 24px */
+  --text-3xl: 1.875rem;    /* 30px */
+  --text-4xl: 2.25rem;     /* 36px */
+
+  --leading-tight: 1.2;
+  --leading-snug: 1.35;
+  --leading-normal: 1.55;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* Espaciado (escala de 4 px) ------------------------------------------ */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-7: 1.75rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  /* Radios y elevación --------------------------------------------------- */
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-pill: 999px;
+
+  --shadow-xs: 0 1px 2px rgba(15, 32, 27, 0.05);
+  --shadow-sm: 0 1px 3px rgba(15, 32, 27, 0.07), 0 1px 2px rgba(15, 32, 27, 0.04);
+  --shadow-md: 0 6px 18px -6px rgba(15, 32, 27, 0.14), 0 2px 6px rgba(15, 32, 27, 0.05);
+  --shadow-lg: 0 24px 60px -20px rgba(11, 28, 23, 0.28), 0 8px 20px -12px rgba(11, 28, 23, 0.18);
+
+  --focus-ring: 0 0 0 3px rgba(29, 106, 84, 0.28);
+  --transition-fast: 120ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  --sidebar-width: 268px;
+  --topbar-height: 64px;
+  --content-max: 1580px;
+  --z-sidebar: 40;
+  --z-topbar: 30;
+  --z-drawer: 60;
+  --z-modal: 70;
+  --z-palette: 80;
+  --z-toast: 90;
+}
+
+/* Tema claro (por defecto) ---------------------------------------------- */
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f2f5f2;
+  --bg-accent: radial-gradient(1200px 600px at 100% -10%, rgba(46, 122, 100, 0.09), transparent 60%);
+  --surface: #ffffff;
+  --surface-2: #f8faf8;
+  --surface-3: #eef2ee;
+  --surface-inverse: #12352d;
+  --border: #e3e8e3;
+  --border-strong: #d0d8d1;
+  --text: #14211c;
+  --text-2: #56645d;
+  --text-3: #87928c;
+  --text-inverse: #f2f7f4;
+
+  --brand: #17594a;
+  --brand-hover: #114639;
+  --brand-strong: #0d3a2f;
+  --brand-soft: #e7f1ec;
+  --brand-soft-2: #d5e7de;
+  --brand-contrast: #ffffff;
+  --accent: #a9bd3f;
+  --accent-soft: #f1f5d9;
+
+  --success: #2c7a55;
+  --success-soft: #e6f3ea;
+  --warning: #9a6c1c;
+  --warning-soft: #fbf1dc;
+  --danger: #ad463b;
+  --danger-soft: #fbeae7;
+  --info: #3a6a9d;
+  --info-soft: #e8f0f9;
+  --neutral-soft: #eef1ee;
+
+  --chart-1: #2f7d63;
+  --chart-2: #a9bd3f;
+  --chart-3: #6a8fb8;
+  --chart-4: #c08a52;
+  --chart-5: #8d7bb0;
+
+  --overlay: rgba(11, 28, 23, 0.42);
+  --table-stripe: rgba(23, 89, 74, 0.022);
+  --table-hover: rgba(23, 89, 74, 0.05);
+}
+
+/* Tema oscuro ------------------------------------------------------------ */
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0d1513;
+  --bg-accent: radial-gradient(1200px 600px at 100% -10%, rgba(65, 168, 137, 0.12), transparent 60%);
+  --surface: #151f1c;
+  --surface-2: #1a2522;
+  --surface-3: #212e2a;
+  --surface-inverse: #e9f1ed;
+  --border: #26332e;
+  --border-strong: #33433d;
+  --text: #e8efeb;
+  --text-2: #a6b3ad;
+  --text-3: #7c8a84;
+  --text-inverse: #10201b;
+
+  --brand: #3ea98a;
+  --brand-hover: #4fbb9b;
+  --brand-strong: #8fd8c2;
+  --brand-soft: rgba(62, 169, 138, 0.14);
+  --brand-soft-2: rgba(62, 169, 138, 0.24);
+  --brand-contrast: #07130f;
+  --accent: #c2d45c;
+  --accent-soft: rgba(194, 212, 92, 0.16);
+
+  --success: #57b98a;
+  --success-soft: rgba(87, 185, 138, 0.16);
+  --warning: #d9a548;
+  --warning-soft: rgba(217, 165, 72, 0.16);
+  --danger: #e0786a;
+  --danger-soft: rgba(224, 120, 106, 0.16);
+  --info: #7aa7d8;
+  --info-soft: rgba(122, 167, 216, 0.16);
+  --neutral-soft: rgba(255, 255, 255, 0.07);
+
+  --chart-1: #4bb391;
+  --chart-2: #c2d45c;
+  --chart-3: #7aa7d8;
+  --chart-4: #d9a774;
+  --chart-5: #ab9ad0;
+
+  --overlay: rgba(3, 10, 8, 0.62);
+  --table-stripe: rgba(255, 255, 255, 0.014);
+  --table-hover: rgba(255, 255, 255, 0.04);
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.45);
+  --shadow-md: 0 8px 22px -8px rgba(0, 0, 0, 0.6);
+  --shadow-lg: 0 28px 70px -24px rgba(0, 0, 0, 0.75);
+}
