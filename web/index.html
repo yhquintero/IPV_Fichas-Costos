@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#183b34">
+  <title>IPV · Fichas y Costos</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-lockup">
+        <div class="brand-mark"><span>i</span><span>v</span></div>
+        <div><div class="brand-name">IPV<span>.</span></div><div class="brand-caption">GESTIÓN DE COSTOS</div></div>
+      </div>
+      <div class="sidebar-label">ESPACIO DE TRABAJO</div>
+      <div class="workspace-switcher"><span class="workspace-icon">C</span><span class="workspace-copy"><b>Centro de gestión</b><small>Unidad principal</small></span><span class="chevron">⌄</span></div>
+      <div class="sidebar-label nav-label">MENÚ PRINCIPAL</div>
+      <nav class="side-nav" aria-label="Navegación principal">
+        <button class="nav-item active" data-view="dashboard"><span class="nav-icon">◫</span><span>Resumen</span></button>
+        <button class="nav-item" data-view="products"><span class="nav-icon">▦</span><span>Productos y servicios</span><span class="nav-count" id="nav-products">—</span></button>
+        <button class="nav-item" data-view="materials"><span class="nav-icon">◈</span><span>Valores del IPV</span></button>
+        <button class="nav-item" data-view="fichas"><span class="nav-icon">▤</span><span>Fichas de costo</span><span class="nav-count" id="nav-fichas">—</span></button>
+        <button class="nav-item" data-view="controls"><span class="nav-icon">✓</span><span>Controles de IPV</span><span class="nav-dot" id="nav-pending-dot"></span></button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="help-card"><div class="help-mark">✦</div><b>Entorno de prueba</b><p>Los importes de muestra son ficticios y no representan una tarifa oficial.</p><button id="about-btn">Acerca de esta demo <span>↗</span></button></div>
+        <div class="profile-row"><div class="avatar">IP</div><div class="profile-copy"><b>Equipo IPV</b><small>Administrador de prueba</small></div><button class="more-button" aria-label="Opciones">···</button></div>
+      </div>
+    </aside>
+
+    <main class="main-shell">
+      <header class="topbar">
+        <div class="mobile-brand"><div class="brand-mark small"><span>i</span><span>v</span></div><b>IPV<span>.</span></b></div>
+        <div class="breadcrumbs"><span>Gestión</span><span class="crumb-sep">/</span><b id="crumb-current">Resumen</b></div>
+        <div class="topbar-actions">
+          <div class="connection-pill"><span class="connection-dot" id="connection-dot"></span><span id="connection-label">Conectando con SQLite…</span></div>
+          <button class="icon-button" id="refresh-btn" title="Actualizar datos" aria-label="Actualizar datos">↻</button>
+          <div class="top-avatar">IP</div>
+        </div>
+      </header>
+
+      <div class="mobile-nav" aria-label="Navegación móvil">
+        <button class="active" data-view="dashboard">Resumen</button><button data-view="products">Catálogo</button><button data-view="materials">Valores</button><button data-view="fichas">Fichas</button><button data-view="controls">Controles</button>
+      </div>
+
+      <section class="page-area">
+        <div id="page-content" aria-live="polite"></div>
+        <footer class="page-footer"><span>IPV · Fichas y Costos</span><span>Datos centralizados en SQLite <i class="footer-sep">·</i> Prototipo funcional</span></footer>
+      </section>
+    </main>
+  </div>
+  <div class="modal-layer" id="modal-layer" hidden></div>
+  <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

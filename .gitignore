@@ -1,0 +1,22 @@
+# Python runtime
+__pycache__/
+*.py[cod]
+
+# Local SQLite database and its WAL/SHM files (created on first run)
+data/*.db
+data/*.db-*
+
+# Local TLS private keys/certificates created by iniciar-https.ps1
+certs/
+
+# Android Studio / Gradle
+android/.gradle/
+android/local.properties
+android/**/build/
+android/.idea/
+*.iml
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
