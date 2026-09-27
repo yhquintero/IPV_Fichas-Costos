@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="IPV Fichas y Costos">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#123a30"/>
+      <stop offset="100%" stop-color="#0a231d"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#g)"/>
+  <rect x="6" y="6" width="52" height="52" rx="13" fill="none" stroke="#a9bd3f" stroke-opacity="0.35" stroke-width="1.5"/>
+  <text x="32" y="42" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="30" font-weight="700" letter-spacing="-1.5" fill="#a9bd3f">iv</text>
+  <path d="M18 50h28" stroke="#3ea98a" stroke-width="2.5" stroke-linecap="round" opacity="0.8"/>
+</svg>

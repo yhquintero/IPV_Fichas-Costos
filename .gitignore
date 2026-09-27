@@ -16,6 +16,10 @@ android/**/build/
 android/.idea/
 *.iml
 
+# Node.js (pruebas del cliente web)
+node_modules/
+tests/web/node_modules
+
 # OS / editor
 .DS_Store
 .idea/

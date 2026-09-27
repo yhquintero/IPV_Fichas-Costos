@@ -1,0 +1,19 @@
+{
+  "name": "IPV · Fichas y Costos",
+  "short_name": "IPV Costos",
+  "description": "Gestión de productos y servicios, valores de referencia del IPV, fichas de costo versionadas y controles de IPV.",
+  "lang": "es",
+  "dir": "ltr",
+  "start_url": "/resumen",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f2f5f2",
+  "theme_color": "#0d3a2f",
+  "categories": ["business", "productivity", "finance"],
+  "author": "Ing. Yosvany Hernández Quintero",
+  "icons": [
+    { "src": "/assets/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/assets/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
