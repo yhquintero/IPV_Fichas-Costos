@@ -98,7 +98,12 @@ function databaseCard(meta) {
 }
 
 function backupsCard(meta) {
-  const fileInput = el('input', { type: 'file', accept: 'application/json,.json', style: { display: 'none' } });
+  // Selector oculto: lo abre el botón «Restaurar respaldo», por lo que no
+  // participa en la navegación por teclado ni se anuncia por separado.
+  const fileInput = el('input', {
+    type: 'file', accept: 'application/json,.json', 'aria-hidden': 'true', tabindex: '-1',
+    style: { position: 'absolute', width: '1px', height: '1px', padding: '0', margin: '-1px', overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap', border: '0' },
+  });
   fileInput.addEventListener('change', async () => {
     const file = fileInput.files?.[0];
     if (!file) return;

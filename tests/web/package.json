@@ -6,7 +6,9 @@
   "description": "Pruebas automatizadas del cliente web de IPV · Fichas y Costos (requiere Python 3.10+ y Node 18+).",
   "author": "Ing. Yosvany Hernández Quintero",
   "scripts": {
-    "test": "node smoke.mjs"
+    "test": "node smoke.mjs && node accessibility.mjs",
+    "test:smoke": "node smoke.mjs",
+    "test:a11y": "node accessibility.mjs"
   },
   "devDependencies": {
     "jsdom": "^30.1.1"

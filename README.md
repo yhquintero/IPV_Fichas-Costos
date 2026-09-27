@@ -143,15 +143,17 @@ Flujo completo de negocio (producto → valor → ficha → aprobación → cont
 python -m unittest discover -s tests -v
 ```
 
-Cliente web (levanta el servidor real sobre una base temporal, carga la interfaz en un DOM simulado y verifica las ocho vistas, el enrutado, la búsqueda global, la paleta de comandos, los documentos imprimibles y el cambio de tema):
+Cliente web. `npm test` ejecuta las dos suites: la **prueba de humo** (levanta el servidor real sobre una base temporal, carga la interfaz en un DOM simulado y verifica las ocho vistas, el enrutado, la búsqueda global, la paleta de comandos, los documentos imprimibles y el cambio de tema) y la **auditoría de accesibilidad** (nombres accesibles, etiquetas de formulario, encabezados, tablas, diálogos modales, identificadores únicos, `aria-current` y navegación por teclado).
 
 ```bash
 cd tests/web
 npm install
-npm test
+npm test              # ambas suites: 22 comprobaciones
+npm run test:smoke    # solo la prueba de humo
+npm run test:a11y     # solo la auditoría de accesibilidad
 ```
 
-La prueba del cliente web requiere Node 18 o superior y `python3` disponibles en el `PATH` (puedes indicar otro intérprete con la variable `PYTHON`).
+Las pruebas del cliente web requieren Node 18 o superior y `python3` disponibles en el `PATH` (puedes indicar otro intérprete con la variable `PYTHON`).
 
 ## Datos, respaldos y seguridad
 
