@@ -450,15 +450,15 @@ def get_product(conn, product_id):
 
 
 def list_products(conn, include_inactive=True):
-    where = "" if include_inactive else " AND p.active=1"
-    return [dict(r) for r in conn.execute(f"""SELECT p.*,
+    # El filtro «solo activos» va parametrizado: no se construye SQL concatenando texto.
+    return [dict(r) for r in conn.execute("""SELECT p.*,
         (SELECT COUNT(*) FROM fichas f WHERE f.product_id=p.id AND f.deleted_at='') AS ficha_count,
         (SELECT f.status FROM fichas f WHERE f.product_id=p.id AND f.deleted_at='' ORDER BY f.id DESC LIMIT 1) AS last_status,
         (SELECT f.id FROM fichas f WHERE f.product_id=p.id AND f.deleted_at='' ORDER BY f.id DESC LIMIT 1) AS last_ficha_id,
         (SELECT f.yield_qty FROM fichas f WHERE f.product_id=p.id AND f.deleted_at='' ORDER BY f.id DESC LIMIT 1) AS last_yield_qty,
         (SELECT f.yield_unit FROM fichas f WHERE f.product_id=p.id AND f.deleted_at='' ORDER BY f.id DESC LIMIT 1) AS last_yield_unit
-        FROM products p WHERE p.deleted_at=''{where}
-        ORDER BY p.active DESC, p.category, p.name""").fetchall()]
+        FROM products p WHERE p.deleted_at='' AND (? = 1 OR p.active = 1)
+        ORDER BY p.active DESC, p.category, p.name""", (1 if include_inactive else 0,)).fetchall()]
 
 
 def list_materials(conn, include_inactive=True, category="", q=""):
@@ -1277,7 +1277,8 @@ class Handler(BaseHTTPRequestHandler):
         table = kind if kind in TRASH_TABLES else None
         if not table:
             raise APIError("Tipo de registro no válido.", 400)
-        row = conn.execute(f"SELECT id FROM {table} WHERE id=?", (ident,)).fetchone()
+        # `table` procede de la lista blanca TRASH_TABLES; los valores van parametrizados.
+        row = conn.execute(f"SELECT id FROM {table} WHERE id=?", (ident,)).fetchone()  # nosec B608
         if not row:
             raise APIError(f"{TRASH_TABLES[table]['label']} no encontrado.", 404)
         extra = ""
@@ -1285,7 +1286,7 @@ class Handler(BaseHTTPRequestHandler):
             extra = ", active=0"
         elif table == "materials":
             extra = ", status='Inactivo'"
-        cur = conn.execute(f"UPDATE {table} SET deleted_at=?{extra} WHERE id=?", (now_iso(), ident))
+        cur = conn.execute(f"UPDATE {table} SET deleted_at=?{extra} WHERE id=?", (now_iso(), ident))  # nosec B608
         if cur.rowcount == 0:
             raise APIError("No se pudo mover a la papelera.", 409)
         return {"ok": True, "trashed": True, "kind": kind, "id": ident}
@@ -1313,18 +1314,18 @@ class Handler(BaseHTTPRequestHandler):
             if ficha_ids:
                 marks = ",".join("?" * len(ficha_ids))
                 control_ids = [r[0] for r in conn.execute(
-                    f"SELECT id FROM controls WHERE ficha_id IN ({marks})", ficha_ids)]
+                    f"SELECT id FROM controls WHERE ficha_id IN ({marks})", ficha_ids)]  # nosec B608
                 if control_ids:
-                    conn.execute(f"DELETE FROM control_items WHERE control_id IN ({','.join('?' * len(control_ids))})", control_ids)
-                    conn.execute(f"DELETE FROM controls WHERE id IN ({','.join('?' * len(control_ids))})", control_ids)
-                conn.execute(f"DELETE FROM ficha_items WHERE ficha_id IN ({marks})", ficha_ids)
-                conn.execute(f"DELETE FROM fichas WHERE id IN ({marks})", ficha_ids)
+                    conn.execute(f"DELETE FROM control_items WHERE control_id IN ({','.join('?' * len(control_ids))})", control_ids)  # nosec B608
+                    conn.execute(f"DELETE FROM controls WHERE id IN ({','.join('?' * len(control_ids))})", control_ids)  # nosec B608
+                conn.execute(f"DELETE FROM ficha_items WHERE ficha_id IN ({marks})", ficha_ids)  # nosec B608
+                conn.execute(f"DELETE FROM fichas WHERE id IN ({marks})", ficha_ids)  # nosec B608
         elif kind == "fichas":
             control_ids = [r[0] for r in conn.execute("SELECT id FROM controls WHERE ficha_id=?", (ident,))]
             if control_ids:
                 marks = ",".join("?" * len(control_ids))
-                conn.execute(f"DELETE FROM control_items WHERE control_id IN ({marks})", control_ids)
-                conn.execute(f"DELETE FROM controls WHERE id IN ({marks})", control_ids)
+                conn.execute(f"DELETE FROM control_items WHERE control_id IN ({marks})", control_ids)  # nosec B608
+                conn.execute(f"DELETE FROM controls WHERE id IN ({marks})", control_ids)  # nosec B608
             conn.execute("DELETE FROM ficha_items WHERE ficha_id=?", (ident,))
         elif kind == "controls":
             conn.execute("DELETE FROM control_items WHERE control_id=?", (ident,))
@@ -1333,19 +1334,20 @@ class Handler(BaseHTTPRequestHandler):
         """Borrado definitivo desde la papelera (elimina también sus documentos derivados)."""
         if kind not in TRASH_TABLES:
             raise APIError("Tipo de registro no válido.", 400)
-        row = conn.execute(f"SELECT id FROM {kind} WHERE id=? AND deleted_at<>''", (ident,)).fetchone()
+        # `kind` se valida contra TRASH_TABLES antes de llegar aquí.
+        row = conn.execute(f"SELECT id FROM {kind} WHERE id=? AND deleted_at<>''", (ident,)).fetchone()  # nosec B608
         if not row:
             raise APIError("El elemento no está en la papelera.", 404)
         self._purge_dependents(conn, kind, ident)
-        conn.execute(f"DELETE FROM {kind} WHERE id=?", (ident,))
+        conn.execute(f"DELETE FROM {kind} WHERE id=?", (ident,))  # nosec B608
         return {"ok": True, "purged": True, "kind": kind, "id": ident}
 
     def _empty_trash(self, conn):
         removed = {"products": 0, "materials": 0, "fichas": 0, "controls": 0}
         for kind in ("products", "fichas", "controls", "materials"):
-            for row in conn.execute(f"SELECT id FROM {kind} WHERE deleted_at<>''").fetchall():
+            for row in conn.execute(f"SELECT id FROM {kind} WHERE deleted_at<>''").fetchall():  # nosec B608
                 self._purge_dependents(conn, kind, row[0])
-                removed[kind] += conn.execute(f"DELETE FROM {kind} WHERE id=?", (row[0],)).rowcount
+                removed[kind] += conn.execute(f"DELETE FROM {kind} WHERE id=?", (row[0],)).rowcount  # nosec B608
         return {"ok": True, "removed": sum(removed.values()), "by_kind": removed}
 
 
