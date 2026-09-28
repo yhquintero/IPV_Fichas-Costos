@@ -15,6 +15,29 @@ info:
     - `X-RateLimit-Limit`: Límite máximo de requests
     - `X-RateLimit-Remaining`: Requests restantes
     - `X-RateLimit-Reset`: Timestamp de reseteo
+
+    ## Sistema de Seguridad por Usuarios
+    Además del rol (admin / editor / viewer), cada usuario tiene permisos finos por
+    módulo que el administrador ajusta en `PUT /api/users/{id}`:
+
+    | Módulo | Apartado |
+    |---|---|
+    | `materials` | **Valores del IPV** (entrada única con las pestañas Valores e Inventario) |
+    | `products` | Productos y servicios |
+    | `fichas` | Fichas de costo |
+    | `controls` | Controles de IPV |
+    | `trash` | Papelera de reciclaje |
+
+    Permisos de cada módulo: `view` (consultar), `edit` (crear, modificar, ajustar
+    existencias, restaurar y purgar) y `costs` (ver precios e importes).
+
+    * Sin `view` la ruta responde **403** con `{"permission_denied": "modulo.permiso"}`.
+    * Sin `costs` los campos económicos (`unit_price`, `stock_value`, totales en dinero)
+      viajan como `null` y la respuesta añade `costs_hidden: true`: no se ocultan solo
+      en la interfaz, el servidor no los envía.
+    * Los permisos se leen en cada petición: un cambio surte efecto al instante, sin
+      cerrar sesiones ni pedir un nuevo inicio de sesión.
+    * Los administradores conservan siempre todos los permisos (no pueden limitarse).
     
     ## Autor
     Ing. Yosvany Hernández Quintero
@@ -317,9 +340,22 @@ paths:
   /api/auth/me:
     get:
       tags: [Authentication]
-      summary: Usuario autenticado actual
+      summary: Usuario autenticado actual, con sus permisos por módulo
       responses:
-        '200': { description: Usuario actual }
+        '200':
+          description: Usuario actual
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+                  jwt: { type: boolean }
+                  permissions: { $ref: '#/components/schemas/Permissions' }
+                  modules:
+                    type: object
+                    description: Etiqueta visible de cada módulo
+                    additionalProperties: { type: string }
 
   /api/users:
     get:
@@ -342,8 +378,11 @@ paths:
                 name: { type: string }
                 password: { type: string, minLength: 10 }
                 role: { type: string, enum: [admin, editor, viewer] }
+                permissions:
+                  $ref: '#/components/schemas/Permissions'
       responses:
-        '201': { description: Usuario creado }
+        '201': { description: Usuario creado, con sus permisos efectivos }
+        '400': { description: Permisos con módulos o claves no válidos }
         '409': { description: Correo duplicado }
 
   /api/events:
@@ -419,10 +458,30 @@ paths:
   /api/users/{id}:
     put:
       tags: [Authentication]
-      summary: Actualizar usuario (rol, activo, desbloquear, restablecer 2FA, revocar sesiones, forzar cambio de contraseña) — admin
+      summary: Actualizar usuario (rol, activo, desbloquear, restablecer 2FA, revocar sesiones, forzar cambio de contraseña) y sus permisos por módulo — admin
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
-      responses: { '200': { description: Usuario actualizado } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { type: string, enum: [admin, editor, viewer] }
+                active: { type: boolean }
+                unlock: { type: boolean }
+                reset_mfa: { type: boolean }
+                revoke_sessions: { type: boolean }
+                force_password_change: { type: boolean }
+                permissions:
+                  $ref: '#/components/schemas/Permissions'
+                reset_permissions:
+                  type: boolean
+                  description: Borra los ajustes y deja al usuario con los permisos de su rol
+      responses:
+        '200': { description: Usuario actualizado, con sus permisos efectivos }
+        '400': { description: Permisos no válidos o intento de limitar a un administrador }
+        '404': { description: Usuario no encontrado }
   /api/products/{id}/restore:
     post:
       tags: [Products]
@@ -491,9 +550,15 @@ paths:
       tags: [Dashboard]
       summary: Obtener resumen del dashboard
       operationId: getDashboard
+      description: >
+        El resumen mezcla datos de todos los apartados y se recorta según los permisos del usuario:
+        sin `view` sobre un módulo, sus contadores llegan en `null`, sus listas en `[]` y sus eventos
+        desaparecen de `activity_timeline`. Sin `costs` en `materials`, `stock_value` llega en `null`
+        con `costs_hidden: true`; sin `costs` en `fichas`, `cost_by_category` llega vacío y
+        `recent_fichas[].total_cost` en `null`.
       responses:
         '200':
-          description: Datos del dashboard
+          description: Datos del dashboard, recortados según los permisos del usuario
           content:
             application/json:
               schema:
@@ -558,7 +623,8 @@ paths:
   /api/materials:
     get:
       tags: [Materials]
-      summary: Listar valores de referencia
+      summary: Listar valores de referencia (pestaña Valores)
+      description: Exige `materials.view`. Sin `materials.costs`, `unit_price` llega como null.
       operationId: listMaterials
       responses:
         '200':
@@ -569,9 +635,10 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Material'
+        '403': { $ref: '#/components/responses/PermisoDenegado' }
     post:
       tags: [Materials]
-      summary: Crear valor de referencia
+      summary: Crear valor de referencia (exige `materials.edit`)
       operationId: createMaterial
       requestBody:
         required: true
@@ -582,6 +649,48 @@ paths:
       responses:
         '201':
           description: Material creado
+        '403': { $ref: '#/components/responses/PermisoDenegado' }
+
+  /api/inventory:
+    get:
+      tags: [Materials]
+      summary: Inventario de valores del IPV (segunda pestaña de la misma entrada)
+      description: |
+        Existencias de cada valor del IPV, recetas que lo usan y cuántas raciones o
+        copas se pueden preparar. Exige el permiso `materials.view`; el ajuste de
+        existencias (`POST /api/materials/{id}/stock`) exige `materials.edit`.
+        Sin `materials.costs`, `unit_price`, `stock_value` y `totals.stock_value`
+        llegan como null y la respuesta incluye `costs_hidden: true`.
+      operationId: getInventory
+      parameters:
+        - { name: category, in: query, schema: { type: string } }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: low, in: query, schema: { type: string }, description: "1 = solo bajo mínimo" }
+      responses:
+        '200':
+          description: Inventario con totales
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/InventoryItem' }
+                  totals:
+                    type: object
+                    properties:
+                      materials: { type: integer }
+                      low_stock: { type: integer }
+                      categories: { type: integer }
+                      stock_value:
+                        type: string
+                        nullable: true
+                        description: null sin el permiso `materials.costs`
+                  costs_hidden:
+                    type: boolean
+                    description: Presente y en true cuando el usuario no puede ver importes
+        '403': { $ref: '#/components/responses/PermisoDenegado' }
 
   /api/materials/bulk-update:
     post:
@@ -755,7 +864,12 @@ paths:
       tags: [Reports]
       summary: Obtener estadísticas avanzadas
       operationId: getStatistics
+      description: >
+        Exige `fichas.view` (403 `permission_denied: fichas.view` en caso contrario). Sin `fichas.costs`,
+        `top_expensive[].total_cost` y `avg_cost_by_category[].avg_cost` llegan en `null`.
       responses:
+        '403':
+          $ref: '#/components/responses/PermisoDenegado'
         '200':
           description: Estadísticas del sistema
           content:
@@ -813,7 +927,66 @@ components:
       scheme: bearer
       bearerFormat: JWT
 
+  responses:
+    PermisoDenegado:
+      description: El usuario no tiene el permiso del módulo (Sistema de Seguridad por Usuarios)
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string, example: "Su usuario no tiene permiso para modificar «Valores del IPV e Inventario»." }
+              permission_denied: { type: string, example: "materials.edit" }
+
   schemas:
+    ModulePermission:
+      type: object
+      description: >
+        Permisos de un módulo. `edit` y `costs` implican `view`. Al enviarlos por `PUT /api/users/{id}`
+        se puede incluir solo lo que cambia: los permisos ausentes conservan el valor del rol.
+      properties:
+        view: { type: boolean, description: Abrir el apartado y consultar sus datos }
+        edit: { type: boolean, description: Crear, modificar, ajustar existencias, restaurar y purgar }
+        costs: { type: boolean, description: Ver precios, importes y valores en dinero }
+
+    Permissions:
+      type: object
+      description: Permisos efectivos por módulo (`materials` = Valores del IPV e Inventario)
+      properties:
+        materials: { $ref: '#/components/schemas/ModulePermission' }
+        products: { $ref: '#/components/schemas/ModulePermission' }
+        fichas: { $ref: '#/components/schemas/ModulePermission' }
+        controls: { $ref: '#/components/schemas/ModulePermission' }
+        trash: { $ref: '#/components/schemas/ModulePermission' }
+
+    InventoryItem:
+      allOf:
+        - $ref: '#/components/schemas/Material'
+        - type: object
+          properties:
+            stock_value:
+              type: string
+              nullable: true
+              description: existencias × precio unitario (null sin permiso `costs`)
+            low_stock: { type: boolean }
+            usage_count: { type: integer }
+            used_by:
+              type: array
+              description: Recetas que usan el insumo y cuántas raciones salen con el stock actual
+              items:
+                type: object
+                properties:
+                  ficha_id: { type: integer }
+                  product_id: { type: integer }
+                  product_code: { type: string }
+                  product_name: { type: string }
+                  category: { type: string }
+                  ficha_status: { type: string }
+                  per_serving: { type: string }
+                  yield_unit: { type: string }
+                  servings: { type: integer, nullable: true }
+
+
     HealthResponse:
       type: object
       properties:
@@ -858,6 +1031,8 @@ components:
           type: integer
         user:
           $ref: '#/components/schemas/User'
+        permissions:
+          $ref: '#/components/schemas/Permissions'
         session_id:
           type: string
           description: Identificador de la sesión de este dispositivo (solo en login)

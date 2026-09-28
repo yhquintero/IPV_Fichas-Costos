@@ -1997,3 +1997,53 @@ html.reduce-motion .confetti-container, html.reduce-motion .confetti { display: 
 .line-entry { grid-template-columns: minmax(0,2.2fr) minmax(90px,.8fr) auto auto; }
 .datalist-hint { font-size: 10px; color: var(--text-4); }
 @media (max-width: 1100px) { .line-entry { grid-template-columns: minmax(0,1fr) minmax(80px,.6fr) auto; } .line-entry .add-line-btn:last-child { grid-column: 3; } }
+
+/* ============ VALORES DEL IPV: ENTRADA ÚNICA CON PESTAÑAS ============
+   Las dos entradas antiguas («Valores del IPV» e «Inventario de valores del IPV»)
+   son ahora una sola con pestañas Valores / Inventario, gobernada por el
+   Sistema de Seguridad por Usuarios (permisos view / edit / costs por módulo). */
+.seg-tabs { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: -10px 0 20px; }
+.seg-tab {
+  display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 16px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--surface);
+  color: var(--text-2); font: 600 12px Manrope, sans-serif; cursor: pointer;
+  transition: all var(--transition);
+}
+.seg-tab:hover { border-color: var(--primary-light); color: var(--primary); transform: translateY(-1px); }
+.seg-tab:focus-visible { outline: 2px solid var(--primary-light); outline-offset: 2px; }
+.seg-tab.active { background: var(--gradient-primary); border-color: transparent; color: #fff; box-shadow: var(--shadow-sm); }
+.seg-tab.active .seg-count { background: rgba(255,255,255,.2); color: #fff; }
+.seg-tab.active .seg-icon { color: var(--accent); }
+.seg-icon { font-size: 14px; line-height: 1; }
+.seg-count {
+  min-width: 22px; padding: 1px 7px; border-radius: 999px; text-align: center;
+  background: var(--surface-3); color: var(--text-3); font-size: 10px; font-weight: 700;
+}
+.seg-warn { padding: 1px 7px; border-radius: 999px; background: var(--orange-glow); color: var(--orange); font-size: 10px; font-weight: 700; }
+
+/* ---- Avisos y candados de permisos ---- */
+.perm-pill, .lock-pill {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px;
+  border: 1px dashed var(--border-strong); background: var(--surface-2); color: var(--text-3);
+  font-size: 10px; font-weight: 700; letter-spacing: .3px; white-space: nowrap;
+}
+.seg-tabs .perm-pill { margin-left: auto; }
+.lock-pill { padding: 2px 9px; font-weight: 600; }
+.stock-readonly {
+  display: inline-block; padding: 5px 10px; border-radius: var(--radius-xs); font-size: 11px;
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--text-2);
+}
+.perm-resume { color: var(--text-4); }
+
+/* ---- Matriz de permisos (Web → Usuarios → 🔐 Permisos) ---- */
+.perm-presets { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.perm-table th.center, .perm-table td.center { text-align: center; }
+.perm-table input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--primary-light); cursor: pointer; }
+.perm-table small { color: var(--text-4); }
+
+@media (max-width: 640px) {
+  .seg-tabs { margin-top: 0; }
+  .seg-tab { flex: 1; justify-content: center; }
+  .seg-tabs .perm-pill { margin-left: 0; width: 100%; justify-content: center; }
+}
+@media print { .seg-tabs, .perm-pill, .lock-pill { display: none !important; } }

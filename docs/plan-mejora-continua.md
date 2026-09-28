@@ -42,7 +42,7 @@ Día 13-14  Estabilizar    → correcciones rápidas, actualizar documentación 
 | Mensual | Diagnóstico completo del acceso seguro | `.\iniciar-https.ps1 -Check` |
 | Mensual | Restaurar una copia de seguridad **de prueba** | `python dbcrypt.py status` + copia a carpeta temporal |
 | Trimestral | Revisar este plan, métricas y hoja de ruta | `docs/plan-mejora-continua.md` |
-| Semestral | Escaneo ZAP completo + revisión de permisos de usuarios | CI (`zap`) y web → Usuarios |
+| Semestral | Escaneo ZAP completo + revisión de permisos por módulo de cada usuario | CI (`zap`) y web → Usuarios → 🔐 Permisos |
 | Anual | Renovar la CA local y reinstalarla en los clientes | `.\iniciar-https.ps1 -Renew` |
 
 ---
@@ -52,7 +52,7 @@ Día 13-14  Estabilizar    → correcciones rápidas, actualizar documentación 
 Una mejora **no está terminada** hasta que cumple todo esto:
 
 - [ ] Funciona en la **web** y en el **móvil** (o hay una deuda anotada con fecha).
-- [ ] `python -m unittest discover -s tests` en verde (86 pruebas y subiendo).
+- [ ] `python -m unittest discover -s tests` en verde (105 pruebas y subiendo).
 - [ ] `ruff check --select E9,F63,F7,F82 .` sin errores.
 - [ ] `bandit -ll -ii` sin hallazgos de severidad media/alta.
 - [ ] CI completo en verde, incluida la tanda con **base de datos cifrada** y el escaneo **ZAP**.
@@ -69,7 +69,7 @@ Una mejora **no está terminada** hasta que cumple todo esto:
 
 | Métrica | Hoy | Objetivo | Cómo se mide |
 |---|---|---|---|
-| Pruebas automáticas | 86 | +6 por trimestre | `unittest discover -s tests` |
+| Pruebas automáticas | 105 | +6 por trimestre | `unittest discover -s tests` |
 | Cobertura del servidor | ~70 % | ≥ 80 % | `coverage report` en CI |
 | Vulnerabilidades medias/altas | 0 | 0 | Bandit + ZAP en CI |
 | Peso de la web (JS+CSS) | ~180 KB | < 250 KB | tamaño de `web/` |
@@ -88,7 +88,8 @@ Una mejora **no está terminada** hasta que cumple todo esto:
 
 | Función | Web | Móvil | Próximo paso |
 |---|---|---|---|
-| Productos, valores del IPV, inventario, fichas, controles | ✅ | ✅ | — |
+| Productos, valores del IPV (pestañas Valores e Inventario), fichas, controles | ✅ | ✅ | El móvil conserva dos pestañas propias; la web las unificó en una entrada |
+| Sistema de Seguridad por Usuarios (permisos `view`/`edit`/`costs` por módulo) | ✅ | ⚠ (el servidor ya filtra lo que recibe) | T2: ocultar pestañas y acciones en el móvil y panel de permisos de solo lectura |
 | Columna **Id** y contador de ítems | ✅ | ✅ | — |
 | Papelera (restaurar / borrar) | ✅ | ✅ | — |
 | Licencia al arrancar + renovación | ✅ | ✅ | — |
@@ -156,7 +157,9 @@ Leyenda: ✅ completo · ⚠ parcial · ❌ pendiente.
 ### T4 · Escala y profesionalización
 
 - Multi-almacén / multi-sucursal (inventarios separados que consolidan).
-- Roles finos por módulo (quién ve costos, quién aprueba fichas).
+- ~~Roles finos por módulo (quién ve costos, quién aprueba fichas)~~ **entregado**: Sistema de
+  Seguridad por Usuarios con permisos `view` / `edit` / `costs` por módulo, gestionable en
+  Web → Usuarios → 🔐 Permisos. Pendiente: trasladarlo a la app Android (ver punto 5).
 - Panel de administración del servidor desde la web (estado, backups, certificado, licencias).
 - Exportación contable (formato acordado con el cliente).
 
@@ -167,7 +170,7 @@ Leyenda: ✅ completo · ⚠ parcial · ❌ pendiente.
 | Control | Frecuencia | Responsable | Evidencia |
 |---|---|---|---|
 | `-Check` completo | Mensual | Administrador | Captura o salida guardada |
-| Revisión de usuarios, roles y sesiones activas | Mensual | Administrador | Web → Usuarios |
+| Revisión de usuarios, roles, permisos por módulo y sesiones activas | Mensual | Administrador | Web → Usuarios (🔐 Permisos) |
 | Revisión de la cadena de auditoría (HMAC) | Mensual | Administrador | Web → Auditoría → Verificar |
 | Rotación de la contraseña del administrador | Trimestral | Administrador | Política `IPV_PASSWORD_MAX_AGE_DAYS=90` |
 | Prueba de restauración de copia | Trimestral | Administrador | Base restaurada en carpeta temporal |

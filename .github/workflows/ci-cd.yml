@@ -25,7 +25,7 @@ jobs:
       - name: Ruff (errores reales)
         run: ruff check --select E9,F63,F7,F82 .
       - name: Bandit (severidad media/alta)
-        run: bandit -q -r server.py auth.py audit.py rate_limiter.py enterprise.py security.py dbcrypt.py offsite.py licencia.py keygen/keygen.py email_notifications.py -ll -ii
+        run: bandit -q -r server.py auth.py audit.py rate_limiter.py enterprise.py security.py dbcrypt.py offsite.py licencia.py keygen/keygen.py email_notifications.py permisos.py -ll -ii
       - name: Pruebas con cobertura
         run: |
           coverage run -m unittest discover -s tests -v

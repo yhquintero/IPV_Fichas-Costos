@@ -242,7 +242,8 @@
   /* ───────────── Tutorial de bienvenida ───────────── */
   const TOUR_KEY = 'ipv.tour.done';
   const STEPS = [
-    { sel: '#sidebar nav, #sidebar', title: 'Navegación', text: 'Cambie entre Resumen, Productos, Valores del IPV, Inventario, Fichas, Controles, Papelera y Licencia. También con las teclas 1 a 8.' },
+    { sel: '#sidebar nav, #sidebar', title: 'Navegación', text: 'Cambie entre Resumen, Productos, Valores del IPV (con sus pestañas Valores e Inventario), Fichas, Controles, Papelera y Licencia. También con las teclas 1 a 8.' },
+    { sel: '.seg-tabs', title: 'Valores del IPV en una sola entrada', text: 'Las pestañas Valores e Inventario comparten entrada y permiso. Según sus permisos verá precios, botones de edición o el aviso «Costos protegidos».' },
     { sel: '#search-global', title: 'Búsqueda global', text: 'Encuentre cualquier producto, insumo, ficha o control. Atajo: Ctrl+K.' },
     { sel: '.topbar-actions .icon-button[title^="Paleta"]', title: 'Paleta de comandos', text: 'Todas las acciones en un solo lugar: importar CSV, PDF, tema, seguridad… Atajo: Ctrl+Shift+P.' },
     { sel: '.notif-bell', title: 'Notificaciones en tiempo real', text: 'Vea al instante los cambios que hacen otros usuarios en la web o en Android.' },
