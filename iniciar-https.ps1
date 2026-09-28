@@ -1,10 +1,21 @@
 # Inicia el servidor IPV en HTTPS para la red local (Windows).
 # La CA/certificado son solo para desarrollo y red privada; no son certificados públicos.
 [CmdletBinding()]
-param([switch]$ConfigureNetworkOnly)
+param(
+    [switch]$ConfigureNetworkOnly,
+    [switch]$Status,       # Muestra el estado del servidor y de la base de datos
+    [switch]$Backup,       # Crea una copia de seguridad consistente (API de backup de SQLite)
+    [switch]$HealthCheck,  # Devuelve el estado de salud en JSON
+    [switch]$AuditLog,     # Muestra los últimos eventos de auditoría
+    [switch]$InitSecurity, # Crea .env con un secreto JWT fuerte y el usuario administrador
+    [switch]$ShowPin,      # Muestra la huella SHA-256 de la CA local para fijarla en Android
+    [switch]$EncryptDb     # Cifra la base de datos con SQLCipher (AES-256) y guarda la clave en .env
+)
 
 $ErrorActionPreference = 'Stop'
 if ($env:OS -ne 'Windows_NT') { throw 'iniciar-https.ps1 debe ejecutarse en Windows con PowerShell.' }
+
+$ServerAlias = 'sqlserver'
 
 function Test-IsAdministrator {
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -15,9 +26,10 @@ function Test-IsAdministrator {
 function Configure-LocalNetwork {
     $hostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
     if (Test-Path $hostsPath) {
-        $hasAlias = Select-String -Path $hostsPath -Pattern '^\s*(?!#)\S+\s+.*\bsitioweb\b' -Quiet
+        $pattern = '^\s*(?!#)\S+\s+.*\b' + [regex]::Escape($ServerAlias) + '\b'
+        $hasAlias = Select-String -Path $hostsPath -Pattern $pattern -Quiet
         if (-not $hasAlias) {
-            Add-Content -Path $hostsPath -Value "`r`n127.0.0.1`t sitioweb # IPV Fichas y Costos local" -Encoding ASCII
+            Add-Content -Path $hostsPath -Value "`r`n127.0.0.1`t$ServerAlias # IPV Fichas y Costos local" -Encoding ASCII
             try { & ipconfig.exe /flushdns | Out-Null } catch { }
         }
     }
@@ -37,12 +49,13 @@ function Configure-LocalNetwork {
 if ($ConfigureNetworkOnly) {
     if (-not (Test-IsAdministrator)) { throw 'La configuración de red requiere permisos de administrador.' }
     Configure-LocalNetwork
-    Write-Host 'Alias sitioweb y regla del firewall configurados para la red local.' -ForegroundColor Green
+    Write-Host "Alias $ServerAlias y regla del firewall configurados para la red local." -ForegroundColor Green
     exit 0
 }
 
 # Eleva solo los cambios de hosts/firewall; el servidor Python seguirá con los permisos del usuario.
-if (-not (Test-IsAdministrator)) {
+$adminCommand = $Status -or $Backup -or $HealthCheck -or $AuditLog -or $InitSecurity -or $ShowPin
+if (-not $adminCommand -and -not (Test-IsAdministrator)) {
     try {
         $powershellExe = if ($PSVersionTable.PSEdition -eq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $PSHOME 'powershell.exe' }
         $quotedScript = '"' + $PSCommandPath + '"'
@@ -143,6 +156,146 @@ function Export-RsaPrivateKeyPem {
 }
 
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# ==========================================================================
+#  Configuración (.env) y comandos de administración
+# ==========================================================================
+$envFile = Join-Path $repoRoot '.env'
+function Import-DotEnv {
+    if (-not (Test-Path $envFile)) { return }
+    foreach ($line in Get-Content $envFile) {
+        if ($line -match '^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$' -and $Matches[2] -ne '') {
+            [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2].Trim('"'), 'Process')
+        }
+    }
+}
+
+function Get-PythonCommand {
+    $py = Get-Command python -ErrorAction SilentlyContinue
+    if ($py) { return @($py.Source) }
+    $py = Get-Command py -ErrorAction SilentlyContinue
+    if ($py) { return @($py.Source, '-3') }
+    throw 'No se encontró Python. Instala Python 3.10+ y vuelve a ejecutar este script.'
+}
+
+function Invoke-Py([string]$Code) {
+    Import-DotEnv  # carga IPV_DB_KEY y demás variables necesarias para abrir la BD
+    $cmd = Get-PythonCommand
+    $env:IPV_DB_PATH = Join-Path $repoRoot 'data\ipv.db'
+    Push-Location $repoRoot
+    try { & $cmd[0] @($cmd | Select-Object -Skip 1) -c $Code } finally { Pop-Location }
+}
+
+function Initialize-Security {
+    if (Test-Path $envFile) { Write-Host '.env ya existe; no se sobrescribe.' -ForegroundColor Yellow; return }
+    $bytes = New-Object byte[] 48
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $secret = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+    $email = Read-Host 'Correo del administrador'
+    $pwd = Read-Host 'Contraseña del administrador (mín. 10, mayúsculas, números y símbolos)' -AsSecureString
+    $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($pwd))
+    $template = Get-Content (Join-Path $repoRoot '.env.example') -Raw
+    $template = $template -replace '(?m)^IPV_JWT_SECRET=.*$', "IPV_JWT_SECRET=$secret"
+    $template = $template -replace '(?m)^IPV_ADMIN_EMAIL=.*$', "IPV_ADMIN_EMAIL=$email"
+    $template = $template -replace '(?m)^IPV_ADMIN_PASSWORD=.*$', "IPV_ADMIN_PASSWORD=$plain"
+    Set-Content -Path $envFile -Value $template -Encoding UTF8
+    try { & icacls.exe $envFile /inheritance:r /grant:r "$((whoami).Trim()):(M)" | Out-Null } catch { }
+    Write-Host '✓ .env creado con secreto JWT de 384 bits (permisos restringidos al usuario actual).' -ForegroundColor Green
+    Write-Host '  Tras el primer inicio puede borrar IPV_ADMIN_PASSWORD del archivo .env.' -ForegroundColor Yellow
+}
+
+function Protect-Database {
+    Import-DotEnv
+    if ((Test-ServerHealth).Status -eq 'OK') { throw 'Detenga el servidor antes de cifrar la base de datos.' }
+    $cmd = Get-PythonCommand
+    & $cmd[0] @($cmd | Select-Object -Skip 1) -c 'import sqlcipher3' 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'Instalando el motor SQLCipher (sqlcipher3-wheels)…' -ForegroundColor Cyan
+        & $cmd[0] @($cmd | Select-Object -Skip 1) -m pip install --user sqlcipher3-wheels
+        if ($LASTEXITCODE -ne 0) { throw 'No se pudo instalar sqlcipher3-wheels.' }
+    }
+    if (-not $env:IPV_DB_KEY) {
+        if (-not (Test-Path $envFile)) { throw 'Primero ejecute -InitSecurity para crear .env.' }
+        $bytes = New-Object byte[] 32
+        [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+        $key = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+        $content = Get-Content $envFile -Raw
+        if ($content -match '(?m)^IPV_DB_KEY=') { $content = $content -replace '(?m)^IPV_DB_KEY=.*$', "IPV_DB_KEY=$key" }
+        else { $content = $content.TrimEnd() + "`r`nIPV_DB_KEY=$key`r`n" }
+        Set-Content -Path $envFile -Value $content -Encoding UTF8
+        $env:IPV_DB_KEY = $key
+        Write-Host '✓ Clave de cifrado de 256 bits generada y guardada en .env' -ForegroundColor Green
+    }
+    $env:IPV_DB_PATH = Join-Path $repoRoot 'data\ipv.db'
+    Push-Location $repoRoot
+    try { & $cmd[0] @($cmd | Select-Object -Skip 1) dbcrypt.py encrypt } finally { Pop-Location }
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "`n⚠ IMPORTANTE: guarde una copia de IPV_DB_KEY (archivo .env) fuera de este equipo." -ForegroundColor Yellow
+        Write-Host '  Sin esa clave la base de datos y sus copias de seguridad NO se pueden recuperar.' -ForegroundColor Yellow
+    }
+}
+
+function Test-ServerHealth {
+    param([string]$Url = 'https://localhost:8443')
+    try {
+        # La CA local está en el almacén de confianza del usuario: no hace falta omitir la validación TLS.
+        $data = Invoke-RestMethod -Uri "$Url/api/health" -TimeoutSec 5
+        return [ordered]@{ Status = 'OK'; Version = $data.version; Database = $data.database; TLS = $data.tls; Auth = $data.auth_required }
+    } catch {
+        return [ordered]@{ Status = 'ERROR'; Message = $_.Exception.Message }
+    }
+}
+
+function Show-ServerStatus {
+    Write-Host "`n═══════════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Host '  IPV · Fichas y Costos — Estado del servidor' -ForegroundColor Cyan
+    Write-Host "═══════════════════════════════════════════════════`n" -ForegroundColor Cyan
+    $h = Test-ServerHealth
+    if ($h.Status -eq 'OK') {
+        Write-Host "  ✓ Operativo · v$($h.Version) · $($h.Database) · TLS: $($h.TLS) · Token API: $($h.Auth)" -ForegroundColor Green
+    } else {
+        Write-Host "  ✗ Sin respuesta: $($h.Message)" -ForegroundColor Red
+    }
+    $db = Join-Path $repoRoot 'data\ipv.db'
+    if (Test-Path $db) { Write-Host ("  📁 Base de datos: {0:N1} KB" -f ((Get-Item $db).Length / 1KB)) -ForegroundColor Yellow }
+    $bk = Join-Path $repoRoot 'data\backups'
+    if (Test-Path $bk) { Write-Host "  💾 Copias de seguridad: $((Get-ChildItem $bk -Filter *.db).Count)" -ForegroundColor Yellow }
+    Write-Host "  🔐 JWT: $(if (Test-Path $envFile) { 'configurado (.env)' } else { 'no configurado — ejecute -InitSecurity' })" -ForegroundColor Yellow
+    if (Test-Path $db) {
+        $fs = [System.IO.File]::Open($db, 'Open', 'Read', 'ReadWrite')  # el servidor puede tenerla abierta
+        try { $head = New-Object byte[] 15; [void]$fs.Read($head, 0, 15) } finally { $fs.Dispose() }
+        $plain = [System.Text.Encoding]::ASCII.GetString($head) -eq 'SQLite format 3'
+        if ($plain) { Write-Host '  🔓 Base de datos SIN cifrar — ejecute -EncryptDb' -ForegroundColor Red }
+        else { Write-Host '  🔒 Base de datos cifrada (SQLCipher AES-256)' -ForegroundColor Green }
+    }
+    Write-Host ''
+}
+
+if ($InitSecurity) { Initialize-Security; exit 0 }
+if ($EncryptDb) { Protect-Database; exit $LASTEXITCODE }
+if ($ShowPin) {
+    $ca = Join-Path $repoRoot 'certs\ipv-local-root-ca.cer'
+    if (-not (Test-Path $ca)) { throw 'Aún no existe la CA local. Inicie el servidor una vez para generarla.' }
+    $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($ca)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $hex = ($sha.ComputeHash($cert.RawData) | ForEach-Object { $_.ToString('X2') }) -join ''
+    Write-Host "`nHuella SHA-256 de la CA local (Android → Configuración → Seguridad):" -ForegroundColor Cyan
+    Write-Host "  $hex" -ForegroundColor Green
+    Write-Host "  $(($hex -split '(.{2})' | Where-Object { $_ }) -join ':')" -ForegroundColor DarkGray
+    Write-Host "  Válida hasta: $($cert.NotAfter)`n" -ForegroundColor Yellow
+    exit 0
+}
+if ($Status) { Show-ServerStatus; exit 0 }
+if ($HealthCheck) { Test-ServerHealth | ConvertTo-Json; exit 0 }
+if ($Backup) {
+    Invoke-Py 'import server; i = server.auto_backup(); print("Copia creada:", i["filename"], i["size"], "bytes") if i else print("No se pudo crear la copia.")'
+    exit 0
+}
+if ($AuditLog) {
+    Invoke-Py 'import dbcrypt, server; c = dbcrypt.connect(server.DB_PATH); [print(*r, sep="  |  ") for r in c.execute("SELECT timestamp, action, client, user_email, details FROM audit_log ORDER BY id DESC LIMIT 40")]'
+    exit 0
+}
+Import-DotEnv
 $certDir = Join-Path $repoRoot 'certs'
 $dataDir = Join-Path $repoRoot 'data'
 New-Item -ItemType Directory -Path $certDir -Force | Out-Null
@@ -182,17 +335,17 @@ try {
 }
 
 $sanEntries = [System.Collections.Generic.List[string]]::new()
-$sanEntries.Add('DNS=sitioweb')
+$sanEntries.Add("DNS=$ServerAlias")
 $sanEntries.Add('DNS=localhost')
 if ($env:COMPUTERNAME) { $sanEntries.Add("DNS=$($env:COMPUTERNAME)") }
 $ips = @('127.0.0.1', '10.0.2.2') + $lanIps
 foreach ($ip in ($ips | Select-Object -Unique)) { $sanEntries.Add("IPAddress=$ip") }
 $sanExtension = '2.5.29.17={text}' + ($sanEntries -join '&')
 
-Write-Host 'Creando certificado HTTPS para sitioweb y las direcciones locales…' -ForegroundColor Cyan
+Write-Host "Creando certificado HTTPS para $ServerAlias y las direcciones locales…" -ForegroundColor Cyan
 $leaf = New-SelfSignedCertificate `
     -Type Custom `
-    -Subject 'CN=sitioweb' `
+    -Subject "CN=$ServerAlias" `
     -Signer $root `
     -KeyAlgorithm RSA `
     -KeyLength 2048 `
@@ -221,7 +374,7 @@ try {
 
 # Borra certificados de servidor anteriores firmados por esta misma CA; conserva el actual.
 Get-ChildItem Cert:\CurrentUser\My | Where-Object {
-    $_.Thumbprint -ne $leaf.Thumbprint -and $_.Subject -eq 'CN=sitioweb' -and $_.Issuer -eq $root.Subject
+    $_.Thumbprint -ne $leaf.Thumbprint -and $_.Subject -eq "CN=$ServerAlias" -and $_.Issuer -eq $root.Subject
 } | Remove-Item -ErrorAction SilentlyContinue
 
 $python = Get-Command python -ErrorAction SilentlyContinue
@@ -241,7 +394,7 @@ $env:PYTHONUNBUFFERED = '1'
 
 Write-Host ''
 Write-Host 'Servidor HTTPS listo en la red local.' -ForegroundColor Green
-Write-Host 'En esta PC:       https://sitioweb:8443'
+Write-Host "En esta PC:       https://${ServerAlias}:8443"
 Write-Host 'También:          https://localhost:8443'
 foreach ($ip in ($lanIps | Select-Object -Unique)) { Write-Host "Desde la red:     https://${ip}:8443" }
 Write-Host ''

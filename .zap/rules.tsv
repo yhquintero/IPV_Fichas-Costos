@@ -1,0 +1,26 @@
+# Reglas OWASP ZAP · IPV Fichas y Costos · Ing. Yosvany Hernández Quintero
+# Formato: id<TAB>IGNORE|WARN|FAIL<TAB>motivo.  Las reglas FAIL rompen el CI.
+# Cabeceras de seguridad obligatorias
+10020	FAIL	Falta protección anti-clickjacking (X-Frame-Options / frame-ancestors)
+10021	FAIL	Falta X-Content-Type-Options: nosniff
+10038	FAIL	Falta Content-Security-Policy
+10063	WARN	Permissions-Policy
+10037	FAIL	El servidor revela información vía X-Powered-By
+10036	WARN	Cabecera Server con versión (http.server de Python)
+# Inyección y XSS
+40012	FAIL	XSS reflejado
+40014	FAIL	XSS persistente
+40018	FAIL	Inyección SQL
+40024	FAIL	Inyección SQL (SQLite)
+90019	FAIL	Inyección de código en servidor
+90020	FAIL	Inyección de comandos del SO
+6	FAIL	Path traversal
+7	FAIL	Inclusión remota de archivos
+10202	IGNORE	API JSON con JWT en cabecera: no usa formularios ni cookies (sin CSRF)
+# Aceptados y documentados
+10055	WARN	CSP: solo se acepta style-src-attr 'unsafe-inline' (atributos style, sin ejecución); scripts estrictos verificados en tests
+10035	IGNORE	HSTS: el escaneo de CI es HTTP; en producción (TLS) el servidor envía HSTS
+10096	IGNORE	Marcas de tiempo en JSON de negocio (fechas de fichas), no son fugas
+10027	IGNORE	Comentarios del código fuente de la SPA
+10109	IGNORE	Informativo: aplicación web moderna
+10049	IGNORE	Informativo: contenido almacenable en caché

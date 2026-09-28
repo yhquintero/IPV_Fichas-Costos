@@ -1,62 +1,300 @@
-# IPV · Fichas y Costos
+# IPV · Fichas y Costos v1.0
 
-Prototipo funcional para probar el flujo de productos y servicios, valores de referencia del IPV, Fichas de Costo versionadas y Controles de IPV. Incluye una aplicación web y una aplicación Android nativa en Kotlin. Ambas consumen la misma API y los datos maestros se guardan en un archivo SQLite `.db` en el servidor.
+**Sistema profesional de gestión de Fichas de Costo y Controles de IPV**
 
-> **Importante:** los registros, precios y cálculos precargados son ficticios para demostración. Este prototipo no implementa ni certifica fórmulas, requisitos normativos, firmas oficiales, autenticación ni controles de seguridad para producción.
+Autor: **Ing. Yosvany Hernández Quintero**
 
-## Inicio por HTTPS en una red local (Windows)
+---
 
-Requisitos: Windows, PowerShell, Python 3.10 o superior y una red local confiable.
+## 🎯 Características Principales
 
-1. Desde PowerShell, en la raíz del proyecto, ejecuta `powershell -ExecutionPolicy Bypass -File .\iniciar-https.ps1` (o `pwsh -File .\iniciar-https.ps1`). Si hace falta, solicitará permisos de administrador solo para los cambios de hosts/firewall.
-2. El script crea una autoridad certificadora local y un certificado con nombres/IP de la PC, confía la CA en tu perfil de Windows, configura el firewall para TCP 8443 en perfiles privados/de dominio y arranca el servidor HTTPS con los permisos normales de tu usuario.
-3. En la computadora del servidor abre **`https://sitioweb:8443`**.
-4. El script también imprime las direcciones IPv4 disponibles. Desde otro equipo puedes abrir **`https://IP_DE_LA_COMPUTADORA:8443`**.
+### 🎨 Interfaz Web
+- **Diseño moderno** con glassmorphism, neumorphism y efectos 3D
+- **Modo oscuro/claro** con transiciones suaves
+- **Animaciones avanzadas**: confetti, parallax, morphing shapes, ripple effects
+- **Gráficos interactivos**: barras, donuts, líneas de tiempo
+- **Búsqueda global** con API dedicada y debounce
+- **Atajos de teclado** completos (Ctrl+K, F5, 1-5, ?, s)
+- **PWA ready** con manifest.json
+- **Responsive design** optimizado para móvil
+- **Skeleton loading** para mejor UX
+- **Auto-refresh** configurable
+- **Deshacer / Rehacer** desactivaciones de productos y valores del IPV (toast con botón, `Ctrl+Z` / `Ctrl+Shift+Z`)
+- **Filtros guardados** por vista (búsqueda + selectores), reutilizables con un clic
+- **Tablas fluidas**: carga progresiva de 100 en 100 filas a partir de 150 registros y navegación por teclado
+- **Dashboard personalizable**: reordenar arrastrando y ocultar tarjetas (se guarda por navegador)
+- **Tour interactivo** de bienvenida (repetible desde la paleta de comandos)
+- **Accesibilidad WCAG 2.1 AA**: enlace “saltar al contenido”, diálogos con `role="dialog"` y foco atrapado, alto contraste, reducción de movimiento y escala de texto (`Alt+Shift+A` o botón ♿)
+- **Código QR** para activar la verificación en dos pasos (generado localmente, sin servicios externos)
 
-El archivo raíz público que hay que instalar en otros dispositivos está en `certs/ipv-local-root-ca.cer`. Instálalo como certificado de CA/raíz de confianza antes de navegar o conectar Android. El archivo `certs/ipv-server-key.pem` es la clave privada del servidor: **no la copies ni la compartas**.
+### 📱 App Android
+- **Material Design 3** con colores vibrantes
+- **Gradientes animados** y efectos visuales
+- **Estadísticas avanzadas** con gráficos nativos
+- **Haptic feedback** en interacciones
+- **Acciones rápidas** con FAB
+- **Exportación de datos** al portapapeles
+- **Pantalla Acerca de** profesional
 
-### Nombre `sitioweb` en otras PC o móviles
+### 🔒 Seguridad Enterprise
+- **JWT HS256** (librería estándar) con roles **admin / editor / viewer**, rotación y revocación de refresh tokens
+- **Contraseñas PBKDF2-SHA256** (310 000 iteraciones) y política de complejidad
+- **Bloqueo de cuenta** 15 min tras 5 intentos fallidos
+- **Verificación en dos pasos (TOTP, RFC 6238)** con 8 códigos de recuperación de un solo uso y protección anti-reutilización; obligatoria para administradores con `IPV_REQUIRE_ADMIN_MFA=1`
+- **Revocación inmediata de sesiones** al desactivar un usuario, cambiar su rol o su contraseña
+- **Gestión de usuarios** (admin): roles, activar/desactivar, desbloquear, restablecer 2FA, cerrar sesiones
+- **Auditoría a prueba de manipulación**: cada evento se sella con HMAC-SHA256 encadenado; verificación desde la web
+- **Lista de redes permitidas** (`IPV_IP_ALLOWLIST`) y `X-Forwarded-For` aceptado solo desde proxies de confianza
+- **Base de datos cifrada en reposo** (opcional): SQLCipher AES-256 con `IPV_DB_KEY`; los backups quedan cifrados con la misma clave. El servidor se niega a arrancar si hay clave pero la BD está en claro o la clave es incorrecta
+- **Dispositivos conectados**: cada inicio de sesión es una sesión propia (navegador, sistema, IP, última actividad) que el usuario puede cerrar individualmente o todas a la vez
+- **Alertas de acceso desde IP nueva**: se auditan (`LOGIN_NEW_IP`), se avisa al usuario en pantalla y por correo (y a `IPV_NOTIFY_EMAIL`)
+- **Caducidad de contraseñas** (`IPV_PASSWORD_MAX_AGE_DAYS`), aviso 7 días antes, **historial** que impide reutilizar las últimas 5 y **cambio obligatorio** en el primer acceso o cuando lo exige el administrador
+- **Alertas de intentos fallidos**: al entrar, el usuario ve cuántos intentos fallidos hubo contra su cuenta y desde qué IP; el administrador recibe un correo a partir de `IPV_FAILED_LOGIN_ALERT` fallos seguidos
+- **Detección de *password spraying***: una IP que falla contra muchas cuentas distintas en 15 min se audita (`SUSPICIOUS_IP`) y se notifica
+- **CSP estricta** sin scripts ni estilos en línea y **fuentes alojadas en el propio servidor** (sin peticiones a terceros)
+- **Copias fuera del equipo (3-2-1)**: cada backup se replica a carpetas espejo (USB / red) y/o a un almacenamiento S3 (firma SigV4, solo https), verificando el SHA-256
+- **Licencias por período** firmadas con ECDSA P-256, atadas al equipo (PC) o al teléfono, con Keygen y solicitud por WhatsApp
+- **OWASP ZAP en CI**: escaneo dinámico de la web y de la API autenticada en cada push (`.zap/rules.tsv`)
+- **Rate limiting granular**: login 5/min, exportaciones 10/5 min, masivas 10/min, escritura 60/min, lectura 300/min, con cabeceras `X-RateLimit-*`
+- **Auditoría persistente** en SQLite (usuario, IP, acción, detalle) con visor web para administradores
+- **Cabeceras**: CSP, HSTS, COOP, CORP, X-Frame-Options, nosniff, Referrer-Policy, Permissions-Policy
+- **TLS 1.2+** con cifrados ECDHE/AES-GCM/ChaCha20
+- **Android**: sesión cifrada con AES-256-GCM en Android Keystore, **fijación de certificado** (huella de la CA, verificada en el handshake TLS), login con 2FA, cambio obligatorio de contraseña caducada, lista de dispositivos con cierre remoto de sesiones, avisos de IP nueva e intentos fallidos, bloqueo biométrico, `FLAG_SECURE`, sin copias en la nube
 
-El script agrega el alias `sitioweb` al archivo `hosts` de la PC donde corre. Para usar exactamente `https://sitioweb:8443` desde otras máquinas, la red debe resolver ese nombre hacia la IP local del servidor: configura un registro DNS en el router/servidor DNS o una entrada `hosts` en cada cliente. Si no puedes configurar DNS, usa la IP que imprime el script; el certificado incluye las IP locales detectadas.
+### ⚙️ Backend
+- API REST con **versionado** (`/api/v1/...` ≡ `/api/...`) y **OpenAPI 3** en `/api/openapi.yaml`
+- **Tiempo real** mediante Server-Sent Events (`/api/events`)
+- **Backups consistentes** (API de backup de SQLite) al iniciar y cada `IPV_BACKUP_INTERVAL_HOURS`
+- **Borrado lógico** de productos y valores de referencia
+- **Notificaciones por correo** al aprobar fichas y validar controles (SMTP opcional)
+- Estadísticas, reportes, operaciones masivas y búsqueda global
+- **Sin dependencias externas** en producción: solo Python estándar + SQLite
 
-Los clientes deben estar en la misma LAN o tener una ruta hacia el servidor. El firewall se limita a la subred local y perfiles privados/de dominio; si Windows marca la red confiable como Pública, cámbiala a Privada antes de probar. No configures reenvío de puerto desde Internet ni lo uses en Wi-Fi público.
+---
 
-### Android Studio y teléfonos
+## 🚀 Instalación y Uso
 
-1. Abre `android/` en Android Studio. Usa JDK 17, Android SDK Platform 35 y Gradle 8.9.
-2. Ejecuta `iniciar-https.ps1` en la computadora que alojará el backend.
-3. **Emulador:** la app usa `https://10.0.2.2:8443` por defecto. Instala `certs/ipv-local-root-ca.cer` en el emulador como certificado de CA de usuario.
-4. **Teléfono físico:** instala en el teléfono `ipv-local-root-ca.cer` y cambia la URL desde **⚙ Conexión con la base SQLite** a `https://IP_DE_LA_COMPUTADORA:8443`. Si quieres usar `https://sitioweb:8443`, configura también la resolución DNS de ese alias en la red.
+### Requisitos
+- Windows 10/11
+- Python 3.8+
+- PowerShell 5.1+
+- Android Studio (para app móvil)
 
-Algunas versiones de Android piden el PIN del dispositivo para instalar una CA. La app permite confiar en certificados de usuario instalados, pero mantiene deshabilitado el tráfico HTTP sin cifrar.
+### Inicio Rápido
 
-## Ejecución de desarrollo sin HTTPS
+```powershell
+# 1. Clonar el repositorio
+git clone <repo-url>
+cd IPV_Fichas-Costos
 
-Para desarrollo local únicamente, se puede iniciar el servidor directamente:
+# 2. Iniciar servidor HTTPS
+.\iniciar-https.ps1
 
-```bash
-python server.py
+# 3. Abrir en navegador
+# https://sqlserver:8443
 ```
 
-Esto usa HTTP en `http://localhost:8000`; no es el modo de acceso recomendado para otros dispositivos. Para probar en la LAN, utiliza `iniciar-https.ps1`.
+### Seguridad (recomendado antes del primer inicio)
 
-El servidor crea automáticamente `data/ipv.db` y carga datos de muestra la primera vez. El archivo se conserva entre reinicios y está excluido de Git. Para seleccionar otra ubicación define `IPV_DB_PATH`. El servidor escucha en `0.0.0.0`; por defecto usa el puerto 8000 en modo de desarrollo y el script HTTPS lo configura en 8443.
-
-Comprueba el flujo principal con:
-
-```bash
-python -m unittest discover -s tests -v
+```powershell
+.\iniciar-https.ps1 -InitSecurity   # crea .env con secreto JWT y administrador
+.\iniciar-https.ps1                 # inicia el servidor HTTPS (lee .env)
 ```
 
-La API incluye endpoints de salud, resumen, productos, valores, fichas y controles; creación de productos, valores y fichas; aprobación de borradores; generación de controles como instantáneas; validación de totales y exportación CSV desde la web.
+Sin `IPV_JWT_SECRET` el servidor funciona en **modo abierto** (solo para redes de confianza y pruebas).
 
-## Recorrido de prueba sugerido
+### Cifrar la base de datos (SQLCipher, AES-256)
 
-1. En **Productos y servicios**, crea un producto.
-2. En **Valores del IPV**, registra sus insumos y precios de prueba.
-3. En **Fichas de costo**, crea una ficha con cantidades y componentes; queda como borrador.
-4. Aprueba la ficha.
-5. Pulsa **Control** para crear una instantánea del período.
-6. En **Controles de IPV**, ejecuta **Validar** y revisa el resultado.
+```powershell
+# Con el servidor detenido:
+.\iniciar-https.ps1 -EncryptDb   # instala sqlcipher3-wheels si falta, genera IPV_DB_KEY en .env y cifra data\ipv.db
+.\iniciar-https.ps1 -Status      # debe mostrar «🔒 Base de datos cifrada»
+```
 
-La ficha de demostración incluye ejemplos para Bebidas, Comidas y Servicios. No uses los importes de ejemplo para tomar decisiones comerciales o administrativas. El servidor local no incorpora todavía autenticación, roles ni sincronización offline.
+- Se conserva una copia en claro `data\ipv.db.plain-<fecha>.bak`: **muévala fuera del equipo o bórrela**.
+- **Guarde una copia de `IPV_DB_KEY`** en lugar seguro: sin ella ni la base de datos ni los backups se pueden recuperar.
+- Otras operaciones: `python dbcrypt.py status | rekey | decrypt <destino>`.
+
+### Copias de seguridad fuera del equipo (regla 3-2-1)
+
+Configure en `.env` uno o ambos destinos; cada copia automática o manual (`-Backup`) se replica y se verifica:
+
+```ini
+IPV_BACKUP_MIRROR_DIRS=E:\CopiasIPV;\\servidor\copias\ipv   # USB y/o carpeta de red
+IPV_BACKUP_S3_ENDPOINT=https://s3.us-east-1.amazonaws.com     # o MinIO / Wasabi
+IPV_BACKUP_S3_BUCKET=mi-bucket
+IPV_BACKUP_S3_ACCESS_KEY=...                                  # credencial con solo s3:PutObject
+IPV_BACKUP_S3_SECRET_KEY=...
+```
+
+- Si la BD está cifrada, las copias remotas **también lo están** (nunca se sube nada en claro).
+- Un destino caído no interrumpe el backup local: queda registrado en la auditoría (`BACKUP_OFFSITE_FAILED`).
+
+### Licencias por período (1 semana … 2 años)
+
+El servidor y la app Android se activan con una **licencia firmada (ECDSA P-256)** atada al dispositivo:
+
+1. La app muestra **Activar licencia** con el *ID Dispositivo* cifrado (`IPVW-…` en PC, `IPVA-…` en móvil) y un botón **Solicitar por WhatsApp**.
+2. El proveedor genera la licencia con el **Keygen** (`python keygen\keygen.py`, interfaz gráfica o CLI) indicando *Usuario*, *ID Dispositivo* y *Plan* (`1S`, `1M`, `3M`, `6M`, `1A`, `2A`).
+3. El cliente pega la licencia y pulsa **Activar**. Sin licencia vigente la API responde `402` y la app queda bloqueada; 7 días antes del vencimiento se avisa.
+
+Configuración inicial del proveedor: `python keygen\keygen.py init --whatsapp 53XXXXXXXX` (escribe la clave pública en `licencia.py` y `License.kt`). Precios, estudio de mercado y guía completa: **[docs/precios-y-licencias.md](docs/precios-y-licencias.md)**.
+
+### Comandos de administración
+
+```powershell
+.\iniciar-https.ps1 -Status        # estado del servidor y la base de datos
+.\iniciar-https.ps1 -Backup        # copia de seguridad consistente
+.\iniciar-https.ps1 -HealthCheck   # salud en JSON
+.\iniciar-https.ps1 -AuditLog      # últimos 40 eventos de auditoría
+.\iniciar-https.ps1 -ShowPin       # huella de la CA para fijarla en Android
+.\iniciar-https.ps1 -EncryptDb     # cifra la base de datos (SQLCipher AES-256)
+```
+
+### Docker
+
+```bash
+cp .env.example .env    # complete IPV_JWT_SECRET, IPV_ADMIN_EMAIL, IPV_ADMIN_PASSWORD
+docker compose up -d    # contenedor de solo lectura, sin privilegios, usuario no root
+```
+
+---
+
+## 📊 Endpoints de la API
+
+### Core
+- `GET /api/health` - Estado del servidor
+- `GET /api/dashboard` - Resumen general
+- `GET /api/search?q=...` - Búsqueda global
+
+### Productos
+- `GET /api/products` - Listar productos
+- `POST /api/products` - Crear producto
+- `DELETE /api/products/:id` - Desactivar producto
+- `POST /api/products/:id/restore` - Reactivar producto (deshacer; 404 si ya está activo)
+
+### Materiales (Valores IPV)
+- `GET /api/materials` - Listar materiales
+- `POST /api/materials` - Crear material
+- `POST /api/materials/bulk-update` - Actualización masiva
+- `DELETE /api/materials/:id` - Desactivar valor
+- `POST /api/materials/:id/restore` - Reactivar valor (deshacer; 404 si ya está activo)
+
+### Fichas de Costo
+- `GET /api/fichas` - Listar fichas
+- `GET /api/fichas/:id` - Detalle de ficha
+- `POST /api/fichas` - Crear ficha
+- `PUT /api/fichas/:id` - Actualizar ficha
+- `POST /api/fichas/:id/approve` - Aprobar ficha
+
+### Controles IPV
+- `GET /api/controls` - Listar controles
+- `GET /api/controls/:id` - Detalle de control
+- `POST /api/controls` - Crear control
+- `POST /api/controls/:id/validate` - Validar control
+
+### Avanzados
+- `GET /api/statistics` - Estadísticas completas
+- `GET /api/backup` - Crear backup (admin)
+- `GET /api/audit?limit=&offset=&action=&q=` - Auditoría (admin)
+- `GET /api/report/:type` - Reportes (fichas_summary, materials_inventory, controls_pending)
+- `DELETE /api/materials/:id` - Borrado lógico de un valor de referencia
+
+### Autenticación y sistema
+- `POST /api/auth/login` · `POST /api/auth/refresh` · `POST /api/auth/logout` · `GET /api/auth/me`
+- `GET/POST /api/users` - Gestión de usuarios (admin) · `PUT /api/users/:id` (`force_password_change`, `revoke_sessions`…)
+- `POST /api/auth/password` - Cambiar contraseña (devuelve tokens nuevos para este dispositivo)
+- `GET /api/auth/sessions` · `DELETE /api/auth/sessions/:sid` · `POST /api/auth/sessions/revoke-others` - Dispositivos conectados
+- `GET /api/events` - Cambios en tiempo real (SSE)
+- `GET /api/version` · `GET /api/openapi.yaml`
+
+---
+
+## 🎹 Atajos de Teclado
+
+| Tecla | Acción |
+|-------|--------|
+| `1-5` | Navegar entre vistas |
+| `Ctrl+K` | Búsqueda global |
+| `F5` | Actualizar datos |
+| `Esc` | Cerrar modal |
+| `?` | Ver ayuda de atajos |
+| `s` | Estadísticas avanzadas |
+| `Ctrl+Shift+P` | Paleta de comandos (tema, importar CSV, PDF, auditoría, backup, tour, accesibilidad) |
+| `Ctrl+Z` | Deshacer la última desactivación |
+| `Ctrl+Shift+Z` / `Ctrl+Y` | Rehacer |
+| `Alt+Shift+A` | Opciones de accesibilidad |
+| `↑` / `↓` | Moverse entre filas de una tabla con foco |
+
+---
+
+## 🎨 Paleta de Colores
+
+```css
+--primary: #183b34 (Verde bosque)
+--accent: #d7e78d (Lima)
+--blue: #3b82f6 (Azul)
+--purple: #8b5cf6 (Púrpura)
+--orange: #f59e0b (Naranja)
+--red: #ef4444 (Rojo)
+--green: #10b981 (Verde)
+```
+
+---
+
+## 🔧 Configuración Avanzada
+
+### Variables de entorno
+
+Consulte `.env.example`. Las principales: `IPV_JWT_SECRET`, `IPV_ADMIN_EMAIL`, `IPV_ADMIN_PASSWORD`, `IPV_API_TOKEN` (integraciones), `IPV_ALLOWED_ORIGINS`, `IPV_ACCESS_TTL`, `IPV_REFRESH_TTL`, `IPV_BACKUP_INTERVAL_HOURS`, `IPV_BACKUP_KEEP`, `IPV_NOTIFY_EMAIL` y `SMTP_*`.
+
+---
+
+## 📱 App Android
+
+### Compilación
+
+```bash
+cd android
+./gradlew assembleDebug
+```
+
+### Instalación en Emulador
+1. Instalar CA root: `certs/ipv-local-root-ca.cer`
+2. Configurar URL: `https://10.0.2.2:8443`
+
+### Instalación en Dispositivo Físico
+1. Instalar CA root en el dispositivo
+2. Configurar URL: `https://IP_DEL_SERVIDOR:8443`
+
+---
+
+## 🧪 Pruebas
+
+```bash
+python -m unittest discover -s tests -v   # flujo completo + JWT, roles, bloqueo, rate limit, backup, sesiones, cifrado
+
+# Toda la batería sobre la base de datos cifrada:
+pip install sqlcipher3-binary            # (Windows: sqlcipher3-wheels)
+IPV_DB_KEY="una-clave-de-pruebas-larga" python -m unittest discover -s tests
+```
+
+La integración continua (`.github/workflows/ci-cd.yml`) ejecuta Ruff, Bandit y las pruebas en Python 3.10–3.12 (también con la BD cifrada), un escaneo **OWASP ZAP** (baseline de la web + API autenticada a partir de OpenAPI), construye la imagen Docker y compila la app Android.
+
+---
+
+## 📈 Próximos pasos
+
+Ver la sección de mejoras sugeridas en el historial del proyecto: paquetes **Seguridad Máxima**, **UX/UI Premium**, **IA/ML** y **Multi-Tenancy**.
+
+---
+
+## 📄 Licencia
+
+Proyecto de uso profesional. Todos los derechos reservados.
+
+**© 2026 Ing. Yosvany Hernández Quintero**
+
+---
+
+**Hecho con ❤️ en Cuba**
