@@ -6,6 +6,9 @@ __pycache__/
 data/*.db
 data/*.db-*
 
+# Database backups
+data/backups/
+
 # Local TLS private keys/certificates created by iniciar-https.ps1
 certs/
 
@@ -20,3 +23,12 @@ android/.idea/
 .DS_Store
 .idea/
 .vscode/
+.env
+data/exports/
+zap-openapi.yaml
+
+# Keygen: clave de firma y registro de ventas (NUNCA al repositorio)
+keygen/clave_privada.json
+keygen/registro_licencias.csv
+keygen/tasas.json
+data/licencia.*

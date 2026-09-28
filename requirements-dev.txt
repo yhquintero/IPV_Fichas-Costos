@@ -1,0 +1,5 @@
+# Herramientas de desarrollo, calidad y seguridad
+ruff>=0.6
+bandit>=1.7
+pip-audit>=2.7
+coverage>=7.4

@@ -1,0 +1,1054 @@
+openapi: 3.0.3
+info:
+  title: IPV Fichas y Costos API
+  description: |
+    Sistema profesional de gestión de Fichas de Costo y Controles de IPV.
+    
+    ## Autenticación
+    La API soporta autenticación por token JWT. Incluir el token en el header:
+    ```
+    Authorization: Bearer <token>
+    ```
+    
+    ## Rate Limiting
+    Todos los endpoints tienen rate limiting. Los headers de respuesta incluyen:
+    - `X-RateLimit-Limit`: Límite máximo de requests
+    - `X-RateLimit-Remaining`: Requests restantes
+    - `X-RateLimit-Reset`: Timestamp de reseteo
+    
+    ## Autor
+    Ing. Yosvany Hernández Quintero
+  version: 1.1.0
+  contact:
+    name: IPV Support
+  license:
+    name: Propietaria
+
+servers:
+  - url: https://sqlserver:8443
+    description: Servidor local HTTPS (las rutas también aceptan el prefijo /api/v1)
+  - url: http://localhost:8000
+    description: Servidor de desarrollo
+
+tags:
+  - name: Health
+    description: Endpoints de salud del sistema
+  - name: License
+    description: Licencia por período del servidor (sin licencia vigente la API responde 402)
+  - name: Authentication
+    description: Autenticación y gestión de tokens
+  - name: Dashboard
+    description: Resumen y estadísticas
+  - name: Products
+    description: Gestión de productos y servicios
+  - name: Materials
+    description: Gestión de valores de referencia (IPV)
+  - name: Fichas
+    description: Gestión de fichas de costo
+  - name: Controls
+    description: Gestión de controles de IPV
+  - name: Search
+    description: Búsqueda global
+  - name: Reports
+    description: Generación de reportes
+  - name: System
+    description: Operaciones del sistema
+
+paths:
+  /api/health:
+    get:
+      tags: [Health]
+      summary: Verificar salud del servidor
+      operationId: getHealth
+      security: []
+      responses:
+        '200':
+          description: Servidor operativo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /api/license:
+    get:
+      tags: [License]
+      summary: Estado de la licencia y código de solicitud del equipo
+      operationId: getLicense
+      security: []
+      responses:
+        '200':
+          description: Estado de la licencia
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enforced: {type: boolean, description: false si el servidor no tiene clave pública (modo desarrollo)}
+                  valid: {type: boolean}
+                  reason: {type: string, description: Motivo si no es válida}
+                  request_code: {type: string, example: IPVW-ABCDE-FGHIJ-KLMNO-PQRST-XY, description: ID del equipo (SHA-256 con sal) para solicitar la licencia}
+                  whatsapp: {type: string}
+                  user: {type: string}
+                  plan: {type: string, enum: [1S, 1M, 3M, 6M, 1A, 2A]}
+                  plan_name: {type: string}
+                  serial: {type: string}
+                  issued_at: {type: integer}
+                  expires_at: {type: integer}
+                  days_left: {type: integer}
+                  plans: {type: object, additionalProperties: {type: object}}
+    post:
+      tags: [License]
+      summary: Activar o renovar la licencia
+      description: Sin licencia vigente no requiere sesión; para renovar una licencia vigente se necesita rol admin.
+      operationId: activateLicense
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [license]
+              properties:
+                license: {type: string, description: Licencia firmada IPV1.… emitida por el Keygen}
+      responses:
+        '200': {description: Licencia activada}
+        '400': {description: Licencia no válida (firma, dispositivo, app o fecha)}
+        '401': {description: Renovación sin sesión}
+        '403': {description: Renovación sin rol admin}
+        '409': {description: Licencias desactivadas en este servidor}
+
+  /api/auth/login:
+    post:
+      tags: [Authentication]
+      summary: Iniciar sesión
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login exitoso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: Credenciales inválidas
+        '423':
+          description: Cuenta bloqueada temporalmente (5 intentos fallidos)
+        '429':
+          description: Demasiados intentos (5 por minuto)
+
+  /api/auth/refresh:
+    post:
+      tags: [Authentication]
+      summary: Refrescar token de acceso
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: Token refrescado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+
+  /api/auth/logout:
+    post:
+      tags: [Authentication]
+      summary: Cerrar sesión (revoca el refresh token)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200': { description: Sesión cerrada }
+
+  /api/auth/me:
+    get:
+      tags: [Authentication]
+      summary: Usuario autenticado actual
+      responses:
+        '200': { description: Usuario actual }
+
+  /api/users:
+    get:
+      tags: [Authentication]
+      summary: Listar usuarios (solo admin)
+      responses:
+        '200': { description: Lista de usuarios }
+    post:
+      tags: [Authentication]
+      summary: Crear usuario (solo admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, name, password, role]
+              properties:
+                email: { type: string, format: email }
+                name: { type: string }
+                password: { type: string, minLength: 10 }
+                role: { type: string, enum: [admin, editor, viewer] }
+      responses:
+        '201': { description: Usuario creado }
+        '409': { description: Correo duplicado }
+
+  /api/events:
+    get:
+      tags: [System]
+      summary: Flujo de cambios en tiempo real (Server-Sent Events)
+      description: Acepta `?access_token=` porque EventSource no permite cabeceras.
+      responses:
+        '200':
+          description: text/event-stream con eventos `ready` y `change`
+
+  /api/version:
+    get:
+      tags: [Health]
+      summary: Versión de la API y capacidades
+      security: []
+      responses:
+        '200': { description: Versión }
+
+  /api/openapi.yaml:
+    get:
+      tags: [Health]
+      summary: Esta especificación
+      security: []
+      responses:
+        '200': { description: Documento OpenAPI }
+
+  /api/materials/{id}:
+    delete:
+      tags: [Materials]
+      summary: Desactivar valor de referencia (borrado lógico)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Valor desactivado }
+
+  /api/auth/2fa/setup:
+    post:
+      tags: [Authentication]
+      summary: Iniciar configuración de verificación en dos pasos (devuelve secreto y URI otpauth)
+      responses: { '200': { description: Secreto TOTP } }
+  /api/auth/2fa/enable:
+    post:
+      tags: [Authentication]
+      summary: Confirmar código TOTP y activar (devuelve 8 códigos de recuperación)
+      responses: { '200': { description: Activada }, '400': { description: Código incorrecto } }
+  /api/auth/2fa/disable:
+    post:
+      tags: [Authentication]
+      summary: Desactivar 2FA (requiere contraseña y código)
+      responses: { '200': { description: Desactivada } }
+  /api/auth/password:
+    post:
+      tags: [Authentication]
+      summary: Cambiar contraseña (revoca las demás sesiones; no permite reutilizar las últimas N)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current, new]
+              properties:
+                current: { type: string, format: password }
+                new: { type: string, format: password, minLength: 10 }
+      responses:
+        '200':
+          description: Cambiada. Devuelve tokens nuevos para este dispositivo.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '400': { description: Contraseña actual incorrecta, débil o reutilizada }
+  /api/users/{id}:
+    put:
+      tags: [Authentication]
+      summary: Actualizar usuario (rol, activo, desbloquear, restablecer 2FA, revocar sesiones, forzar cambio de contraseña) — admin
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses: { '200': { description: Usuario actualizado } }
+  /api/products/{id}/restore:
+    post:
+      tags: [Products]
+      summary: Reactivar un producto desactivado (deshacer) — editor/admin
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Producto reactivado }
+        '404': { description: No existe o ya está activo }
+  /api/materials/{id}/restore:
+    post:
+      tags: [Materials]
+      summary: Reactivar un valor del IPV desactivado (deshacer) — editor/admin
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Valor reactivado }
+        '404': { description: No existe o ya está activo }
+  /api/auth/sessions:
+    get:
+      tags: [Authentication]
+      summary: Dispositivos con sesión abierta del usuario actual
+      responses:
+        '200':
+          description: Lista de sesiones
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string }
+                    device: { type: string, example: "Chrome · Windows" }
+                    ip: { type: string }
+                    created_at: { type: string, format: date-time }
+                    last_seen: { type: string, format: date-time }
+                    current: { type: boolean }
+  /api/auth/sessions/{sid}:
+    delete:
+      tags: [Authentication]
+      summary: Cerrar la sesión de un dispositivo propio (sus tokens dejan de valer al instante)
+      parameters:
+        - { name: sid, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Sesión cerrada }
+        '404': { description: No existe o pertenece a otro usuario }
+  /api/auth/sessions/revoke-others:
+    post:
+      tags: [Authentication]
+      summary: Cerrar todas las sesiones excepto la actual
+      responses: { '200': { description: "Número de sesiones cerradas (closed)" } }
+  /api/audit/verify:
+    get:
+      tags: [System]
+      summary: Verificar integridad de la cadena de auditoría (HMAC-SHA256) — admin
+      responses: { '200': { description: Resultado de la verificación } }
+  /api/security/status:
+    get:
+      tags: [System]
+      summary: Estado de los controles de seguridad activos
+      responses: { '200': { description: Estado } }
+
+  /api/dashboard:
+    get:
+      tags: [Dashboard]
+      summary: Obtener resumen del dashboard
+      operationId: getDashboard
+      responses:
+        '200':
+          description: Datos del dashboard
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardResponse'
+
+  /api/products:
+    get:
+      tags: [Products]
+      summary: Listar productos
+      operationId: listProducts
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+        - name: active
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Lista de productos
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Product'
+    post:
+      tags: [Products]
+      summary: Crear producto
+      operationId: createProduct
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductCreate'
+      responses:
+        '201':
+          description: Producto creado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+
+  /api/products/{id}:
+    delete:
+      tags: [Products]
+      summary: Desactivar producto (soft delete)
+      operationId: deleteProduct
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Producto desactivado
+
+  /api/materials:
+    get:
+      tags: [Materials]
+      summary: Listar valores de referencia
+      operationId: listMaterials
+      responses:
+        '200':
+          description: Lista de materiales
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Material'
+    post:
+      tags: [Materials]
+      summary: Crear valor de referencia
+      operationId: createMaterial
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MaterialCreate'
+      responses:
+        '201':
+          description: Material creado
+
+  /api/materials/bulk-update:
+    post:
+      tags: [Materials]
+      summary: Actualización masiva de precios
+      operationId: bulkUpdateMaterials
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkUpdateRequest'
+      responses:
+        '200':
+          description: Resultados de la actualización
+
+  /api/fichas:
+    get:
+      tags: [Fichas]
+      summary: Listar fichas de costo
+      operationId: listFichas
+      responses:
+        '200':
+          description: Lista de fichas
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Ficha'
+    post:
+      tags: [Fichas]
+      summary: Crear ficha de costo
+      operationId: createFicha
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FichaCreate'
+      responses:
+        '201':
+          description: Ficha creada
+
+  /api/fichas/{id}:
+    get:
+      tags: [Fichas]
+      summary: Obtener detalle de ficha
+      operationId: getFicha
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Detalle de ficha
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FichaDetail'
+    put:
+      tags: [Fichas]
+      summary: Actualizar ficha (solo borradores)
+      operationId: updateFicha
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FichaUpdate'
+      responses:
+        '200':
+          description: Ficha actualizada
+
+  /api/fichas/{id}/approve:
+    post:
+      tags: [Fichas]
+      summary: Aprobar ficha de costo
+      operationId: approveFicha
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Ficha aprobada
+
+  /api/controls:
+    get:
+      tags: [Controls]
+      summary: Listar controles de IPV
+      operationId: listControls
+      responses:
+        '200':
+          description: Lista de controles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Control'
+    post:
+      tags: [Controls]
+      summary: Crear control de IPV
+      operationId: createControl
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControlCreate'
+      responses:
+        '201':
+          description: Control creado
+
+  /api/controls/{id}/validate:
+    post:
+      tags: [Controls]
+      summary: Validar control de IPV
+      operationId: validateControl
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Control validado
+
+  /api/search:
+    get:
+      tags: [Search]
+      summary: Búsqueda global
+      operationId: globalSearch
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 2
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 50
+      responses:
+        '200':
+          description: Resultados de búsqueda
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SearchResult'
+
+  /api/statistics:
+    get:
+      tags: [Reports]
+      summary: Obtener estadísticas avanzadas
+      operationId: getStatistics
+      responses:
+        '200':
+          description: Estadísticas del sistema
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Statistics'
+
+  /api/report/{type}:
+    get:
+      tags: [Reports]
+      summary: Generar reporte
+      operationId: generateReport
+      parameters:
+        - name: type
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [fichas_summary, materials_inventory, controls_pending]
+      responses:
+        '200':
+          description: Reporte generado
+
+  /api/backup:
+    get:
+      tags: [System]
+      summary: Crear backup de la base de datos
+      operationId: createBackup
+      responses:
+        '200':
+          description: Backup creado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackupResponse'
+
+  /api/audit:
+    get:
+      tags: [System]
+      summary: Registro de auditoría persistente (solo admin)
+      operationId: getAuditLog
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 500 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+        - { name: action, in: query, schema: { type: string } }
+        - { name: q, in: query, description: Texto en detalles, IP o usuario, schema: { type: string } }
+      responses:
+        '200':
+          description: Log de auditoría
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        database:
+          type: string
+        file:
+          type: string
+        time:
+          type: string
+          format: date-time
+        version:
+          type: string
+        tls:
+          type: boolean
+        auth_required:
+          type: boolean
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+
+    LoginResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        token_type:
+          type: string
+          example: bearer
+        expires_in:
+          type: integer
+        user:
+          $ref: '#/components/schemas/User'
+        session_id:
+          type: string
+          description: Identificador de la sesión de este dispositivo (solo en login)
+        new_ip:
+          type: boolean
+          description: Acceso desde una IP nunca usada por el usuario (se audita y se avisa por correo)
+        password_expired:
+          type: boolean
+          description: Si es true, el resto de la API responde 403 {password_expired:true} hasta cambiar la contraseña
+        password_expires_in_days:
+          type: integer
+          nullable: true
+          description: Días hasta que caduca la contraseña (null = sin caducidad)
+        failed_attempts_since_last_login:
+          type: integer
+          description: Intentos fallidos contra esta cuenta desde el último acceso correcto (se muestra al usuario)
+        last_failed_ip:
+          type: string
+          nullable: true
+          description: IP del último intento fallido, si lo hubo
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+
+    DashboardResponse:
+      type: object
+      properties:
+        products:
+          type: integer
+        materials:
+          type: integer
+        fichas:
+          type: integer
+        approved_fichas:
+          type: integer
+        pending_controls:
+          type: integer
+        validated_controls:
+          type: integer
+        recent_fichas:
+          type: array
+          items:
+            type: object
+        categories:
+          type: array
+          items:
+            type: object
+        cost_by_category:
+          type: array
+          items:
+            type: object
+        activity_timeline:
+          type: array
+          items:
+            type: object
+
+    Product:
+      type: object
+      properties:
+        id:
+          type: integer
+        code:
+          type: string
+        name:
+          type: string
+        category:
+          type: string
+        unit:
+          type: string
+        description:
+          type: string
+        active:
+          type: integer
+        ficha_count:
+          type: integer
+
+    ProductCreate:
+      type: object
+      required: [code, name, category]
+      properties:
+        code:
+          type: string
+          maxLength: 30
+        name:
+          type: string
+          maxLength: 200
+        category:
+          type: string
+          maxLength: 100
+        unit:
+          type: string
+          default: unidad
+        description:
+          type: string
+          maxLength: 1000
+
+    Material:
+      type: object
+      properties:
+        id:
+          type: integer
+        code:
+          type: string
+        name:
+          type: string
+        unit:
+          type: string
+        currency:
+          type: string
+        unit_price:
+          type: string
+        supplier:
+          type: string
+        source:
+          type: string
+        effective_from:
+          type: string
+        status:
+          type: string
+
+    MaterialCreate:
+      type: object
+      required: [code, name, unit, unit_price]
+      properties:
+        code:
+          type: string
+        name:
+          type: string
+        unit:
+          type: string
+        unit_price:
+          type: number
+        currency:
+          type: string
+          enum: [CUP, MLC, USD, EUR]
+          default: CUP
+        supplier:
+          type: string
+        source:
+          type: string
+
+    BulkUpdateRequest:
+      type: object
+      required: [updates]
+      properties:
+        updates:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              price:
+                type: number
+
+    Ficha:
+      type: object
+      properties:
+        id:
+          type: integer
+        product_id:
+          type: integer
+        product_name:
+          type: string
+        product_code:
+          type: string
+        category:
+          type: string
+        version:
+          type: integer
+        status:
+          type: string
+        total_cost:
+          type: string
+        valid_from:
+          type: string
+        item_count:
+          type: integer
+        control_count:
+          type: integer
+
+    FichaCreate:
+      type: object
+      required: [product_id, items]
+      properties:
+        product_id:
+          type: integer
+        valid_from:
+          type: string
+          format: date
+        observations:
+          type: string
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            properties:
+              material_id:
+                type: integer
+              quantity:
+                type: number
+
+    FichaUpdate:
+      type: object
+      properties:
+        valid_from:
+          type: string
+        observations:
+          type: string
+        items:
+          type: array
+          items:
+            type: object
+
+    FichaDetail:
+      allOf:
+        - $ref: '#/components/schemas/Ficha'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                type: object
+            observations:
+              type: string
+
+    Control:
+      type: object
+      properties:
+        id:
+          type: integer
+        code:
+          type: string
+        product_name:
+          type: string
+        product_code:
+          type: string
+        period:
+          type: string
+        status:
+          type: string
+        snapshot_total:
+          type: string
+        checked_total:
+          type: string
+        ficha_version:
+          type: integer
+
+    ControlCreate:
+      type: object
+      required: [ficha_id, period]
+      properties:
+        ficha_id:
+          type: integer
+        period:
+          type: string
+          pattern: '^\d{4}-\d{2}$'
+        notes:
+          type: string
+
+    SearchResult:
+      type: object
+      properties:
+        id:
+          type: integer
+        type:
+          type: string
+          enum: [product, material, ficha, control]
+        name:
+          type: string
+        code:
+          type: string
+
+    Statistics:
+      type: object
+      properties:
+        monthly_trend:
+          type: array
+          items:
+            type: object
+        top_expensive:
+          type: array
+          items:
+            type: object
+        status_distribution:
+          type: array
+          items:
+            type: object
+        avg_cost_by_category:
+          type: array
+          items:
+            type: object
+
+    BackupResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        filename:
+          type: string
+        size:
+          type: integer
+        created_at:
+          type: string
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+
+security:
+  - BearerAuth: []

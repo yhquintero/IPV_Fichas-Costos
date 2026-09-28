@@ -1,0 +1,34 @@
+# IPV Fichas y Costos - Docker Compose
+# Autor: Ing. Yosvany Hernández Quintero
+#   Producción:  docker compose up -d
+#   Desarrollo:  docker compose --profile dev up ipv-dev
+
+services:
+  ipv-server:
+    build: { context: ., target: production }
+    container_name: ipv-server
+    restart: unless-stopped
+    ports: ["8443:8443"]
+    env_file: [.env]           # copie .env.example a .env y ajuste los secretos
+    environment:
+      IPV_HOST: 0.0.0.0
+      PORT: "8443"
+      IPV_DB_PATH: /app/data/ipv.db
+    volumes:
+      - ipv-data:/app/data
+      - ipv-certs:/app/certs
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+
+  ipv-dev:
+    build: { context: ., target: development }
+    profiles: [dev]
+    ports: ["8000:8000"]
+    environment: { IPV_HOST: 0.0.0.0, PORT: "8000", IPV_DB_PATH: /app/data/ipv.db }
+    volumes: [".:/app"]
+
+volumes:
+  ipv-data:
+  ipv-certs:

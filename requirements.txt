@@ -1,0 +1,7 @@
+# IPV Fichas y Costos - Dependencias de ejecución
+# El servidor usa exclusivamente la librería estándar de Python 3.10+.
+# No se requieren paquetes externos para producción.
+#
+# Opcional — cifrado de la base de datos en reposo (IPV_DB_KEY):
+#   Windows:        pip install sqlcipher3-wheels
+#   Linux / Docker: pip install sqlcipher3-binary
