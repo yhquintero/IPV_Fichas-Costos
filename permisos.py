@@ -100,10 +100,16 @@ def effective(conn, user_id, role: str) -> dict:
     if role == "admin" or not user_id:
         return perms  # el administrador siempre tiene acceso completo
     try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return perms
+    try:
         rows = conn.execute("SELECT module, can_view, can_edit, can_costs FROM user_permissions "
-                            "WHERE user_id=?", (int(user_id),)).fetchall()
-    except (ValueError, TypeError, sqlite3.OperationalError):
-        return perms  # base de datos sin la tabla (pruebas unitarias o BD anterior)
+                            "WHERE user_id=?", (uid,)).fetchall()
+    except sqlite3.Error:
+        # Base de datos anterior al sistema de permisos (sin la tabla): se aplica el rol.
+        # `dbcrypt` unifica las clases de excepción, así que sirve con SQLite y con SQLCipher.
+        return perms
     for row in rows:
         module = row["module"] if hasattr(row, "keys") else row[0]
         if module not in perms:

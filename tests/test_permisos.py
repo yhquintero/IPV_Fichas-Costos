@@ -14,6 +14,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import auth
+import dbcrypt
 import permisos
 import rate_limiter
 import server
@@ -308,7 +309,8 @@ class PermisosUnitTest(unittest.TestCase):
     """Reglas de rutas y normalización, sin levantar el servidor."""
 
     def setUp(self):
-        self.conn = sqlite3.connect(":memory:")
+        # dbcrypt.connect: con IPV_DB_KEY la conexión y `sqlite3.Row` son las de SQLCipher
+        self.conn = dbcrypt.connect(":memory:")
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript("""CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, role TEXT);
                                    INSERT INTO users(id,email,role) VALUES(7,'u@ipv.cu','editor');""")
