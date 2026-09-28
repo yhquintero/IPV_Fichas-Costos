@@ -58,7 +58,7 @@ API_TOKEN = os.environ.get("IPV_API_TOKEN", "").strip()
 RATE_LIMIT_MAX = int(os.environ.get("IPV_RATE_LIMIT", "120"))  # requests por ventana
 RATE_LIMIT_WINDOW = int(os.environ.get("IPV_RATE_WINDOW", "60"))  # segundos
 MAX_BODY_SIZE = int(os.environ.get("IPV_MAX_BODY", "512000"))  # 500 KB
-ALLOWED_ORIGINS = os.environ.get("IPV_ALLOWED_ORIGINS", "*").strip()
+ALLOWED_ORIGINS = os.environ.get("IPV_ALLOWED_ORIGINS", "").strip()  # vacío = sin CORS (mismo origen)
 
 CENT = Decimal("0.01")
 WRITE_LOCK = threading.RLock()
@@ -782,7 +782,7 @@ SECURITY_HEADERS = {
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "IPV-FichasCostos/1.0"
+    server_version = "IPV-FichasCostos"  # sin número de versión: no se revela información
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
@@ -795,13 +795,14 @@ class Handler(BaseHTTPRequestHandler):
         return self.client_address[0]
 
     def _cors_origin(self) -> str:
+        """Origen permitido para esta petición («» = no se envían cabeceras CORS)."""
+        if not ALLOWED_ORIGINS:
+            return ""
         origin = self.headers.get("Origin", "")
         if ALLOWED_ORIGINS == "*":
             return "*"
         allowed = [o.strip() for o in ALLOWED_ORIGINS.split(",") if o.strip()]
-        if origin in allowed:
-            return origin
-        return allowed[0] if allowed else ""
+        return origin if origin in allowed else ""
 
     def _apply_security_headers(self):
         for key, value in SECURITY_HEADERS.items():
@@ -809,9 +810,10 @@ class Handler(BaseHTTPRequestHandler):
         cors = self._cors_origin()
         if cors:
             self.send_header("Access-Control-Allow-Origin", cors)
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Token")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-        self.send_header("Access-Control-Max-Age", "3600")
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Token")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+            self.send_header("Access-Control-Max-Age", "3600")
         if TLS_CERT:
             self.send_header("Strict-Transport-Security", f"max-age={HSTS_MAX_AGE}; includeSubDomains")
 

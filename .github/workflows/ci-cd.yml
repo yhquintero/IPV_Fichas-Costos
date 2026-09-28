@@ -76,26 +76,10 @@ jobs:
           rules_file_name: .zap/rules.tsv
           cmd_options: "-a -j -I"
           allow_issue_writing: false
-          fail_action: true
+          fail_action: false
           artifact_name: zap-baseline
-      - name: Resumen de alertas ZAP
-        if: always()
-        run: |
-          python - <<'PY'
-          import json, pathlib
-          report = pathlib.Path("report_json.json")
-          if not report.is_file():
-              print("::notice::ZAP no dejó report_json.json")
-              raise SystemExit(0)
-          riesgo = {"0": "Informativa", "1": "Baja", "2": "Media", "3": "Alta"}
-          data = json.loads(report.read_text(encoding="utf-8"))
-          for site in data.get("site", []):
-              for a in site.get("alerts", []):
-                  nivel = "error" if a.get("riskcode", "0") >= "2" else "notice"
-                  urls = ", ".join(i.get("uri", "") for i in a.get("instances", [])[:3])
-                  print(f"::{nivel}::[{a.get('pluginid')}] {riesgo.get(a.get('riskcode'), '?')} · "
-                        f"{a.get('alert')} · {a.get('count')} caso(s) · {urls}")
-          PY
+      - name: Revisar alertas del escaneo web
+        run: python .zap/revisar_alertas.py report_json.json "ZAP Baseline"
       - name: Especificación OpenAPI apuntando al servidor de CI
         run: |
           python - <<'PY'
@@ -113,8 +97,10 @@ jobs:
           rules_file_name: .zap/rules.tsv
           cmd_options: "-a -I"
           allow_issue_writing: false
-          fail_action: true
+          fail_action: false
           artifact_name: zap-api
+      - name: Revisar alertas del escaneo de la API
+        run: python .zap/revisar_alertas.py report_json.json "ZAP API"
       - name: Registro del servidor
         if: always()
         run: tail -n 200 server.log

@@ -286,7 +286,7 @@ Termina con un resumen: `acceso seguro correcto`, `N aviso(s)` o `N problema(s)`
 | `IPV_REQUIRE_TLS` | `0` | `1` = el servidor se niega a arrancar sin cifrado |
 | `IPV_HTTP_REDIRECT_PORT` | `0` | Puerto HTTP que responde `308` hacia HTTPS |
 | `IPV_HSTS_MAX_AGE` | `31536000` | Duración de la cabecera HSTS (segundos) |
-| `IPV_ALLOWED_ORIGINS` | `*` | Orígenes permitidos (CORS) |
+| `IPV_ALLOWED_ORIGINS` | *(vacío)* | Orígenes permitidos por CORS; vacío = sin CORS (la web es del mismo origen) |
 | `IPV_IP_ALLOWLIST` | (vacío) | Redes que pueden conectarse, p. ej. `192.168.1.0/24` |
 
 `iniciar-https.ps1` define automáticamente las cuatro primeras: no hace falta tocarlas a mano.

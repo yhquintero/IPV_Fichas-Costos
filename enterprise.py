@@ -124,6 +124,7 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
     Handler.sys_version = ""  # no revelar la versión de Python en la cabecera Server
     srv.SECURITY_HEADERS["Content-Security-Policy"] = CSP
     srv.SECURITY_HEADERS["Cross-Origin-Opener-Policy"] = "same-origin"
+    srv.SECURITY_HEADERS["Cross-Origin-Embedder-Policy"] = "require-corp"
     srv.SECURITY_HEADERS["Cross-Origin-Resource-Policy"] = "same-origin"
 
     # ---------------- Esquema ----------------

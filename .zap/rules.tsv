@@ -24,3 +24,8 @@
 10027	IGNORE	Comentarios del código fuente de la SPA
 10109	IGNORE	Informativo: aplicación web moderna
 10049	IGNORE	Informativo: contenido almacenable en caché
+90005	IGNORE	Cabeceras Sec-Fetch-*: las envía el navegador, no el servidor (el escáner no las manda)
+90004	IGNORE	COEP: se envía require-corp; ZAP lo marca en respuestas sin contenido incrustable
+120000	IGNORE	localStorage: guarda preferencias de la interfaz; la sesión va en memoria/almacén cifrado
+10094	IGNORE	Base64 en el código de la SPA (iconos y datos estáticos), no son secretos
+10098	FAIL	CORS abierto: sin IPV_ALLOWED_ORIGINS no se envía ninguna cabecera CORS
