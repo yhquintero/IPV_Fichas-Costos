@@ -34,39 +34,43 @@
     setTimeout(close, ms);
   }
 
-  /* ───────────── Deshacer / Rehacer ───────────── */
+  /* ───────────── Deshacer / Rehacer (borrado lógico → papelera) ───────────── */
   const undoStack = [], redoStack = [];
   const KIND = {
-    'deactivate-product': { url: id => `/api/products/${id}`, label: 'Producto', list: () => state.products, name: x => x.name },
-    'deactivate-material': { url: id => `/api/materials/${id}`, label: 'Valor del IPV', list: () => state.materials, name: x => x.name },
+    'trash-product': { kind: 'products', label: 'Producto', list: () => state.products, name: x => x.name },
+    'trash-material': { kind: 'materials', label: 'Valor del IPV', list: () => state.materials, name: x => x.name },
+    'trash-ficha': { kind: 'fichas', label: 'Ficha de costo', list: () => state.fichas, name: x => `${x.product_name} v${x.version}` },
+    'deactivate-product': { kind: 'products', label: 'Producto', list: () => state.products, name: x => x.name },
+    'deactivate-material': { kind: 'materials', label: 'Valor del IPV', list: () => state.materials, name: x => x.name },
   };
   async function doDeactivate(kind, id) {
-    await api(KIND[kind].url(id), { method: 'DELETE' });
+    await api(`/api/${KIND[kind].kind}/${id}`, { method: 'DELETE' });
     await refreshData(true);
   }
   async function doRestore(kind, id) {
-    await api(`${KIND[kind].url(id)}/restore`, { method: 'POST', body: '{}' });
+    await api(`/api/trash/${KIND[kind].kind}/${id}/restore`, { method: 'POST', body: '{}' });
     await refreshData(true);
   }
   async function undo() {
     const op = undoStack.pop();
     if (!op) { toast('No hay nada que deshacer.'); return; }
-    try { await doRestore(op.kind, op.id); redoStack.push(op); toast(`↶ ${op.name} reactivado.`, 'success'); }
+    try { await doRestore(op.kind, op.id); redoStack.push(op); toast(`↶ ${op.name} restaurado.`, 'success'); }
     catch (e) { toast(e.message, 'error'); }
   }
   async function redo() {
     const op = redoStack.pop();
     if (!op) { toast('No hay nada que rehacer.'); return; }
-    try { await doDeactivate(op.kind, op.id); undoStack.push(op); toast(`↷ ${op.name} desactivado de nuevo.`); }
+    try { await doDeactivate(op.kind, op.id); undoStack.push(op); toast(`↷ ${op.name} vuelve a la papelera.`); }
     catch (e) { toast(e.message, 'error'); }
   }
-  // Se intercepta en fase de captura, antes que el confirm() clásico
+  // Se intercepta en fase de captura, antes que la confirmación de app.js
   document.addEventListener('click', async e => {
-    const btn = e.target.closest('[data-action="deactivate-product"],[data-action="deactivate-material"]');
+    const btn = e.target.closest('[data-action="trash-product"],[data-action="trash-material"],[data-action="trash-ficha"],[data-action="deactivate-product"],[data-action="deactivate-material"]');
     if (!btn) return;
+    const kind = btn.dataset.action, id = btn.dataset.id;
+    if (!KIND[kind]) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    const kind = btn.dataset.action, id = btn.dataset.id;
     const item = KIND[kind].list().find(x => String(x.id) === String(id));
     const name = item ? KIND[kind].name(item) : KIND[kind].label;
     btn.disabled = true;
@@ -75,7 +79,7 @@
       const op = { kind, id, name };
       undoStack.push(op); redoStack.length = 0;
       if (undoStack.length > 30) undoStack.shift();
-      actionToast(`«${name}» desactivado.`, '↶ Deshacer', undo);
+      actionToast(`«${name}» movido a la papelera.`, '↶ Deshacer', undo);
     } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
   }, true);
   document.addEventListener('keydown', e => {
@@ -238,7 +242,7 @@
   /* ───────────── Tutorial de bienvenida ───────────── */
   const TOUR_KEY = 'ipv.tour.done';
   const STEPS = [
-    { sel: '#sidebar nav, #sidebar', title: 'Navegación', text: 'Cambie entre Resumen, Productos, Valores del IPV, Fichas y Controles. También con las teclas 1 a 5.' },
+    { sel: '#sidebar nav, #sidebar', title: 'Navegación', text: 'Cambie entre Resumen, Productos, Valores del IPV, Inventario, Fichas, Controles, Papelera y Licencia. También con las teclas 1 a 8.' },
     { sel: '#search-global', title: 'Búsqueda global', text: 'Encuentre cualquier producto, insumo, ficha o control. Atajo: Ctrl+K.' },
     { sel: '.topbar-actions .icon-button[title^="Paleta"]', title: 'Paleta de comandos', text: 'Todas las acciones en un solo lugar: importar CSV, PDF, tema, seguridad… Atajo: Ctrl+Shift+P.' },
     { sel: '.notif-bell', title: 'Notificaciones en tiempo real', text: 'Vea al instante los cambios que hacen otros usuarios en la web o en Android.' },

@@ -157,6 +157,9 @@ def init_db() -> None:
             unit TEXT NOT NULL DEFAULT 'unidad',
             description TEXT NOT NULL DEFAULT '',
             active INTEGER NOT NULL DEFAULT 1,
+            yield_qty TEXT NOT NULL DEFAULT '1',
+            yield_unit TEXT NOT NULL DEFAULT 'unidad',
+            deleted_at TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -165,6 +168,7 @@ def init_db() -> None:
             code TEXT NOT NULL UNIQUE,
             name TEXT NOT NULL,
             unit TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT 'Insumos',
             currency TEXT NOT NULL DEFAULT 'CUP',
             unit_price TEXT NOT NULL DEFAULT '0.00',
             supplier TEXT NOT NULL DEFAULT '',
@@ -172,6 +176,9 @@ def init_db() -> None:
             effective_from TEXT NOT NULL DEFAULT '',
             effective_to TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'Vigente',
+            stock TEXT NOT NULL DEFAULT '0',
+            min_stock TEXT NOT NULL DEFAULT '0',
+            deleted_at TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -183,6 +190,9 @@ def init_db() -> None:
             valid_from TEXT NOT NULL DEFAULT '',
             observations TEXT NOT NULL DEFAULT '',
             total_cost TEXT NOT NULL DEFAULT '0.00',
+            yield_qty TEXT NOT NULL DEFAULT '1',
+            yield_unit TEXT NOT NULL DEFAULT 'unidad',
+            deleted_at TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(product_id, version)
@@ -208,6 +218,7 @@ def init_db() -> None:
             checked_total TEXT NOT NULL DEFAULT '0.00',
             notes TEXT NOT NULL DEFAULT '',
             validation_report TEXT NOT NULL DEFAULT '[]',
+            deleted_at TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             checked_at TEXT NOT NULL DEFAULT '',
             UNIQUE(ficha_id, period)
@@ -227,95 +238,155 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_products_active ON products(active);
         CREATE INDEX IF NOT EXISTS idx_materials_status ON materials(status);
         """)
+        migrate_schema(conn)
         if conn.execute("SELECT COUNT(*) FROM products").fetchone()[0] == 0:
-            seed_data(conn)
+            ensure_demo_data(conn, quiet=True)
 
 
-def seed_data(conn: sqlite3.Connection) -> None:
+# ==========================================================================
+#  MIGRACIONES DE ESQUEMA (columnas añadidas en versiones posteriores)
+# ==========================================================================
+
+# (tabla, columna, definición SQL, valor por defecto para las filas existentes)
+MIGRATIONS: tuple[tuple[str, str, str, str], ...] = (
+    ("materials", "category", "TEXT NOT NULL DEFAULT 'Insumos'", "Insumos"),
+    ("materials", "stock", "TEXT NOT NULL DEFAULT '0'", "0"),
+    ("materials", "min_stock", "TEXT NOT NULL DEFAULT '0'", "0"),
+    ("materials", "deleted_at", "TEXT NOT NULL DEFAULT ''", ""),
+    ("products", "yield_qty", "TEXT NOT NULL DEFAULT '1'", "1"),
+    ("products", "yield_unit", "TEXT NOT NULL DEFAULT 'unidad'", "unidad"),
+    ("products", "deleted_at", "TEXT NOT NULL DEFAULT ''", ""),
+    ("fichas", "yield_qty", "TEXT NOT NULL DEFAULT '1'", "1"),
+    ("fichas", "yield_unit", "TEXT NOT NULL DEFAULT 'unidad'", "unidad"),
+    ("fichas", "deleted_at", "TEXT NOT NULL DEFAULT ''", ""),
+    ("controls", "deleted_at", "TEXT NOT NULL DEFAULT ''", ""),
+)
+
+
+def migrate_schema(conn: sqlite3.Connection) -> list[str]:
+    """Añade las columnas nuevas a bases de datos creadas por versiones anteriores."""
+    applied = []
+    for table, column, ddl, default in MIGRATIONS:
+        existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if not existing or column in existing:
+            continue
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        applied.append(f"{table}.{column}")
+    if applied:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_materials_category ON materials(category)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_materials_trash ON materials(deleted_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_products_trash ON products(deleted_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fichas_trash ON fichas(deleted_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fichas_latest ON fichas(product_id, id DESC)")
+    return applied
+
+
+
+def ensure_demo_data(conn: sqlite3.Connection, quiet: bool = False) -> dict:
+    """Carga el juego de datos de demostración (idempotente: sólo por código).
+
+    Aporta un catálogo amplio de valores del IPV —licores con precios distintos,
+    insumos de comida, bebidas y servicios—, productos de Comidas y Bebidas con su
+    rendimiento (comensales o copas por lote) y las fichas correspondientes, para
+    poder aprender el sistema con datos reales.
+    """
+    import demo_data
+
     stamp = now_iso()
-    material_rows = [
-        ("INS-001", "Ron", "L", "820.00", "Proveedor registrado", "Lista de precios vigente"),
-        ("INS-002", "Limón", "kg", "210.00", "Proveedor registrado", "Lista de precios vigente"),
-        ("INS-003", "Azúcar", "kg", "95.00", "Proveedor registrado", "Lista de precios vigente"),
-        ("INS-004", "Hierbabuena", "kg", "600.00", "Proveedor registrado", "Lista de precios vigente"),
-        ("INS-005", "Agua con gas", "L", "85.00", "Proveedor registrado", "Lista de precios vigente"),
-        ("INS-006", "Mango", "kg", "180.00", "Proveedor registrado", "Lista de precios vigente"),
-        ("INS-007", "Arroz", "kg", "130.00", "Proveedor registrado", "Lista de precios vigente"),
-        ("INS-008", "Frijol negro", "kg", "220.00", "Proveedor registrado", "Lista de precios vigente"),
-        ("INS-009", "Pollo", "kg", "490.00", "Proveedor registrado", "Lista de precios vigente"),
-        ("INS-010", "Aceite", "L", "480.00", "Proveedor registrado", "Lista de precios vigente"),
-        ("INS-011", "Sal", "kg", "70.00", "Proveedor registrado", "Lista de precios vigente"),
-        ("INS-012", "Mano de obra", "hora", "220.00", "Tarifa interna", "Referencia oficial"),
-    ]
-    material_ids = {}
-    for code, name, unit, price, supplier, source in material_rows:
+    today = date.today().isoformat()
+    counts = {"materials": 0, "products": 0, "fichas": 0, "controls": 0}
+
+    material_ids: dict[str, int] = {}
+    for code, name, unit, category, price, stock, min_stock, supplier in demo_data.MATERIALS:
+        row = conn.execute("SELECT id FROM materials WHERE code=?", (code,)).fetchone()
+        if row:
+            material_ids[code] = row[0]
+            continue
         cur = conn.execute("""INSERT INTO materials
-            (code,name,unit,currency,unit_price,supplier,source,effective_from,status,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (code, name, unit, "CUP", price, supplier, source, date.today().isoformat(), "Vigente", stamp, stamp))
+            (code,name,unit,category,currency,unit_price,supplier,source,effective_from,status,
+             stock,min_stock,created_at,updated_at)
+            VALUES (?,?,?,?,'CUP',?,?,?,?,'Vigente',?,?,?,?)""",
+            (code, name, unit, category, price, supplier, "Catálogo de demostración", today,
+             stock, min_stock, stamp, stamp))
         material_ids[code] = cur.lastrowid
+        counts["materials"] += 1
 
-    products = [
-        ("BEB-001", "Mojito clásico", "Bebidas", "copa", "Receta estándar por porción."),
-        ("BEB-002", "Jugo natural de mango", "Bebidas", "vaso", "Receta estándar por vaso."),
-        ("COM-001", "Arroz congrí", "Comidas", "ración", "Receta estándar por ración."),
-        ("COM-002", "Pollo asado", "Comidas", "ración", "Receta estándar por ración."),
-        ("SER-001", "Servicio de salón", "Servicios", "hora", "Servicio de atención por hora."),
-    ]
-    product_ids = {}
-    for code, name, category, unit, description in products:
+    product_ids: dict[str, int] = {}
+    for code, name, category, unit, description, yield_qty, yield_unit in demo_data.PRODUCTS:
+        row = conn.execute("SELECT id FROM products WHERE code=?", (code,)).fetchone()
+        if row:
+            product_ids[code] = row[0]
+            continue
         cur = conn.execute("""INSERT INTO products
-            (code,name,category,unit,description,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?)""", (code, name, category, unit, description, stamp, stamp))
+            (code,name,category,unit,description,yield_qty,yield_unit,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (code, name, category, unit, description, yield_qty, yield_unit, stamp, stamp))
         product_ids[code] = cur.lastrowid
+        counts["products"] += 1
 
-    recipes = [
-        ("BEB-001", "Aprobada", [("INS-001", "0.05"), ("INS-002", "0.03"), ("INS-003", "0.02"), ("INS-004", "0.005"), ("INS-005", "0.12")]),
-        ("BEB-002", "Aprobada", [("INS-006", "0.25"), ("INS-003", "0.02")]),
-        ("COM-001", "Aprobada", [("INS-007", "0.12"), ("INS-008", "0.04"), ("INS-010", "0.01"), ("INS-011", "0.002")]),
-        ("COM-002", "Borrador", [("INS-009", "0.25"), ("INS-010", "0.01"), ("INS-011", "0.002")]),
-        ("SER-001", "Aprobada", [("INS-012", "0.5")]),
-    ]
-    ficha_ids = {}
-    for pcode, status, lines in recipes:
-        product_id = product_ids[pcode]
-        cur = conn.execute("""INSERT INTO fichas
-            (product_id,version,status,valid_from,observations,total_cost,created_at,updated_at)
-            VALUES (?,1,?,?,?, '0.00',?,?)""",
-            (product_id, status, date.today().isoformat(), "Ficha de costo inicial del producto.", stamp, stamp))
-        ficha_id = cur.lastrowid
-        total = Decimal("0.00")
+    for pcode, status, yield_qty, yield_unit, lines in demo_data.RECIPES:
+        product_id = product_ids.get(pcode)
+        if not product_id or not lines:
+            continue
+        if conn.execute("SELECT 1 FROM fichas WHERE product_id=? LIMIT 1", (product_id,)).fetchone():
+            continue
+        items, total = [], Decimal("0.00")
         for material_code, qty_value in lines:
-            m = conn.execute("SELECT * FROM materials WHERE id=?", (material_ids[material_code],)).fetchone()
-            qty = amount(qty_value)
-            cost = amount(m["unit_price"])
+            material_id = material_ids.get(material_code)
+            if not material_id:
+                continue
+            material = conn.execute("SELECT * FROM materials WHERE id=?", (material_id,)).fetchone()
+            qty, cost = amount(qty_value), amount(material["unit_price"])
             subtotal = (qty * cost).quantize(CENT, rounding=ROUND_HALF_UP)
             total += subtotal
+            items.append((material_id, material["name"], quantity_text(qty), material["unit"],
+                          money(cost), money(subtotal)))
+        cur = conn.execute("""INSERT INTO fichas
+            (product_id,version,status,valid_from,observations,total_cost,yield_qty,yield_unit,created_at,updated_at)
+            VALUES (?,1,?,?,?,?,?,?,?,?)""",
+            (product_id, status, today, "Ficha de demostración para aprendizaje.", "0.00",
+             yield_qty, yield_unit, stamp, stamp))
+        ficha_id = cur.lastrowid
+        for item in items:
             conn.execute("""INSERT INTO ficha_items
                 (ficha_id,material_id,description,quantity,unit,unit_cost,subtotal)
-                VALUES (?,?,?,?,?,?,?)""",
-                (ficha_id, m["id"], m["name"], quantity_text(qty), m["unit"], money(cost), money(subtotal)))
+                VALUES (?,?,?,?,?,?,?)""", (ficha_id, *item))
         conn.execute("UPDATE fichas SET total_cost=? WHERE id=?", (money(total), ficha_id))
-        ficha_ids[pcode] = ficha_id
+        counts["fichas"] += 1
 
-    _create_seed_control(conn, ficha_ids["BEB-001"], "2026-09", "Validado", "IPV-2026-0001")
-    _create_seed_control(conn, ficha_ids["COM-001"], "2026-09", "Pendiente", "IPV-2026-0002")
+    for pcode, period, status in demo_data.CONTROLS:
+        row = conn.execute("""SELECT f.id, f.product_id, f.total_cost FROM fichas f
+                              JOIN products p ON p.id=f.product_id
+                              WHERE p.code=? AND f.deleted_at='' ORDER BY f.id LIMIT 1""", (pcode,)).fetchone()
+        if not row:
+            continue
+        if conn.execute("SELECT 1 FROM controls WHERE ficha_id=? AND period=?", (row["id"], period)).fetchone():
+            continue
+        year = period[:4]
+        last = conn.execute("SELECT code FROM controls WHERE code LIKE ? ORDER BY id DESC LIMIT 1",
+                            (f"IPV-{year}-%",)).fetchone()
+        try:
+            sequence = int(last["code"].split("-")[-1]) + 1 if last else 1
+        except (ValueError, IndexError, TypeError):
+            sequence = conn.execute("SELECT COALESCE(MAX(id),0)+1 FROM controls").fetchone()[0]
+        cur = conn.execute("""INSERT INTO controls
+            (code,ficha_id,product_id,period,status,snapshot_total,checked_total,created_at,checked_at)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (f"IPV-{year}-{sequence:04d}", row["id"], row["product_id"], period, status,
+             row["total_cost"], row["total_cost"] if status == "Validado" else "0.00", stamp,
+             stamp if status == "Validado" else ""))
+        control_id = cur.lastrowid
+        for item in conn.execute("SELECT * FROM ficha_items WHERE ficha_id=?", (row["id"],)).fetchall():
+            conn.execute("""INSERT INTO control_items
+                (control_id,material_id,description,quantity,unit,unit_cost,subtotal)
+                VALUES (?,?,?,?,?,?,?)""",
+                (control_id, item["material_id"], item["description"], item["quantity"],
+                 item["unit"], item["unit_cost"], item["subtotal"]))
+        counts["controls"] += 1
 
-
-def _create_seed_control(conn, ficha_id: int, period: str, status: str, code: str) -> None:
-    stamp = now_iso()
-    ficha = conn.execute("SELECT * FROM fichas WHERE id=?", (ficha_id,)).fetchone()
-    cur = conn.execute("""INSERT INTO controls
-        (code,ficha_id,product_id,period,status,snapshot_total,checked_total,created_at,checked_at)
-        VALUES (?,?,?,?,?,?,?,?,?)""",
-        (code, ficha_id, ficha["product_id"], period, status, ficha["total_cost"], ficha["total_cost"], stamp,
-         stamp if status == "Validado" else ""))
-    control_id = cur.lastrowid
-    for item in conn.execute("SELECT * FROM ficha_items WHERE ficha_id=?", (ficha_id,)).fetchall():
-        conn.execute("""INSERT INTO control_items
-            (control_id,material_id,description,quantity,unit,unit_cost,subtotal)
-            VALUES (?,?,?,?,?,?,?)""",
-            (control_id, item["material_id"], item["description"], item["quantity"], item["unit"], item["unit_cost"], item["subtotal"]))
+    if not quiet and any(counts.values()):
+        print("  Datos de demostración: " + ", ".join(f"{v} {k}" for k, v in counts.items() if v))
+    return counts
 
 
 # ==========================================================================
@@ -326,18 +397,103 @@ def rowdict(row):
     return dict(row) if row is not None else None
 
 
+# --------------------------------------------------------------------------
+#  Rendimiento: cuántos comensales / copas sale del lote de una ficha y cuántos
+#  allows el inventario actual.
+# --------------------------------------------------------------------------
+def yield_info(yield_qty, yield_unit, total_cost) -> dict:
+    """Costo por comensal/copa de una ficha a partir de su rendimiento."""
+    y = amount(yield_qty or 1)
+    if y <= 0:
+        y = Decimal(1)
+    return {"yield_qty": quantity_text(y), "yield_unit": sanitize_text(yield_unit or "unidad", 30),
+            "cost_per_serving": money(amount(total_cost) / y)}
+
+
+def servings_from_stock(conn, items, yield_qty) -> tuple[int | None, str, list[dict]]:
+    """Raciones/copas que permite el inventario actual (mínimo entre componentes)."""
+    y = amount(yield_qty or 1)
+    if y <= 0:
+        y = Decimal(1)
+    best: int | None = None
+    limited_by = ""
+    shortages: list[dict] = []
+    for item in items:
+        if not item.get("material_id"):
+            continue
+        material = conn.execute("SELECT * FROM materials WHERE id=?", (item["material_id"],)).fetchone()
+        if not material:
+            continue
+        per = amount(item["quantity"]) / y
+        item["per_serving"] = quantity_text(per)
+        item["material_name"] = material["name"]
+        item["material_unit"] = material["unit"]
+        stock = amount(material["stock"])
+        item["stock"] = quantity_text(stock)
+        if per <= 0:
+            continue
+        possible = int(stock / per)
+        if best is None or possible < best:
+            best, limited_by = possible, material["name"]
+        if stock < per:
+            shortages.append({"material": material["name"], "code": material["code"],
+                              "required": quantity_text(per), "stock": quantity_text(stock)})
+    return (best if best is not None else 0), limited_by, shortages
+
+
 def get_product(conn, product_id):
     return rowdict(conn.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone())
 
 
-def list_products(conn):
-    return [dict(r) for r in conn.execute("""SELECT p.*,
-        (SELECT COUNT(*) FROM fichas f WHERE f.product_id=p.id) AS ficha_count
-        FROM products p ORDER BY p.active DESC, p.category, p.name""").fetchall()]
+def list_products(conn, include_inactive=True):
+    where = "" if include_inactive else " AND p.active=1"
+    return [dict(r) for r in conn.execute(f"""SELECT p.*,
+        (SELECT COUNT(*) FROM fichas f WHERE f.product_id=p.id AND f.deleted_at='') AS ficha_count,
+        (SELECT f.status FROM fichas f WHERE f.product_id=p.id AND f.deleted_at='' ORDER BY f.id DESC LIMIT 1) AS last_status,
+        (SELECT f.id FROM fichas f WHERE f.product_id=p.id AND f.deleted_at='' ORDER BY f.id DESC LIMIT 1) AS last_ficha_id,
+        (SELECT f.yield_qty FROM fichas f WHERE f.product_id=p.id AND f.deleted_at='' ORDER BY f.id DESC LIMIT 1) AS last_yield_qty,
+        (SELECT f.yield_unit FROM fichas f WHERE f.product_id=p.id AND f.deleted_at='' ORDER BY f.id DESC LIMIT 1) AS last_yield_unit
+        FROM products p WHERE p.deleted_at=''{where}
+        ORDER BY p.active DESC, p.category, p.name""").fetchall()]
 
 
-def list_materials(conn):
-    return [dict(r) for r in conn.execute("SELECT * FROM materials ORDER BY name").fetchall()]
+def list_materials(conn, include_inactive=True, category="", q=""):
+    sql = "SELECT * FROM materials WHERE deleted_at=''"
+    args: list = []
+    if not include_inactive:
+        sql += " AND status<>'Inactivo'"
+    if category:
+        sql += " AND category=?"
+        args.append(category)
+    if q:
+        sql += " AND (name LIKE ? OR code LIKE ? OR supplier LIKE ?)"
+        args += [f"%{q}%"] * 3
+    sql += " ORDER BY category, name"
+    return [dict(r) for r in conn.execute(sql, args).fetchall()]
+
+
+def material_detail(conn, material_id):
+    data = rowdict(conn.execute("SELECT * FROM materials WHERE id=?", (material_id,)).fetchone())
+    if not data:
+        return None
+    rows = conn.execute("""SELECT fi.ficha_id, fi.quantity, f.yield_qty, f.yield_unit, f.status AS ficha_status,
+        p.id AS product_id, p.code AS product_code, p.name AS product_name, p.category
+        FROM ficha_items fi JOIN fichas f ON f.id=fi.ficha_id JOIN products p ON p.id=f.product_id
+        WHERE fi.material_id=? AND f.deleted_at='' AND p.deleted_at=''
+        ORDER BY p.category, p.name""", (material_id,)).fetchall()
+    used = []
+    for r in rows:
+        y = amount(r["yield_qty"] or 1)
+        if y <= 0:
+            y = Decimal(1)
+        per = amount(r["quantity"]) / y
+        stock = amount(data["stock"])
+        used.append({**dict(r), "per_serving": quantity_text(per),
+                     "servings": int(stock / per) if per > 0 else None})
+    data["used_by"] = used
+    data["stock_value"] = money(amount(data["stock"]) * amount(data["unit_price"]))
+    data["low_stock"] = amount(data["stock"]) <= amount(data["min_stock"]) and amount(data["min_stock"]) > 0
+    return data
 
 
 def ficha_summary(conn, ficha_id):
@@ -353,25 +509,50 @@ def ficha_detail(conn, ficha_id):
     if not data:
         return None
     data["items"] = [dict(r) for r in conn.execute("""SELECT fi.*, m.code AS material_code,
+        m.category AS material_category, m.stock AS material_stock,
         m.effective_to AS material_effective_to, m.status AS material_status
         FROM ficha_items fi LEFT JOIN materials m ON m.id=fi.material_id
         WHERE fi.ficha_id=? ORDER BY fi.id""", (ficha_id,)).fetchall()]
+    servings, limited_by, shortages = servings_from_stock(conn, data["items"], data.get("yield_qty"))
+    info = yield_info(data.get("yield_qty"), data.get("yield_unit"), data.get("total_cost"))
+    info.update({"servings_from_stock": servings, "limited_by": limited_by or None,
+                 "shortages": shortages, "stock_ok": not shortages})
+    data.update(info)
     return data
 
 
 def list_fichas(conn):
-    return [dict(r) for r in conn.execute("""SELECT f.*, p.code AS product_code,
+    rows = [dict(r) for r in conn.execute("""SELECT f.*, p.code AS product_code,
         p.name AS product_name, p.category, p.unit AS product_unit,
         (SELECT COUNT(*) FROM ficha_items fi WHERE fi.ficha_id=f.id) AS item_count,
         (SELECT COUNT(*) FROM controls c WHERE c.ficha_id=f.id) AS control_count
         FROM fichas f JOIN products p ON p.id=f.product_id
+        WHERE f.deleted_at=''
         ORDER BY f.updated_at DESC, f.id DESC""").fetchall()]
+    stocks = {r["id"]: amount(r["stock"]) for r in conn.execute("SELECT id, stock FROM materials")}
+    for row in rows:
+        y = amount(row.get("yield_qty") or 1)
+        if y <= 0:
+            y = Decimal(1)
+        row["cost_per_serving"] = money(amount(row["total_cost"]) / y)
+        items = conn.execute("SELECT material_id, quantity FROM ficha_items WHERE ficha_id=?", (row["id"],)).fetchall()
+        possible = None
+        for item in items:
+            if not item["material_id"]:
+                continue
+            per = amount(item["quantity"]) / y
+            if per <= 0:
+                continue
+            available = int(stocks.get(item["material_id"], Decimal(0)) / per)
+            possible = available if possible is None else min(possible, available)
+        row["servings_from_stock"] = possible
+    return rows
 
 
 def control_detail(conn, control_id):
     row = conn.execute("""SELECT c.*, p.code AS product_code, p.name AS product_name,
         p.category, p.unit AS product_unit, f.version AS ficha_version, f.status AS ficha_status,
-        f.total_cost AS ficha_total
+        f.total_cost AS ficha_total, f.yield_qty, f.yield_unit
         FROM controls c JOIN products p ON p.id=c.product_id JOIN fichas f ON f.id=c.ficha_id
         WHERE c.id=?""", (control_id,)).fetchone()
     if not row:
@@ -382,40 +563,102 @@ def control_detail(conn, control_id):
     except json.JSONDecodeError:
         data["validation_messages"] = []
     data["items"] = [dict(r) for r in conn.execute("SELECT * FROM control_items WHERE control_id=? ORDER BY id", (control_id,)).fetchall()]
+    y = amount(data.get("yield_qty") or 1) or Decimal(1)
+    data["cost_per_serving"] = money(amount(data["snapshot_total"]) / y)
     return data
 
 
 def list_controls(conn):
-    return [control_detail(conn, r[0]) for r in conn.execute("SELECT id FROM controls ORDER BY created_at DESC, id DESC").fetchall()]
+    return [control_detail(conn, r[0]) for r in conn.execute(
+        "SELECT id FROM controls WHERE deleted_at='' ORDER BY created_at DESC, id DESC").fetchall()]
+
+
+# --------------------------------------------------------------------------
+#  INVENTARIO: existencias de cada valor del IPV y rendimiento con el stock actual
+# --------------------------------------------------------------------------
+def inventory(conn, category="", q="", low_only=False):
+    materials = list_materials(conn, category=category, q=q)
+    stocks = {m["id"]: amount(m["stock"]) for m in materials}
+    usage: dict[int, list[dict]] = {}
+    for row in conn.execute("""SELECT fi.material_id, fi.quantity, f.id AS ficha_id, f.yield_qty, f.yield_unit,
+        f.status AS ficha_status, p.id AS product_id, p.code AS product_code, p.name AS product_name,
+        p.category
+        FROM ficha_items fi JOIN fichas f ON f.id=fi.ficha_id JOIN products p ON p.id=f.product_id
+        WHERE f.deleted_at='' AND p.deleted_at='' AND p.active=1"""):
+        if row["material_id"] is None or row["material_id"] not in stocks:
+            continue
+        y = amount(row["yield_qty"] or 1) or Decimal(1)
+        per = amount(row["quantity"]) / y
+        usage.setdefault(row["material_id"], []).append({
+            "ficha_id": row["ficha_id"], "product_id": row["product_id"],
+            "product_code": row["product_code"], "product_name": row["product_name"],
+            "category": row["category"], "ficha_status": row["ficha_status"],
+            "per_serving": quantity_text(per), "yield_unit": row["yield_unit"],
+            "servings": int(stocks[row["material_id"]] / per) if per > 0 else None,
+        })
+    items, total_value, low = [], Decimal("0.00"), 0
+    for m in materials:
+        stock = amount(m["stock"])
+        minimum = amount(m["min_stock"])
+        value = (stock * amount(m["unit_price"])).quantize(CENT, rounding=ROUND_HALF_UP)
+        total_value += value
+        is_low = minimum > 0 and stock <= minimum
+        low += 1 if is_low else 0
+        item = {**m, "stock_value": money(value), "low_stock": is_low,
+                "used_by": sorted(usage.get(m["id"], []), key=lambda u: u["product_name"]),
+                "usage_count": len(usage.get(m["id"], []))}
+        if not low_only or is_low:
+            items.append(item)
+    items.sort(key=lambda i: (not i["low_stock"], i["category"], i["name"]))
+    return {"items": items, "totals": {"materials": len(materials), "low_stock": low,
+                                       "stock_value": money(total_value),
+                                       "categories": len({m["category"] for m in materials})}}
 
 
 def dashboard(conn):
     count = lambda sql: conn.execute(sql).fetchone()[0]
     recent = [dict(r) for r in conn.execute("""SELECT f.id,f.version,f.status,f.total_cost,f.updated_at,
-        p.name AS product_name,p.category,p.code AS product_code FROM fichas f JOIN products p ON p.id=f.product_id
+        f.yield_qty,f.yield_unit, p.name AS product_name,p.category,p.code AS product_code
+        FROM fichas f JOIN products p ON p.id=f.product_id
+        WHERE f.deleted_at='' AND p.deleted_at=''
         ORDER BY f.updated_at DESC,f.id DESC LIMIT 5""").fetchall()]
-    categories = [dict(r) for r in conn.execute("SELECT category,COUNT(*) AS count FROM products WHERE active=1 GROUP BY category ORDER BY category").fetchall()]
+    categories = [dict(r) for r in conn.execute("SELECT category,COUNT(*) AS count FROM products WHERE active=1 AND deleted_at='' GROUP BY category ORDER BY category").fetchall()]
     # Cost distribution by category
     cost_by_cat = [dict(r) for r in conn.execute("""SELECT p.category, SUM(CAST(f.total_cost AS REAL)) AS total
         FROM fichas f JOIN products p ON p.id=f.product_id
-        WHERE f.id IN (SELECT MAX(id) FROM fichas GROUP BY product_id)
+        WHERE f.deleted_at='' AND p.deleted_at=''
+          AND f.id IN (SELECT MAX(id) FROM fichas WHERE deleted_at='' GROUP BY product_id)
         GROUP BY p.category ORDER BY total DESC""").fetchall()]
     # Activity timeline (last 10 operations)
     activity = [dict(r) for r in conn.execute("""
-        SELECT 'ficha' as type, id, 'Ficha creada' as action, created_at as timestamp FROM fichas
+        SELECT 'ficha' as type, id, 'Ficha creada' as action, created_at as timestamp FROM fichas WHERE deleted_at=''
         UNION ALL
-        SELECT 'control', id, 'Control generado', created_at FROM controls
+        SELECT 'control', id, 'Control generado', created_at FROM controls WHERE deleted_at=''
         UNION ALL
-        SELECT 'product', id, 'Producto registrado', created_at FROM products
+        SELECT 'product', id, 'Producto registrado', created_at FROM products WHERE deleted_at=''
+        UNION ALL
+        SELECT 'material', id, 'Valor del IPV registrado', created_at FROM materials WHERE deleted_at=''
         ORDER BY timestamp DESC LIMIT 10
     """).fetchall()]
+    stock_value = Decimal("0.00")
+    low_stock = 0
+    for r in conn.execute("SELECT stock, min_stock, unit_price FROM materials WHERE deleted_at=''"):
+        stock_value += amount(r["stock"]) * amount(r["unit_price"])
+        if amount(r["min_stock"]) > 0 and amount(r["stock"]) <= amount(r["min_stock"]):
+            low_stock += 1
     return {
-        "products": count("SELECT COUNT(*) FROM products WHERE active=1"),
-        "materials": count("SELECT COUNT(*) FROM materials"),
-        "fichas": count("SELECT COUNT(*) FROM fichas"),
-        "approved_fichas": count("SELECT COUNT(*) FROM fichas WHERE status='Aprobada'"),
-        "pending_controls": count("SELECT COUNT(*) FROM controls WHERE status='Pendiente'"),
-        "validated_controls": count("SELECT COUNT(*) FROM controls WHERE status='Validado'"),
+        "products": count("SELECT COUNT(*) FROM products WHERE active=1 AND deleted_at=''"),
+        "materials": count("SELECT COUNT(*) FROM materials WHERE deleted_at=''"),
+        "fichas": count("SELECT COUNT(*) FROM fichas WHERE deleted_at=''"),
+        "approved_fichas": count("SELECT COUNT(*) FROM fichas WHERE status='Aprobada' AND deleted_at=''"),
+        "pending_controls": count("SELECT COUNT(*) FROM controls WHERE status='Pendiente' AND deleted_at=''"),
+        "validated_controls": count("SELECT COUNT(*) FROM controls WHERE status='Validado' AND deleted_at=''"),
+        "trash": count("SELECT (SELECT COUNT(*) FROM products WHERE deleted_at<>'') + "
+                       "(SELECT COUNT(*) FROM materials WHERE deleted_at<>'') + "
+                       "(SELECT COUNT(*) FROM fichas WHERE deleted_at<>'') + "
+                       "(SELECT COUNT(*) FROM controls WHERE deleted_at<>'')"),
+        "stock_value": money(stock_value),
+        "low_stock": low_stock,
         "recent_fichas": recent,
         "categories": categories,
         "cost_by_category": cost_by_cat,
@@ -423,23 +666,61 @@ def dashboard(conn):
     }
 
 
+# --------------------------------------------------------------------------
+#  PAPELERA DE RECICLAJE
+# --------------------------------------------------------------------------
+TRASH_TABLES = {
+    "products": {"label": "Producto", "columns": ("code", "name", "category")},
+    "materials": {"label": "Valor del IPV", "columns": ("code", "name", "category")},
+    "fichas": {"label": "Ficha de costo", "columns": ("", "product_name", "status")},
+    "controls": {"label": "Control de IPV", "columns": ("code", "product_name", "status")},
+}
+
+
+def list_trash(conn):
+    """Elementos eliminados, listos para restaurar o borrar definitivamente."""
+    queries = {
+        "products": """SELECT t.id, t.code, t.name, t.category, t.deleted_at,
+            (SELECT COUNT(*) FROM fichas f WHERE f.product_id=t.id AND f.deleted_at='') AS detail
+            FROM products t WHERE t.deleted_at<>''""",
+        "materials": "SELECT id, code, name, category, deleted_at, status AS detail FROM materials WHERE deleted_at<>''",
+        "fichas": """SELECT t.id, '' AS code, p.name AS name, t.status AS detail, t.deleted_at
+            FROM fichas t JOIN products p ON p.id=t.product_id WHERE t.deleted_at<>''""",
+        "controls": """SELECT t.id, t.code, p.name AS name, t.status AS detail, t.deleted_at, t.period
+            FROM controls t JOIN products p ON p.id=t.product_id WHERE t.deleted_at<>''""",
+    }
+    out = []
+    for kind, meta in TRASH_TABLES.items():
+        for row in conn.execute(queries[kind]).fetchall():
+            out.append({"kind": kind, "kind_label": meta["label"], "id": row["id"],
+                        "code": row["code"] or "", "name": row["name"],
+                        "detail": str(row["detail"]) if "detail" in row.keys() else "",
+                        "period": row["period"] if "period" in row.keys() else "",
+                        "deleted_at": row["deleted_at"]})
+    out.sort(key=lambda x: (x["deleted_at"], x["kind"]), reverse=True)
+    return out
+
+
+
 def search_all(conn, query: str, limit: int = 20):
     """Full-text search across all entities."""
     q = f"%{sanitize_text(query, 100)}%"
     results = []
     # Search products
-    for r in conn.execute("SELECT id, code, name, category, 'product' as type FROM products WHERE name LIKE ? OR code LIKE ? LIMIT ?", (q, q, limit)).fetchall():
+    for r in conn.execute("SELECT id, code, name, category, 'product' as type FROM products WHERE deleted_at='' AND (name LIKE ? OR code LIKE ?) LIMIT ?", (q, q, limit)).fetchall():
         results.append(dict(r))
     # Search materials
-    for r in conn.execute("SELECT id, code, name, unit, 'material' as type FROM materials WHERE name LIKE ? OR code LIKE ? LIMIT ?", (q, q, limit)).fetchall():
+    for r in conn.execute("SELECT id, code, name, unit, category, 'material' as type FROM materials WHERE deleted_at='' AND (name LIKE ? OR code LIKE ?) LIMIT ?", (q, q, limit)).fetchall():
         results.append(dict(r))
     # Search fichas
     for r in conn.execute("""SELECT f.id, p.code, p.name, f.version, f.status, 'ficha' as type
-        FROM fichas f JOIN products p ON p.id=f.product_id WHERE p.name LIKE ? OR p.code LIKE ? LIMIT ?""", (q, q, limit)).fetchall():
+        FROM fichas f JOIN products p ON p.id=f.product_id
+        WHERE f.deleted_at='' AND (p.name LIKE ? OR p.code LIKE ?) LIMIT ?""", (q, q, limit)).fetchall():
         results.append(dict(r))
     # Search controls
     for r in conn.execute("""SELECT c.id, c.code, p.name, c.period, c.status, 'control' as type
-        FROM controls c JOIN products p ON p.id=c.product_id WHERE c.code LIKE ? OR p.name LIKE ? LIMIT ?""", (q, q, limit)).fetchall():
+        FROM controls c JOIN products p ON p.id=c.product_id
+        WHERE c.deleted_at='' AND (c.code LIKE ? OR p.name LIKE ?) LIMIT ?""", (q, q, limit)).fetchall():
         results.append(dict(r))
     return results[:limit]
 
@@ -601,7 +882,7 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/api/health":
                     result = {
                         "ok": True, "database": "SQLite", "file": DB_PATH.name,
-                        "time": now_iso(), "version": "1.0.0",
+                        "time": now_iso(), "version": "1.1.0",
                         "tls": bool(TLS_CERT),
                         "auth_required": bool(API_TOKEN),
                     }
@@ -618,6 +899,17 @@ class Handler(BaseHTTPRequestHandler):
                     result = list_products(conn)
                 elif path == "/api/materials":
                     result = list_materials(conn)
+                elif path == "/api/inventory":
+                    result = inventory(conn, category=qs.get("category", [""])[0],
+                                       q=qs.get("q", [""])[0],
+                                       low_only=qs.get("low", ["0"])[0] in ("1", "true", "si", "sí"))
+                elif path == "/api/trash":
+                    result = {"items": list_trash(conn)}
+                elif path == "/api/categories":
+                    result = {"materials": [r[0] for r in conn.execute(
+                        "SELECT DISTINCT category FROM materials WHERE deleted_at='' ORDER BY category")],
+                        "products": [r[0] for r in conn.execute(
+                            "SELECT DISTINCT category FROM products WHERE deleted_at='' ORDER BY category")]}
                 elif path == "/api/fichas":
                     result = list_fichas(conn)
                 elif path == "/api/controls":
@@ -630,6 +922,18 @@ class Handler(BaseHTTPRequestHandler):
                     result = control_detail(conn, int(path.split("/")[-1]))
                     if result is None:
                         raise APIError("Control no encontrado.", 404)
+                elif re.fullmatch(r"/api/materials/\d+", path):
+                    result = material_detail(conn, int(path.split("/")[-1]))
+                    if result is None:
+                        raise APIError("Valor del IPV no encontrado.", 404)
+                elif re.fullmatch(r"/api/products/\d+", path):
+                    product = get_product(conn, int(path.split("/")[-1]))
+                    if product is None:
+                        raise APIError("Producto no encontrado.", 404)
+                    product["fichas"] = [dict(r) for r in conn.execute(
+                        "SELECT * FROM fichas WHERE product_id=? AND deleted_at='' ORDER BY id DESC",
+                        (product["id"],)).fetchall()]
+                    result = product
                 else:
                     raise APIError("Ruta API no encontrada.", 404)
             self.send_json(result)
@@ -677,6 +981,28 @@ class Handler(BaseHTTPRequestHandler):
                     result = self._validate_control(conn, control_id)
                     status = 200
                     audit_log("VALIDATE_CONTROL", f"id={control_id}", client)
+                elif re.fullmatch(r"/api/materials/\d+/stock", path):
+                    result = self._adjust_stock(conn, int(path.split("/")[-2]), data)
+                    status = 200
+                    audit_log("ADJUST_STOCK", f"id={data.get('material_id', '')}", client)
+                elif re.fullmatch(r"/api/(fichas|controls)/(\d+)/restore", path):
+                    kind, ident = re.fullmatch(r"/api/(fichas|controls)/(\d+)/restore", path).groups()
+                    result = self._restore_from_trash(conn, kind, int(ident))
+                    status = 200
+                    audit_log(f"RESTORE_{kind.upper()[:-1]}", f"id={ident}", client)
+                elif re.fullmatch(r"/api/trash/(\w+)/(\d+)/restore", path):
+                    kind, ident = re.fullmatch(r"/api/trash/(\w+)/(\d+)/restore", path).groups()
+                    result = self._restore_from_trash(conn, kind, int(ident))
+                    status = 200
+                    audit_log(f"RESTORE_{kind.upper()[:-1]}", f"id={ident}", client)
+                elif path == "/api/trash/empty":
+                    result = self._empty_trash(conn)
+                    status = 200
+                    audit_log("TRASH_EMPTIED", f"n={result['removed']}", client)
+                elif path == "/api/demo/seed":
+                    result = ensure_demo_data(conn)
+                    status = 200
+                    audit_log("DEMO_SEED", str(result), client)
                 else:
                     raise APIError("Ruta API no encontrada.", 404)
             self.send_json(result, status)
@@ -707,6 +1033,14 @@ class Handler(BaseHTTPRequestHandler):
                     ficha_id = int(path.split("/")[-1])
                     result = self._update_ficha(conn, ficha_id, data)
                     audit_log("UPDATE_FICHA", f"id={ficha_id}", client)
+                elif re.fullmatch(r"/api/materials/\d+", path):
+                    material_id = int(path.split("/")[-1])
+                    result = self._update_material(conn, material_id, data)
+                    audit_log("UPDATE_MATERIAL", f"id={material_id} code={data.get('code','')}", client)
+                elif re.fullmatch(r"/api/products/\d+", path):
+                    product_id = int(path.split("/")[-1])
+                    result = self._update_product(conn, product_id, data)
+                    audit_log("UPDATE_PRODUCT", f"id={product_id} code={data.get('code','')}", client)
                 else:
                     raise APIError("Ruta API no encontrada.", 404)
             self.send_json(result)
@@ -725,16 +1059,26 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path.rstrip("/")
         try:
+            self.body_json()  # drena el cuerpo para no corromper la conexión siguiente
             client = self.client_ip()
             with WRITE_LOCK, connect() as conn:
                 conn.execute("BEGIN IMMEDIATE")
-                if path.startswith("/api/products/"):
-                    product_id = int(path.split("/")[-1])
-                    cur = conn.execute("UPDATE products SET active=0,updated_at=? WHERE id=?", (now_iso(), product_id))
-                    if cur.rowcount == 0:
-                        raise APIError("Producto no encontrado.", 404)
-                    result = {"ok": True}
-                    audit_log("DEACTIVATE_PRODUCT", f"id={product_id}", client)
+                if re.fullmatch(r"/api/products/\d+", path):
+                    result = self._trash_record(conn, "products", int(path.split("/")[-1]))
+                    audit_log("DEACTIVATE_PRODUCT", f"id={path.split('/')[-1]}", client)
+                elif re.fullmatch(r"/api/materials/\d+", path):
+                    result = self._trash_record(conn, "materials", int(path.split("/")[-1]))
+                    audit_log("DEACTIVATE_MATERIAL", f"id={path.split('/')[-1]}", client)
+                elif re.fullmatch(r"/api/fichas/\d+", path):
+                    result = self._trash_record(conn, "fichas", int(path.split("/")[-1]))
+                    audit_log("DELETE_FICHA", f"id={path.split('/')[-1]}", client)
+                elif re.fullmatch(r"/api/controls/\d+", path):
+                    result = self._trash_record(conn, "controls", int(path.split("/")[-1]))
+                    audit_log("DELETE_CONTROL", f"id={path.split('/')[-1]}", client)
+                elif re.fullmatch(r"/api/trash/(\w+)/\d+", path):
+                    kind, ident = re.fullmatch(r"/api/trash/(\w+)/(\d+)", path).groups()
+                    result = self._purge(conn, kind, int(ident))
+                    audit_log(f"PURGE_{kind.upper()[:-1]}", f"id={ident}", client)
                 else:
                     raise APIError("Ruta API no encontrada.", 404)
             self.send_json(result)
@@ -742,6 +1086,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": exc.message}, exc.status)
         except (ValueError, TypeError):
             self.send_json({"error": "Identificador no válido."}, 400)
+        except sqlite3.IntegrityError:
+            self.send_json({"error": "No se pudo eliminar: el registro tiene elementos dependientes."}, 409)
         except Exception as exc:
             print("DELETE error:", repr(exc))
             self.send_json({"error": "Error interno del servidor."}, 500)
@@ -791,6 +1137,9 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- CRUD Operations ----------
 
+    CURRENCIES = ("CUP", "MLC", "USD", "EUR")
+    STATUSES = ("Vigente", "Inactivo")
+
     def _create_product(self, conn, data):
         code = sanitize_code(data.get("code", ""))
         name = sanitize_text(data.get("name", ""), 200)
@@ -798,10 +1147,37 @@ class Handler(BaseHTTPRequestHandler):
         unit = sanitize_text(data.get("unit", "unidad"), 30) or "unidad"
         if not code or not name or not category:
             raise APIError("Código, nombre y categoría son obligatorios.")
+        yield_qty = amount(data.get("yield_qty", 1))
+        if yield_qty <= 0:
+            raise APIError("El rendimiento debe ser mayor que cero.")
         stamp = now_iso()
-        cur = conn.execute("""INSERT INTO products(code,name,category,unit,description,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?)""", (code, name, category, unit, sanitize_text(data.get("description", ""), 1000), stamp, stamp))
+        cur = conn.execute("""INSERT INTO products
+            (code,name,category,unit,description,yield_qty,yield_unit,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (code, name, category, unit, sanitize_text(data.get("description", ""), 1000),
+             quantity_text(yield_qty), sanitize_text(data.get("yield_unit", unit), 30), stamp, stamp))
         return get_product(conn, cur.lastrowid)
+
+    def _update_product(self, conn, product_id, data):
+        current = get_product(conn, product_id)
+        if not current:
+            raise APIError("Producto no encontrado.", 404)
+        code = sanitize_code(data.get("code", current["code"])) or current["code"]
+        name = sanitize_text(data.get("name", ""), 200) or current["name"]
+        category = sanitize_text(data.get("category", ""), 100) or current["category"]
+        unit = sanitize_text(data.get("unit", ""), 30) or current["unit"]
+        yield_qty = amount(data.get("yield_qty", current["yield_qty"]))
+        if yield_qty <= 0:
+            raise APIError("El rendimiento debe ser mayor que cero.")
+        active = data.get("active")
+        active_flag = current["active"] if active is None else (1 if active in (1, True, "1", "true", "si", "sí") else 0)
+        conn.execute("""UPDATE products SET code=?,name=?,category=?,unit=?,description=?,
+            yield_qty=?,yield_unit=?,active=?,updated_at=? WHERE id=?""",
+            (code, name, category, unit,
+             sanitize_text(data.get("description", current["description"]), 1000),
+             quantity_text(yield_qty), sanitize_text(data.get("yield_unit", current["yield_unit"]), 30),
+             active_flag, now_iso(), product_id))
+        return get_product(conn, product_id)
 
     def _create_material(self, conn, data):
         code = sanitize_code(data.get("code", ""))
@@ -813,18 +1189,155 @@ class Handler(BaseHTTPRequestHandler):
         if unit_price < 0:
             raise APIError("El precio no puede ser negativo.")
         currency = sanitize_text(data.get("currency", "CUP"), 10) or "CUP"
-        if currency not in ("CUP", "MLC", "USD", "EUR"):
+        if currency not in self.CURRENCIES:
             raise APIError("Moneda no soportada.")
+        stock = amount(data.get("stock", 0))
+        min_stock = amount(data.get("min_stock", 0))
+        if stock < 0 or min_stock < 0:
+            raise APIError("Las existencias no pueden ser negativas.")
         stamp = now_iso()
         cur = conn.execute("""INSERT INTO materials
-            (code,name,unit,currency,unit_price,supplier,source,effective_from,effective_to,status,created_at,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (code, name, unit, currency, money(unit_price),
+            (code,name,unit,category,currency,unit_price,supplier,source,effective_from,effective_to,
+             status,stock,min_stock,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (code, name, unit, sanitize_text(data.get("category", "Insumos"), 60) or "Insumos", currency,
+             money(unit_price),
              sanitize_text(data.get("supplier", ""), 200), sanitize_text(data.get("source", ""), 300),
              sanitize_text(data.get("effective_from", date.today().isoformat()), 20),
              sanitize_text(data.get("effective_to", ""), 20),
-             sanitize_text(data.get("status", "Vigente"), 30), stamp, stamp))
-        return dict(conn.execute("SELECT * FROM materials WHERE id=?", (cur.lastrowid,)).fetchone())
+             self._clean_status(data.get("status"), "Vigente"),
+             quantity_text(stock), quantity_text(min_stock), stamp, stamp))
+        return material_detail(conn, cur.lastrowid)
+
+    def _update_material(self, conn, material_id, data):
+        current = conn.execute("SELECT * FROM materials WHERE id=?", (material_id,)).fetchone()
+        if not current:
+            raise APIError("Valor del IPV no encontrado.", 404)
+        code = sanitize_code(data.get("code", current["code"])) or current["code"]
+        name = sanitize_text(data.get("name", ""), 200) or current["name"]
+        unit = sanitize_text(data.get("unit", ""), 30) or current["unit"]
+        category = sanitize_text(data.get("category", ""), 60) or current["category"]
+        unit_price = amount(data.get("unit_price", current["unit_price"]))
+        if unit_price < 0:
+            raise APIError("El precio no puede ser negativo.")
+        currency = sanitize_text(data.get("currency", current["currency"]), 10) or "CUP"
+        if currency not in self.CURRENCIES:
+            raise APIError("Moneda no soportada.")
+        stock = amount(data.get("stock", current["stock"]))
+        min_stock = amount(data.get("min_stock", current["min_stock"]))
+        if stock < 0 or min_stock < 0:
+            raise APIError("Las existencias no pueden ser negativas.")
+        conn.execute("""UPDATE materials SET code=?,name=?,unit=?,category=?,currency=?,unit_price=?,
+            supplier=?,source=?,effective_from=?,effective_to=?,status=?,stock=?,min_stock=?,updated_at=?
+            WHERE id=?""",
+            (code, name, unit, category, currency, money(unit_price),
+             sanitize_text(data.get("supplier", current["supplier"]), 200),
+             sanitize_text(data.get("source", current["source"]), 300),
+             sanitize_text(data.get("effective_from", current["effective_from"]), 20),
+             sanitize_text(data.get("effective_to", current["effective_to"]), 20),
+             self._clean_status(data.get("status"), current["status"]),
+             quantity_text(stock), quantity_text(min_stock), now_iso(), material_id))
+        return material_detail(conn, material_id)
+
+    def _clean_status(self, value, default="Vigente") -> str:
+        status = sanitize_text(value or default, 30) or default
+        return status if status in self.STATUSES else default
+
+    def _adjust_stock(self, conn, material_id, data):
+        """Entrada o salida de existencias: {"delta": "+3"} o {"set": "12"}."""
+        current = conn.execute("SELECT * FROM materials WHERE id=?", (material_id,)).fetchone()
+        if not current:
+            raise APIError("Valor del IPV no encontrado.", 404)
+        stock = amount(current["stock"])
+        if "set" in data and str(data.get("set")).strip() != "":
+            new = amount(data.get("set"))
+        else:
+            new = stock + amount(data.get("delta", 0))
+        if new < 0:
+            raise APIError("No puede quedar menos de cero: la salida supera las existencias.", 409)
+        conn.execute("UPDATE materials SET stock=?,updated_at=? WHERE id=?", (quantity_text(new), now_iso(), material_id))
+        result = material_detail(conn, material_id)
+        result["previous_stock"] = quantity_text(stock)
+        return result
+
+    # ---------- Papelera de reciclaje ----------
+
+    def _trash_record(self, conn, kind, ident):
+        """Envía un registro a la papelera (borrado lógico: nunca se pierde información)."""
+        table = kind if kind in TRASH_TABLES else None
+        if not table:
+            raise APIError("Tipo de registro no válido.", 400)
+        row = conn.execute(f"SELECT id FROM {table} WHERE id=?", (ident,)).fetchone()
+        if not row:
+            raise APIError(f"{TRASH_TABLES[table]['label']} no encontrado.", 404)
+        extra = ""
+        if table == "products":
+            extra = ", active=0"
+        elif table == "materials":
+            extra = ", status='Inactivo'"
+        cur = conn.execute(f"UPDATE {table} SET deleted_at=?{extra} WHERE id=?", (now_iso(), ident))
+        if cur.rowcount == 0:
+            raise APIError("No se pudo mover a la papelera.", 409)
+        return {"ok": True, "trashed": True, "kind": kind, "id": ident}
+
+    def _restore_from_trash(self, conn, kind, ident):
+        if kind not in TRASH_TABLES:
+            raise APIError("Tipo de registro no válido.", 400)
+        stamp = now_iso()
+        if kind == "products":
+            cur = conn.execute("UPDATE products SET deleted_at='',active=1,updated_at=? WHERE id=? AND deleted_at<>''", (stamp, ident))
+        elif kind == "materials":
+            cur = conn.execute("UPDATE materials SET deleted_at='',status='Vigente',effective_to='',updated_at=? WHERE id=? AND deleted_at<>''", (stamp, ident))
+        elif kind == "fichas":
+            cur = conn.execute("UPDATE fichas SET deleted_at='',updated_at=? WHERE id=? AND deleted_at<>''", (stamp, ident))
+        else:
+            cur = conn.execute("UPDATE controls SET deleted_at='' WHERE id=? AND deleted_at<>''", (ident,))
+        if cur.rowcount == 0:
+            raise APIError("El elemento no está en la papelera.", 404)
+        return {"ok": True, "restored": True, "kind": kind, "id": ident}
+
+    def _purge_dependents(self, conn, kind, ident) -> None:
+        """Borra en cascada lo que depende del registro (instantáneas y líneas)."""
+        if kind == "products":
+            ficha_ids = [r[0] for r in conn.execute("SELECT id FROM fichas WHERE product_id=?", (ident,))]
+            if ficha_ids:
+                marks = ",".join("?" * len(ficha_ids))
+                control_ids = [r[0] for r in conn.execute(
+                    f"SELECT id FROM controls WHERE ficha_id IN ({marks})", ficha_ids)]
+                if control_ids:
+                    conn.execute(f"DELETE FROM control_items WHERE control_id IN ({','.join('?' * len(control_ids))})", control_ids)
+                    conn.execute(f"DELETE FROM controls WHERE id IN ({','.join('?' * len(control_ids))})", control_ids)
+                conn.execute(f"DELETE FROM ficha_items WHERE ficha_id IN ({marks})", ficha_ids)
+                conn.execute(f"DELETE FROM fichas WHERE id IN ({marks})", ficha_ids)
+        elif kind == "fichas":
+            control_ids = [r[0] for r in conn.execute("SELECT id FROM controls WHERE ficha_id=?", (ident,))]
+            if control_ids:
+                marks = ",".join("?" * len(control_ids))
+                conn.execute(f"DELETE FROM control_items WHERE control_id IN ({marks})", control_ids)
+                conn.execute(f"DELETE FROM controls WHERE id IN ({marks})", control_ids)
+            conn.execute("DELETE FROM ficha_items WHERE ficha_id=?", (ident,))
+        elif kind == "controls":
+            conn.execute("DELETE FROM control_items WHERE control_id=?", (ident,))
+
+    def _purge(self, conn, kind, ident):
+        """Borrado definitivo desde la papelera (elimina también sus documentos derivados)."""
+        if kind not in TRASH_TABLES:
+            raise APIError("Tipo de registro no válido.", 400)
+        row = conn.execute(f"SELECT id FROM {kind} WHERE id=? AND deleted_at<>''", (ident,)).fetchone()
+        if not row:
+            raise APIError("El elemento no está en la papelera.", 404)
+        self._purge_dependents(conn, kind, ident)
+        conn.execute(f"DELETE FROM {kind} WHERE id=?", (ident,))
+        return {"ok": True, "purged": True, "kind": kind, "id": ident}
+
+    def _empty_trash(self, conn):
+        removed = {"products": 0, "materials": 0, "fichas": 0, "controls": 0}
+        for kind in ("products", "fichas", "controls", "materials"):
+            for row in conn.execute(f"SELECT id FROM {kind} WHERE deleted_at<>''").fetchall():
+                self._purge_dependents(conn, kind, row[0])
+                removed[kind] += conn.execute(f"DELETE FROM {kind} WHERE id=?", (row[0],)).rowcount
+        return {"ok": True, "removed": sum(removed.values()), "by_kind": removed}
+
 
     def _create_ficha(self, conn, data):
         product_id = int(data.get("product_id"))
@@ -837,18 +1350,32 @@ class Handler(BaseHTTPRequestHandler):
         if len(items) > 100:
             raise APIError("No se permiten más de 100 componentes por ficha.")
         version = conn.execute("SELECT COALESCE(MAX(version),0)+1 FROM fichas WHERE product_id=?", (product_id,)).fetchone()[0]
+        yield_qty, yield_unit = self._clean_yield(data, product)
         stamp = now_iso()
         cur = conn.execute("""INSERT INTO fichas
-            (product_id,version,status,valid_from,observations,total_cost,created_at,updated_at)
-            VALUES (?,?,'Borrador',?,?, '0.00',?,?)""",
+            (product_id,version,status,valid_from,observations,total_cost,yield_qty,yield_unit,created_at,updated_at)
+            VALUES (?,?,'Borrador',?,?, '0.00',?,?,?,?)""",
             (product_id, version, sanitize_text(data.get("valid_from", date.today().isoformat()), 20),
-             sanitize_text(data.get("observations", ""), 1000), stamp, stamp))
+             sanitize_text(data.get("observations", ""), 1000), quantity_text(yield_qty), yield_unit, stamp, stamp))
         ficha_id = cur.lastrowid
         total = Decimal("0.00")
         for item in items:
             total += insert_ficha_item(conn, ficha_id, item)
         conn.execute("UPDATE fichas SET total_cost=? WHERE id=?", (money(total), ficha_id))
         return ficha_detail(conn, ficha_id)
+
+    def _clean_yield(self, data, product=None):
+        """Rendimiento del lote: comensales, copas, vasos… (cantidad > 0)."""
+        default_qty = (product or {}).get("yield_qty") if product else None
+        default_unit = (product or {}).get("yield_unit") if product else None
+        try:
+            qty = amount(data.get("yield_qty", default_qty or 1))
+        except ValueError:
+            qty = Decimal(1)
+        if qty <= 0:
+            qty = Decimal(1)
+        unit = sanitize_text(data.get("yield_unit", default_unit or "unidad"), 30) or "unidad"
+        return qty, unit
 
     def _update_ficha(self, conn, ficha_id, data):
         ficha = conn.execute("SELECT * FROM fichas WHERE id=?", (ficha_id,)).fetchone()
@@ -860,14 +1387,18 @@ class Handler(BaseHTTPRequestHandler):
         if not items:
             raise APIError("Añade al menos un insumo o componente.")
         if len(items) > 100:
-            raise APIError("No se permiten más de 100 componentes por ficha.")
+            raise APIError("No se pueden añadir más de 100 componentes por ficha.")
+        yield_qty, yield_unit = self._clean_yield(data, {"yield_qty": ficha["yield_qty"],
+                                                         "yield_unit": ficha["yield_unit"]})
         conn.execute("DELETE FROM ficha_items WHERE ficha_id=?", (ficha_id,))
         total = Decimal("0.00")
         for item in items:
             total += insert_ficha_item(conn, ficha_id, item)
-        conn.execute("UPDATE fichas SET observations=?,valid_from=?,total_cost=?,updated_at=? WHERE id=?",
+        conn.execute("""UPDATE fichas SET observations=?,valid_from=?,total_cost=?,yield_qty=?,yield_unit=?,
+            updated_at=? WHERE id=?""",
                      (sanitize_text(data.get("observations", ficha["observations"]), 1000),
-                      sanitize_text(data.get("valid_from", ficha["valid_from"]), 20), money(total), now_iso(), ficha_id))
+                      sanitize_text(data.get("valid_from", ficha["valid_from"]), 20), money(total),
+                      quantity_text(yield_qty), yield_unit, now_iso(), ficha_id))
         return ficha_detail(conn, ficha_id)
 
     def _approve_ficha(self, conn, ficha_id):
@@ -1117,10 +1648,10 @@ def generate_report(conn, report_type, filters=None):
     
     elif report_type == "materials_inventory":
         data = [dict(r) for r in conn.execute("""
-            SELECT code, name, unit, unit_price, currency, supplier, 
+            SELECT code, name, category, unit, unit_price, currency, stock, min_stock, supplier,
                    source, effective_from, status
-            FROM materials
-            ORDER BY name
+            FROM materials WHERE deleted_at=''
+            ORDER BY category, name
         """).fetchall()]
         return {"type": "materials_inventory", "data": data, "count": len(data)}
     
