@@ -781,6 +781,18 @@ SECURITY_HEADERS = {
 }
 
 
+def _mensaje_datos(exc: Exception) -> str:
+    """Mensaje claro para el usuario, sin exponer el error interno de Python."""
+    texto = str(exc)
+    if isinstance(exc, KeyError):
+        return f"Falta el campo {texto}." if texto else "Faltan datos obligatorios."
+    if "int()" in texto or "float()" in texto or "Decimal" in texto:
+        return "Hay un número no válido: revise las cantidades e identificadores."
+    if "NoneType" in texto:
+        return "Faltan datos obligatorios."
+    return "Datos no válidos: revise el formulario."
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "IPV-FichasCostos"  # sin número de versión: no se revela información
     protocol_version = "HTTP/1.1"
@@ -1043,7 +1055,7 @@ class Handler(BaseHTTPRequestHandler):
                 message = "Ya existe un Control IPV para esa ficha y período."
             self.send_json({"error": message}, 409)
         except (ValueError, TypeError, KeyError) as exc:
-            self.send_json({"error": str(exc) or "Datos no válidos."}, 400)
+            self.send_json({"error": _mensaje_datos(exc)}, 400)
         except Exception as exc:
             print("POST error:", repr(exc))
             self.send_json({"error": "Error interno del servidor."}, 500)
@@ -1076,7 +1088,7 @@ class Handler(BaseHTTPRequestHandler):
         except APIError as exc:
             self.send_json({"error": exc.message}, exc.status)
         except (ValueError, TypeError, KeyError) as exc:
-            self.send_json({"error": str(exc) or "Datos no válidos."}, 400)
+            self.send_json({"error": _mensaje_datos(exc)}, 400)
         except sqlite3.IntegrityError:
             self.send_json({"error": "No se pudo guardar: código duplicado o datos relacionados."}, 409)
         except Exception as exc:

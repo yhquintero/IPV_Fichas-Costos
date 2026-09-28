@@ -52,7 +52,7 @@ Día 13-14  Estabilizar    → correcciones rápidas, actualizar documentación 
 Una mejora **no está terminada** hasta que cumple todo esto:
 
 - [ ] Funciona en la **web** y en el **móvil** (o hay una deuda anotada con fecha).
-- [ ] `python -m unittest discover -s tests` en verde (78 pruebas y subiendo).
+- [ ] `python -m unittest discover -s tests` en verde (86 pruebas y subiendo).
 - [ ] `ruff check --select E9,F63,F7,F82 .` sin errores.
 - [ ] `bandit -ll -ii` sin hallazgos de severidad media/alta.
 - [ ] CI completo en verde, incluida la tanda con **base de datos cifrada** y el escaneo **ZAP**.
@@ -69,7 +69,7 @@ Una mejora **no está terminada** hasta que cumple todo esto:
 
 | Métrica | Hoy | Objetivo | Cómo se mide |
 |---|---|---|---|
-| Pruebas automáticas | 78 | +6 por trimestre | `unittest discover -s tests` |
+| Pruebas automáticas | 86 | +6 por trimestre | `unittest discover -s tests` |
 | Cobertura del servidor | ~70 % | ≥ 80 % | `coverage report` en CI |
 | Vulnerabilidades medias/altas | 0 | 0 | Bandit + ZAP en CI |
 | Peso de la web (JS+CSS) | ~180 KB | < 250 KB | tamaño de `web/` |
