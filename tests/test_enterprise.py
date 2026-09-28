@@ -99,9 +99,12 @@ class EnterpriseTest(unittest.TestCase):
         mats = self.req("GET", "/api/materials", token=admin)[1]
         self.assertEqual(self.req("DELETE", f"/api/materials/{mats[0]['id']}", token=admin)[0], 200)
         target = mats[0]["id"]
+        # El borrado es lógico: sale de la lista y queda en la papelera
         mats = {m["id"]: m for m in self.req("GET", "/api/materials", token=admin)[1]}
-        self.assertEqual(mats[target]["status"], "Inactivo")
-        # Deshacer: reactivar
+        self.assertNotIn(target, mats)
+        trash = self.req("GET", "/api/trash", token=admin)[1]["items"]
+        self.assertIn(target, [t["id"] for t in trash if t["kind"] == "materials"])
+        # Deshacer: restaurar desde la papelera
         self.assertEqual(self.req("POST", f"/api/materials/{target}/restore", {}, token=admin)[0], 200)
         mats = {m["id"]: m for m in self.req("GET", "/api/materials", token=admin)[1]}
         self.assertEqual(mats[target]["status"], "Vigente")

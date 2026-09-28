@@ -1,4 +1,4 @@
-# IPV · Fichas y Costos v1.0
+# IPV · Fichas y Costos v1.1
 
 **Sistema profesional de gestión de Fichas de Costo y Controles de IPV**
 
@@ -9,6 +9,14 @@ Autor: **Ing. Yosvany Hernández Quintero**
 ## 🎯 Características Principales
 
 ### 🎨 Interfaz Web
+- **Ajuste a la ventana**: la barra lateral ya no duplica el ancho; la aplicación cabe al 100 % sin reducir el zoom
+- **Valores del IPV con CRUD completo** (crear, ver, editar, eliminar) desde cualquier apartado, con categorías, existencias y precio
+- **Inventario**: existencias, mínimo, valor en almacén y recetas que usa cada insumo; se ve cuántos comensales o copas se pueden preparar
+- **Rendimiento de fichas**: cada plato indica comensales (o copas/vasos) y el costo por unidad; el inventario calcula cuántas raciones salen
+- **Papelera de reciclaje** en todos los módulos: restaurar o borrar definitivamente
+- **Licencia**: pantalla propia con ID del equipo, planes, WhatsApp y activación/renovación
+- **Datos de prueba**: catálogo amplio de comidas, licores, bebidas e inventario para aprender
+- **La app Android replica la web** y comparte la misma base de datos SQLite del servidor
 - **Diseño moderno** con glassmorphism, neumorphism y efectos 3D
 - **Modo oscuro/claro** con transiciones suaves
 - **Animaciones avanzadas**: confetti, parallax, morphing shapes, ripple effects
@@ -169,16 +177,29 @@ docker compose up -d    # contenedor de solo lectura, sin privilegios, usuario n
 
 ### Productos
 - `GET /api/products` - Listar productos
+- `GET /api/products/:id` - Detalle y fichas asociadas
 - `POST /api/products` - Crear producto
-- `DELETE /api/products/:id` - Desactivar producto
-- `POST /api/products/:id/restore` - Reactivar producto (deshacer; 404 si ya está activo)
+- `PUT /api/products/:id` - Actualizar (incluido el rendimiento del lote)
+- `DELETE /api/products/:id` - Enviar a la papelera
+- `POST /api/products/:id/restore` - Restaurar (404 si ya está activo)
 
 ### Materiales (Valores IPV)
 - `GET /api/materials` - Listar materiales
+- `GET /api/materials/:id` - Detalle, existencias y recetas que lo usan
 - `POST /api/materials` - Crear material
+- `PUT /api/materials/:id` - Actualizar (precio, categoría, existencias, vigencia…)
+- `POST /api/materials/:id/stock` - Entrada/salida de existencias (`delta` o `set`)
 - `POST /api/materials/bulk-update` - Actualización masiva
-- `DELETE /api/materials/:id` - Desactivar valor
-- `POST /api/materials/:id/restore` - Reactivar valor (deshacer; 404 si ya está activo)
+- `DELETE /api/materials/:id` - Enviar a la papelera
+- `POST /api/materials/:id/restore` · `POST /api/trash/materials/:id/restore` - Restaurar
+
+### Inventario y papelera
+- `GET /api/inventory` - Existencias, valor y raciones posibles por receta
+- `GET /api/trash` - Elementos en la papelera
+- `POST /api/trash/:kind/:id/restore` - Restaurar
+- `DELETE /api/trash/:kind/:id` - Borrado definitivo
+- `POST /api/trash/empty` - Vaciar la papelera
+- `POST /api/demo/seed` - Cargar (o completar) el catálogo de demostración
 
 ### Fichas de Costo
 - `GET /api/fichas` - Listar fichas
@@ -214,7 +235,7 @@ docker compose up -d    # contenedor de solo lectura, sin privilegios, usuario n
 
 | Tecla | Acción |
 |-------|--------|
-| `1-5` | Navegar entre vistas |
+| `1-8` | Navegar entre vistas (Resumen, Productos, Valores, Inventario, Fichas, Controles, Papelera, Licencia) |
 | `Ctrl+K` | Búsqueda global |
 | `F5` | Actualizar datos |
 | `Esc` | Cerrar modal |

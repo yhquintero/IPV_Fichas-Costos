@@ -4,16 +4,30 @@
    Autor: Ing. Yosvany Hernández Quintero
    ========================================================================== */
 
-const state = { view: 'dashboard', dashboard: null, products: [], materials: [], fichas: [], controls: [], search: '' };
+const state = {
+  view: 'dashboard', dashboard: null,
+  products: [], materials: [], fichas: [], controls: [],
+  trash: [], inventory: null, license: null, categories: { materials: [], products: [] },
+  search: '',
+  filters: { materials: { category: '', status: '' }, products: { category: '' }, inventory: { category: '', low: false } },
+};
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const content = $('#page-content');
 const modalLayer = $('#modal-layer');
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
+const YIELD_UNITS = ['comensales', 'copas', 'vasos', 'raciones', 'porciones', 'tazas', 'botellas', 'servicios', 'unidad'];
 
 const views = {
   dashboard: { crumb: 'Resumen' }, products: { crumb: 'Productos y servicios' },
-  materials: { crumb: 'Valores del IPV' }, fichas: { crumb: 'Fichas de costo' }, controls: { crumb: 'Controles de IPV' },
+  materials: { crumb: 'Valores del IPV' }, inventory: { crumb: 'Inventario' },
+  fichas: { crumb: 'Fichas de costo' }, controls: { crumb: 'Controles de IPV' },
+  trash: { crumb: 'Papelera de reciclaje' }, license: { crumb: 'Licencia' },
+};
+const viewRenderers = {
+  dashboard: 'renderDashboard', products: 'renderProducts', materials: 'renderMaterials',
+  inventory: 'renderInventory', fichas: 'renderFichas', controls: 'renderControls',
+  trash: 'renderTrash', license: 'renderLicense',
 };
 
 /* ── Utilities ── */
@@ -66,11 +80,18 @@ function setConn(on, label = '') {
 async function refreshData(quiet = false) {
   if (!quiet) setConn(false, 'Actualizando…');
   try {
-    const [d, p, m, f, c] = await Promise.all([api('/api/dashboard'), api('/api/products'), api('/api/materials'), api('/api/fichas'), api('/api/controls')]);
-    Object.assign(state, { dashboard: d, products: p, materials: m, fichas: f, controls: c });
+    const [d, p, m, f, c, t, inv, cat] = await Promise.all([
+      api('/api/dashboard'), api('/api/products'), api('/api/materials'), api('/api/fichas'),
+      api('/api/controls'), api('/api/trash'), api('/api/inventory'), api('/api/categories'),
+    ]);
+    Object.assign(state, { dashboard: d, products: p, materials: m, fichas: f, controls: c,
+      trash: t.items || [], inventory: inv, categories: cat });
     setConn(true, 'Base de datos conectada');
     $('#nav-products').textContent = p.filter(x => x.active).length;
+    $('#nav-materials').textContent = m.length;
     $('#nav-fichas').textContent = f.length;
+    $('#nav-trash').textContent = state.trash.length || '';
+    $('#nav-stock').textContent = `${(inv.totals.materials || 0) - (inv.totals.low_stock || 0)}`;
     $('#nav-pending-dot').style.display = c.some(x => x.status === 'Pendiente' || x.status === 'Con diferencias') ? 'block' : 'none';
     render();
   } catch (e) {
@@ -91,7 +112,12 @@ function setView(v) {
 }
 function render() {
   if (!state.dashboard) return;
-  ({ dashboard: renderDashboard, products: renderProducts, materials: renderMaterials, fichas: renderFichas, controls: renderControls })[state.view]();
+  const fns = {
+    dashboard: renderDashboard, products: renderProducts, materials: renderMaterials,
+    inventory: renderInventory, fichas: renderFichas, controls: renderControls,
+    trash: renderTrash, license: renderLicense,
+  };
+  (fns[state.view] || renderDashboard)();
 }
 
 /* ── Helpers ── */
@@ -99,6 +125,19 @@ function heading(eye, title, desc, action = '') { return `<div class="page-headi
 function statCard(label, value, note, icon) { return `<article class="stat-card"><div class="stat-top"><span>${label}</span><span class="stat-icon">${icon}</span></div><div class="stat-value">${value}</div><div class="stat-note">${note}</div></article>`; }
 function prodCell(name, code, cat) { return `<div class="product-cell"><div class="product-avatar ${catClass(cat)}">${catIcon(cat)}</div><div><span class="product-title">${esc(name)}</span><span class="product-code">${esc(code || '')}</span></div></div>`; }
 function searchBox(ph = 'Buscar por nombre o código…') { return `<label class="searchbox"><span>⌕</span><input id="table-search" type="search" placeholder="${ph}" value="${esc(state.search)}" autocomplete="off"></label>`; }
+function yieldBadge(qty, unit, tone = '') { return `<span class="yield-badge ${tone}" title="Rendimiento de la ficha">👥 ${esc(dec(qty))} ${esc(unit || '')}</span>`; }
+function stockPill(m) {
+  const low = Number(m.min_stock) > 0 && Number(m.stock) <= Number(m.min_stock);
+  return `<span class="stock-pill ${low ? 'low' : 'ok'}" title="Existencias / mínimo">${esc(dec(m.stock))} ${esc(m.unit)}${low ? ' ⚠' : ''}</span>`;
+}
+function rowActions(kind, item) {
+  const id = item.id;
+  return `<div class="row-actions">
+    <button class="icon-btn" data-action="view-${kind}" data-id="${id}" title="Ver detalle" aria-label="Ver detalle">👁</button>
+    <button class="icon-btn" data-action="edit-${kind}" data-id="${id}" title="Editar" aria-label="Editar">✎</button>
+    <button class="icon-btn danger" data-action="trash-${kind}" data-id="${id}" title="Mover a la papelera" aria-label="Eliminar">🗑</button>
+  </div>`;
+}
 
 /* ── Dashboard ── */
 function renderDashboard() {
@@ -117,24 +156,29 @@ function renderDashboard() {
   }).join('') : '';
 
   content.innerHTML = `
-    ${heading('Visión general', 'Control de costos integral', 'Gestión centralizada de productos, valores de referencia del IPV, fichas de costo y controles de verificación.', '<button class="primary-btn" data-action="create-ficha"><span class="plus">＋</span> Nueva ficha de costo</button>')}
+    ${heading('Visión general', 'Control de costos integral', 'Gestión centralizada de productos, valores de referencia del IPV, inventario, fichas de costo y controles de verificación.', '<button class="primary-btn" data-action="create-ficha"><span class="plus">＋</span> Nueva ficha de costo</button>')}
     <div class="stats-grid">
       ${statCard('Productos activos', d.products, '<span class="positive">Catálogo</span> · productos y servicios', '▦')}
       ${statCard('Fichas de costo', d.fichas, `<span class="positive">${d.approved_fichas} aprobadas</span> · todas las versiones`, '▤')}
       ${statCard('Controles pendientes', d.pending_controls, d.pending_controls ? '<span style="color:var(--orange)">Requieren revisión</span>' : '<span class="positive">Todos al día</span>', '◷')}
-      ${statCard('Valores de referencia', d.materials, 'Insumos y servicios registrados', '◈')}
+      ${statCard('Valores del IPV', d.materials, d.low_stock ? `<span style="color:var(--orange)">${d.low_stock} bajo mínimo</span> · existencias ${money(d.stock_value)}` : `Existencias valoradas en ${money(d.stock_value)}`, '◈')}
     </div>
     <div class="dashboard-grid">
       <section class="panel">
         <div class="panel-heading"><div><h2 class="panel-title">Fichas recientes</h2><p class="panel-subtitle">Últimos documentos modificados</p></div><button class="text-btn" data-view="fichas">Ver todas →</button></div>
         ${d.recent_fichas?.length
-          ? `<div class="table-wrap"><table><thead><tr><th>Producto</th><th>Estado</th><th>Costo total</th><th>Actualización</th><th></th></tr></thead><tbody>${d.recent_fichas.map(f => `<tr><td>${prodCell(f.product_name, f.product_code, f.category)}</td><td>${stPill(f.status)}</td><td class="amount">${money(f.total_cost)}</td><td>${dateLabel(f.updated_at)}</td><td><button class="text-btn" data-action="view-ficha" data-id="${f.id}">Abrir ↗</button></td></tr>`).join('')}</tbody></table></div>`
+          ? `<div class="table-wrap"><table><thead><tr><th>Producto</th><th>Rendimiento</th><th>Estado</th><th>Costo total</th><th>Actualización</th><th></th></tr></thead><tbody>${d.recent_fichas.map(f => `<tr><td>${prodCell(f.product_name, f.product_code, f.category)}</td><td>${yieldBadge(f.yield_qty, f.yield_unit)}</td><td>${stPill(f.status)}</td><td class="amount">${money(f.total_cost)}</td><td>${dateLabel(f.updated_at)}</td><td><button class="text-btn" data-action="view-ficha" data-id="${f.id}">Abrir ↗</button></td></tr>`).join('')}</tbody></table></div>`
           : '<div class="empty-state"><div class="empty-icon">▤</div><b>Empieza con una ficha</b><p>Crea la primera ficha de costo.</p><button class="primary-btn" data-action="create-ficha">Crear ficha</button></div>'}
       </section>
       <section class="panel category-panel">
         <div class="panel-heading"><div><h2 class="panel-title">Catálogo por categoría</h2><p class="panel-subtitle">Productos y servicios activos</p></div><button class="icon-button" data-view="products" title="Abrir catálogo">↗</button></div>
         <div class="category-list">${catRows}</div>
         ${chartBars ? `<div style="margin-top:20px"><div class="panel-subtitle" style="margin-bottom:10px;font-weight:600;font-size:10px;color:var(--text-3)">DISTRIBUCIÓN DE COSTOS</div><div class="category-list">${chartBars}</div></div>` : ''}
+        <div class="quick-grid">
+          <button class="quick-tile" data-action="create-material"><span>◈</span><b>Nuevo valor del IPV</b><small>Desde cualquier pantalla</small></button>
+          <button class="quick-tile" data-view="inventory"><span>▣</span><b>Ver inventario</b><small>${money(d.stock_value)} en existencias</small></button>
+          <button class="quick-tile" data-view="trash"><span>🗑</span><b>Papelera</b><small>${d.trash || 0} elemento(s)</small></button>
+        </div>
         <div class="insight-card"><small>CONTROL Y TRAZABILIDAD</small><b>Una historia para cada costo.</b><p>Las fichas aprobadas y los controles conservan la versión exacta utilizada para la revisión.</p></div>
       </section>
     </div>`;
@@ -143,29 +187,123 @@ function renderDashboard() {
 /* ── Products ── */
 function renderProducts() {
   const q = state.search.toLowerCase();
-  const cf = $('#product-category')?.value || '';
+  const cf = state.filters.products.category;
+  const cats = [...new Set(state.products.map(p => p.category))].sort();
   const rows = state.products.filter(p => `${p.name} ${p.code} ${p.category}`.toLowerCase().includes(q) && (!cf || p.category === cf));
   content.innerHTML = `
-    ${heading('Catálogo', 'Productos y servicios', 'Organiza los elementos que tendrán una Ficha de Costo asociada.', '<button class="primary-btn" data-action="create-product"><span class="plus">＋</span> Nuevo producto</button>')}
-    <div class="toolbar">${searchBox()}<select class="filter-select" id="product-category"><option value="">Todas las categorías</option>${[...new Set(state.products.map(p => p.category))].map(c => `<option value="${esc(c)}" ${c === cf ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select><button class="secondary-btn" data-action="export-products">⤓ Exportar CSV</button></div>
+    ${heading('Catálogo', 'Productos y servicios', 'Organiza los elementos que tendrán una Ficha de Costo asociada. El rendimiento indica cuántos comensales, copas o vasos salen de cada lote.', '<button class="primary-btn" data-action="create-product"><span class="plus">＋</span> Nuevo producto</button>')}
+    <div class="toolbar">${searchBox()}<select class="filter-select" id="product-category"><option value="">Todas las categorías</option>${cats.map(c => `<option value="${esc(c)}" ${c === cf ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select><button class="secondary-btn" data-action="export-products">⤓ Exportar CSV</button></div>
     <section class="panel table-panel">${rows.length
-      ? `<div class="table-wrap"><table><thead><tr><th>Producto</th><th>Categoría</th><th>Unidad</th><th>Fichas</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map(p => `<tr><td>${prodCell(p.name, p.code, p.category)}</td><td class="category-tag">${esc(p.category)}</td><td>${esc(p.unit)}</td><td>${p.ficha_count || 0}</td><td>${p.active ? '<span class="status approved">Activo</span>' : '<span class="status">Inactivo</span>'}</td><td><div class="table-actions">${p.active ? `<button class="danger-btn" data-action="deactivate-product" data-id="${p.id}">Desactivar</button>` : ''}</div></td></tr>`).join('')}</tbody></table></div>`
+      ? `<div class="table-wrap"><table style="min-width:920px"><thead><tr><th>Producto</th><th>Categoría</th><th>Unidad</th><th>Rendimiento</th><th>Fichas</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map(p => {
+        const yq = p.last_yield_qty || p.yield_qty || 1, yu = p.last_yield_unit || p.yield_unit || 'unidad';
+        return `<tr><td>${prodCell(p.name, p.code, p.category)}</td><td><span class="cat-pill">${esc(p.category)}</span></td><td>${esc(p.unit)}</td><td>${yieldBadge(yq, yu, p.category === 'Comidas' ? 'orange' : p.category === 'Bebidas' ? 'blue' : '')}</td><td>${p.ficha_count || 0}</td><td>${p.active ? (p.last_status ? stPill(p.last_status) : '<span class="status approved">Activo</span>') : '<span class="status">Inactivo</span>'}</td><td>${rowActions('product', p)}</td></tr>`;
+      }).join('')}</tbody></table></div>`
       : `<div class="empty-state"><div class="empty-icon">▦</div><b>${q || cf ? 'Sin resultados' : 'No hay productos'}</b><p>${q || cf ? 'Ajusta los filtros.' : 'Registra el primer producto del catálogo.'}</p></div>`}</section>`;
   $('#table-search')?.addEventListener('input', e => { state.search = e.target.value; renderProducts(); });
-  $('#product-category')?.addEventListener('change', () => renderProducts());
+  $('#product-category')?.addEventListener('change', e => { state.filters.products.category = e.target.value; renderProducts(); });
 }
 
-/* ── Materials ── */
+/* ── Materials (Valores del IPV) — CRUD completo ── */
 function renderMaterials() {
   const q = state.search.toLowerCase();
-  const rows = state.materials.filter(m => `${m.name} ${m.code} ${m.supplier}`.toLowerCase().includes(q));
+  const { category, status } = state.filters.materials;
+  const cats = [...new Set(state.materials.map(m => m.category || 'Insumos'))].sort();
+  const rows = state.materials.filter(m =>
+    `${m.name} ${m.code} ${m.supplier} ${m.category} ${m.source}`.toLowerCase().includes(q)
+    && (!category || (m.category || 'Insumos') === category)
+    && (!status || m.status === status));
+  const low = state.materials.filter(m => Number(m.min_stock) > 0 && Number(m.stock) <= Number(m.min_stock)).length;
+  const totalValue = state.materials.reduce((s, m) => s + Number(m.stock || 0) * Number(m.unit_price || 0), 0);
   content.innerHTML = `
-    ${heading('Referencias', 'Valores del IPV', 'Insumos, materias primas y servicios con precios unitarios de referencia para el cálculo de costos.', '<button class="primary-btn" data-action="create-material"><span class="plus">＋</span> Nuevo valor</button>')}
-    <div class="toolbar">${searchBox()}<button class="secondary-btn" data-action="export-materials">⤓ Exportar CSV</button></div>
+    ${heading('Referencias', 'Valores del IPV', 'Insumos, licores, bebidas y servicios con precio unitario, existencias y vigencia. Puede crearlos, editarlos o eliminarlos desde cualquier pantalla.', `
+      <div class="btn-row">
+        <button class="secondary-btn" data-action="seed-demo" title="Cargar más inventarios y fichas de ejemplo">🧪 Datos de prueba</button>
+        <button class="primary-btn" data-action="create-material"><span class="plus">＋</span> Nuevo valor</button>
+      </div>`)}
+    <div class="inv-grid">
+      <div class="inv-card"><small>Valores registrados</small><b>${state.materials.length}</b><span>${cats.length} categorías</span></div>
+      <div class="inv-card"><small>Valor del inventario</small><b>${money(totalValue)}</b><span>existencias × precio</span></div>
+      <div class="inv-card ${low ? 'warn' : ''}"><small>Bajo mínimo</small><b>${low}</b><span>${low ? 'requiere reposición' : 'todo en orden'}</span></div>
+      <div class="inv-card"><small>En la papelera</small><b>${state.trash.filter(t => t.kind === 'materials').length}</b><span><button class="text-btn" data-view="trash">Ver papelera →</button></span></div>
+    </div>
+    <div class="toolbar">${searchBox()}
+      <select class="filter-select" id="material-category"><option value="">Todas las categorías</option>${cats.map(c => `<option value="${esc(c)}" ${c === category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+      <select class="filter-select" id="material-status"><option value="">Todos los estados</option><option value="Vigente" ${status === 'Vigente' ? 'selected' : ''}>Vigente</option><option value="Inactivo" ${status === 'Inactivo' ? 'selected' : ''}>Inactivo</option></select>
+      <button class="secondary-btn" data-action="export-materials">⤓ Exportar CSV</button></div>
     <section class="panel table-panel">${rows.length
-      ? `<div class="table-wrap"><table><thead><tr><th>Insumo</th><th>Unidad</th><th>Precio</th><th>Moneda</th><th>Fuente</th><th>Vigencia</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map(m => `<tr><td><div class="product-cell"><div class="product-avatar" style="background:var(--orange-glow);color:var(--orange)">◈</div><div><span class="product-title">${esc(m.name)}</span><span class="product-code">${esc(m.code)}</span></div></div></td><td>${esc(m.unit)}</td><td class="amount">${money(m.unit_price)}</td><td>${esc(m.currency)}</td><td class="category-tag">${esc(m.source || m.supplier || '—')}</td><td>${dateLabel(m.effective_from)}</td><td>${stPill(m.status)}</td><td><div class="table-actions">${m.status !== 'Inactivo' ? `<button class="danger-btn" data-action="deactivate-material" data-id="${m.id}">Desactivar</button>` : ''}</div></td></tr>`).join('')}</tbody></table></div>`
-      : `<div class="empty-state"><div class="empty-icon">◈</div><b>${q ? 'Sin resultados' : 'No hay valores'}</b><p>${q ? 'Ajusta la búsqueda.' : 'Registra los insumos de referencia.'}</p></div>`}</section>`;
+      ? `<div class="table-wrap"><table style="min-width:1080px"><thead><tr><th>Valor del IPV</th><th>Categoría</th><th>Unidad</th><th>Precio</th><th>Existencias</th><th>Mínimo</th><th>Fuente</th><th>Vigencia</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map(m => `<tr><td><div class="product-cell"><div class="product-avatar" style="background:var(--orange-glow);color:var(--orange)">◈</div><div><span class="product-title">${esc(m.name)}</span><span class="product-code">${esc(m.code)}</span></div></div></td><td><span class="cat-pill">${esc(m.category || 'Insumos')}</span></td><td>${esc(m.unit)}</td><td class="amount">${money(m.unit_price)}</td><td>${stockPill(m)}</td><td>${dec(m.min_stock)}</td><td class="category-tag">${esc(m.source || m.supplier || '—')}</td><td>${dateLabel(m.effective_from)}</td><td>${stPill(m.status)}</td><td>${rowActions('material', m)}</td></tr>`).join('')}</tbody></table></div>`
+      : `<div class="empty-state"><div class="empty-icon">◈</div><b>${q || category || status ? 'Sin resultados' : 'No hay valores'}</b><p>${q || category || status ? 'Ajusta los filtros.' : 'Registra los insumos de referencia.'}</p><button class="primary-btn" data-action="create-material">Crear el primero</button></div>`}</section>`;
   $('#table-search')?.addEventListener('input', e => { state.search = e.target.value; renderMaterials(); });
+  $('#material-category')?.addEventListener('change', e => { state.filters.materials.category = e.target.value; renderMaterials(); });
+  $('#material-status')?.addEventListener('change', e => { state.filters.materials.status = e.target.value; renderMaterials(); });
+}
+
+/* ── Inventario ── */
+function renderInventory() {
+  const inv = state.inventory || { items: [], totals: {} };
+  const q = state.search.toLowerCase();
+  const { category, low } = state.filters.inventory;
+  const cats = [...new Set(inv.items.map(m => m.category || 'Insumos'))].sort();
+  const rows = inv.items.filter(m => `${m.name} ${m.code} ${m.category}`.toLowerCase().includes(q)
+    && (!category || (m.category || 'Insumos') === category) && (!low || m.low_stock));
+  content.innerHTML = `
+    ${heading('Almacén', 'Inventario de valores del IPV', 'Cuánto queda de cada insumo, cuánto vale y para qué recetas se utiliza. Sirve para saber cuántos comensales o copas se pueden preparar.', '<button class="primary-btn" data-action="create-material"><span class="plus">＋</span> Nuevo valor</button>')}
+    <div class="inv-grid">
+      <div class="inv-card"><small>Valores con control</small><b>${inv.totals.materials || 0}</b><span>${inv.totals.categories || 0} categorías</span></div>
+      <div class="inv-card"><small>Valor total del inventario</small><b>${money(inv.totals.stock_value)}</b><span>existencias × precio unitario</span></div>
+      <div class="inv-card ${inv.totals.low_stock ? 'warn' : ''}"><small>Bajo mínimo</small><b>${inv.totals.low_stock || 0}</b><span>${inv.totals.low_stock ? 'necesitan reposición' : 'nada que reponer'}</span></div>
+      <div class="inv-card"><small>En la papelera</small><b>${state.trash.filter(t => t.kind === 'materials').length}</b><span><button class="text-btn" data-view="trash">Recuperar →</button></span></div>
+    </div>
+    <div class="toolbar">${searchBox('Buscar en el inventario…')}
+      <select class="filter-select" id="inv-category"><option value="">Todas las categorías</option>${cats.map(c => `<option value="${esc(c)}" ${c === category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+      <label class="check-inline"><input type="checkbox" id="inv-low" ${low ? 'checked' : ''}> Solo bajo mínimo</label>
+      <button class="secondary-btn" data-action="export-inventory">⤓ Exportar CSV</button></div>
+    <section class="panel table-panel">${rows.length
+      ? `<div class="table-wrap"><table style="min-width:1120px"><thead><tr><th>Valor</th><th>Categoría</th><th>Existencias</th><th>Mínimo</th><th>Precio</th><th>Valor total</th><th>Entradas / salidas</th><th>Se usa en</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map(m => `<tr>
+        <td><div class="product-cell"><div class="product-avatar" style="background:var(--orange-glow);color:var(--orange)">◈</div><div><span class="product-title">${esc(m.name)}</span><span class="product-code">${esc(m.code)}</span></div></div></td>
+        <td><span class="cat-pill">${esc(m.category || 'Insumos')}</span></td>
+        <td>${stockPill(m)}</td><td>${dec(m.min_stock)} ${esc(m.unit)}</td>
+        <td class="amount">${money(m.unit_price)}</td><td class="amount">${money(m.stock_value)}</td>
+        <td><div class="stock-stepper">
+          <button data-action="stock-minus" data-id="${m.id}" title="Registrar salida">−</button>
+          <input type="number" step="0.01" value="${esc(m.stock)}" data-stock-input="${m.id}" aria-label="Existencias de ${esc(m.name)}">
+          <button data-action="stock-plus" data-id="${m.id}" title="Registrar entrada">＋</button>
+          <button class="icon-btn" data-action="stock-save" data-id="${m.id}" title="Guardar existencias">✓</button>
+        </div></td>
+        <td>${m.used_by.length
+          ? `<div class="chips">${m.used_by.slice(0, 3).map(u => `<span class="used-chip" title="${esc(u.product_name)}: ${esc(u.per_serving)} ${esc(m.unit)} por ${esc(u.yield_unit || 'unidad')}">${esc(u.product_name)} <b>${esc(dec(u.servings))}</b></span>`).join('')}${m.used_by.length > 3 ? `<span class="used-chip">+${m.used_by.length - 3}</span>` : ''}</div>`
+          : '<span style="color:var(--text-4)">Sin recetas</span>'}</td>
+        <td>${rowActions('material', m)}</td></tr>`).join('')}</tbody></table></div>`
+      : `<div class="empty-state"><div class="empty-icon">▣</div><b>${q || category || low ? 'Sin resultados' : 'Inventario vacío'}</b><p>${q || category || low ? 'Ajusta los filtros.' : 'Cargue datos de prueba o registre valores del IPV.'}</p><button class="primary-btn" data-action="seed-demo">🧪 Cargar datos de prueba</button></div>`}</section>`;
+  $('#table-search')?.addEventListener('input', e => { state.search = e.target.value; renderInventory(); });
+  $('#inv-category')?.addEventListener('change', e => { state.filters.inventory.category = e.target.value; renderInventory(); });
+  $('#inv-low')?.addEventListener('change', e => { state.filters.inventory.low = e.target.checked; renderInventory(); });
+  $$('[data-stock-input]').forEach(inp => inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); saveStock(inp.dataset.stockInput); } }));
+}
+
+/* ── Papelera de reciclaje ── */
+const TRASH_ICON = { products: '▦', materials: '◈', fichas: '▤', controls: '✓' };
+function renderTrash() {
+  const q = state.search.toLowerCase();
+  const rows = state.trash.filter(t => `${t.name} ${t.code} ${t.kind_label}`.toLowerCase().includes(q));
+  content.innerHTML = `
+    ${heading('Recuperación', 'Papelera de reciclaje', 'Todo lo que elimina pasa aquí: puede restaurarlo o borrarlo definitivamente. Nada se pierde por accidente.', rows.length
+      ? `<button class="danger-btn" data-action="empty-trash">Vaciar papelera</button>` : '')}
+    <div class="toolbar">${searchBox('Buscar en la papelera…')}</div>
+    <section class="panel">
+      ${rows.length ? rows.map(t => `<div class="trash-item">
+        <div class="trash-icon">${TRASH_ICON[t.kind] || '•'}</div>
+        <div class="trash-body">
+          <b>${esc(t.name)}</b>
+          <small>${esc(t.kind_label)}${t.code ? ` · ${esc(t.code)}` : ''}${t.period ? ` · ${esc(t.period)}` : ''}${t.detail ? ` · ${esc(t.detail)}` : ''} · eliminado el ${dateLabel(t.deleted_at)}</small>
+        </div>
+        <div class="trash-actions">
+          <button class="secondary-btn" data-action="restore-trash" data-kind="${t.kind}" data-id="${t.id}">↶ Restaurar</button>
+          <button class="danger-btn" data-action="purge-trash" data-kind="${t.kind}" data-id="${t.id}" title="Borrado definitivo">Eliminar</button>
+        </div>
+      </div>`).join('') : `<div class="trash-empty-note"><div style="font-size:34px;margin-bottom:10px">🗑</div><b>La papelera está vacía</b><p>Los elementos que elimine aparecerán aquí para poder recuperarlos.</p></div>`}
+    </section>`;
+  $('#table-search')?.addEventListener('input', e => { state.search = e.target.value; renderTrash(); });
 }
 
 /* ── Fichas ── */
@@ -174,13 +312,81 @@ function renderFichas() {
   const sf = $('#ficha-status')?.value || '';
   const rows = state.fichas.filter(f => `${f.product_name} ${f.product_code} ${f.category}`.toLowerCase().includes(q) && (!sf || f.status === sf));
   content.innerHTML = `
-    ${heading('Documentos', 'Fichas de costo', 'Cada ficha registra los componentes y el costo total. Se versionan automáticamente.', '<button class="primary-btn" data-action="create-ficha"><span class="plus">＋</span> Nueva ficha</button>')}
+    ${heading('Documentos', 'Fichas de costo', 'Cada ficha registra los componentes, el costo del lote, cuántos comensales o copas salen de él y cuánto queda en inventario.', '<button class="primary-btn" data-action="create-ficha"><span class="plus">＋</span> Nueva ficha</button>')}
     <div class="toolbar">${searchBox()}<select class="filter-select" id="ficha-status"><option value="">Todos los estados</option><option value="Borrador" ${sf === 'Borrador' ? 'selected' : ''}>Borrador</option><option value="Aprobada" ${sf === 'Aprobada' ? 'selected' : ''}>Aprobada</option></select><button class="secondary-btn" data-action="export-fichas">⤓ Exportar CSV</button></div>
     <section class="panel table-panel">${rows.length
-      ? `<div class="table-wrap"><table><thead><tr><th>Producto</th><th>Versión</th><th>Vigente</th><th>Componentes</th><th>Costo total</th><th>Estado</th><th></th></tr></thead><tbody>${rows.map(f => `<tr><td>${prodCell(f.product_name, f.product_code, f.category)}</td><td>v${f.version}</td><td>${dateLabel(f.valid_from)}</td><td>${f.item_count || 0}</td><td class="amount">${money(f.total_cost)}</td><td>${stPill(f.status)}</td><td><button class="text-btn" data-action="view-ficha" data-id="${f.id}">Abrir ↗</button></td></tr>`).join('')}</tbody></table></div>`
-      : `<div class="empty-state"><div class="empty-icon">▤</div><b>${q || sf ? 'Sin resultados' : 'No hay fichas'}</b><p>${q || sf ? 'Ajusta los filtros.' : 'Crea la primera ficha de costo.'}</p></div>`}</section>`;
+      ? `<div class="table-wrap"><table style="min-width:1000px"><thead><tr><th>Producto</th><th>Versión</th><th>Vigente</th><th>Rinde</th><th>Componentes</th><th>Costo lote</th><th>Costo por unidad</th><th>Con el inventario</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map(f => {
+        const short = Number(f.servings_from_stock);
+        const tone = f.servings_from_stock === null || f.servings_from_stock === undefined ? '' : short <= 0 ? 'red' : short < Number(f.yield_qty || 1) ? 'orange' : 'green';
+        return `<tr><td>${prodCell(f.product_name, f.product_code, f.category)}</td><td>v${f.version}</td><td>${dateLabel(f.valid_from)}</td>
+        <td>${yieldBadge(f.yield_qty, f.yield_unit, f.category === 'Comidas' ? 'orange' : 'blue')}</td>
+        <td>${f.item_count || 0}</td><td class="amount">${money(f.total_cost)}</td>
+        <td class="amount">${money(f.cost_per_serving)} <small style="color:var(--text-4)">/ ${esc(f.yield_unit || '')}</small></td>
+        <td>${f.servings_from_stock === null || f.servings_from_stock === undefined ? '—' : `<span class="yield-badge ${tone}">≈ ${dec(f.servings_from_stock)} ${esc(f.yield_unit || '')}</span>`}</td>
+        <td>${stPill(f.status)}</td><td>${rowActions('ficha', f)}</td></tr>`;
+      }).join('')}</tbody></table></div>`
+      : `<div class="empty-state"><div class="empty-icon">▤</div><b>${q || sf ? 'Sin resultados' : 'No hay fichas'}</b><p>${q || sf ? 'Ajusta los filtros.' : 'Cree la primera ficha de costo o cargue los datos de prueba.'}</p><button class="primary-btn" data-action="seed-demo">🧪 Cargar datos de prueba</button></div>`}</section>`;
   $('#table-search')?.addEventListener('input', e => { state.search = e.target.value; renderFichas(); });
   $('#ficha-status')?.addEventListener('change', () => renderFichas());
+}
+
+/* ── Licencia ── */
+function renderLicense() {
+  const lic = state.license;
+  content.innerHTML = `<div class="lic-page">
+    ${heading('Licencia', 'Licencia de uso', 'La licencia se firma digitalmente y queda atada a este equipo. Puede consultarla, renovarla o solicitar una nueva en cualquier momento.', '')}
+    <div id="lic-body"><div class="lic-status-card"><div class="lic-status-icon">🔑</div><div class="lic-status-copy"><h3>Consultando…</h3><p>Verificando la licencia de este equipo.</p></div></div></div>
+  </div>`;
+  loadLicenseInto($('#lic-body'));
+}
+
+function fmtDate(ts) {
+  if (!ts) return '—';
+  return new Intl.DateTimeFormat('es', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(ts * 1000));
+}
+
+function loadLicenseInto(box) {
+  if (!box) return;
+  fetch('/api/license', { headers: { Accept: 'application/json' } })
+    .then(r => r.json())
+    .then(lic => {
+      state.license = lic;
+      if (!box.isConnected) return;
+      if (!lic.enforced) {
+        box.innerHTML = `<div class="lic-status-card off"><div class="lic-status-icon">🛡</div><div class="lic-status-copy">
+          <h3>Licencias desactivadas</h3><p>${esc(lic.reason || 'El proveedor no configuró la clave pública.')}</p></div>
+          <button class="secondary-btn" data-action="reload-license">Actualizar</button></div>
+          <div class="panel"><h3 class="panel-title">¿Cómo se activan?</h3>
+          <p class="small-note">El proveedor ejecuta <code>python keygen/keygen.py init --whatsapp 53XXXXXXXX</code> una sola vez; a partir de ahí el servidor exige licencia y la web muestra este apartado con el código de solicitud del equipo.</p></div>`;
+        return;
+      }
+      const days = lic.days_left ?? 0;
+      const cls = lic.valid ? (days <= 7 ? 'bad' : 'ok') : 'bad';
+      const icon = lic.valid ? (days <= 7 ? '⏳' : '✅') : '🔒';
+      const plans = Object.entries(lic.plans || {});
+      box.innerHTML = `
+        <div class="lic-status-card ${cls}"><div class="lic-status-icon">${icon}</div>
+          <div class="lic-status-copy"><h3>${lic.valid ? `Licencia vigente — ${esc(lic.plan_name || '')}` : 'Este equipo no tiene licencia'}</h3>
+          <p>${lic.valid ? `A nombre de ${esc(lic.user || '')} · serie ${esc(lic.serial || '')}` : esc(lic.reason || '')}</p></div>
+          <button class="primary-btn" data-action="open-license">${lic.valid ? 'Renovar' : 'Activar'}</button></div>
+        ${lic.valid ? `<div class="lic-kv">
+          <div><small>Plan</small><b>${esc(lic.plan_name)}</b></div>
+          <div><small>Emitida</small><b>${fmtDate(lic.issued_at)}</b></div>
+          <div><small>Vence</small><b>${fmtDate(lic.expires_at)}</b></div>
+          <div><small>Días restantes</small><b style="color:${days <= 7 ? 'var(--orange)' : 'var(--green)'}">${days}</b></div>
+        </div>` : ''}
+        <div class="panel">
+          <div class="panel-heading"><div><h2 class="panel-title">ID de este equipo</h2><p class="panel-subtitle">Cifrado con SHA-256: no contiene datos del equipo</p></div>
+            <button class="secondary-btn" data-action="copy-device">📋 Copiar</button></div>
+          <code class="lic-code">${esc(lic.request_code || '')}</code>
+          <p class="small-note" style="margin-top:10px">Envíe este código al proveedor para recibir la licencia. ${lic.whatsapp ? `<button class="text-btn" data-action="whatsapp-license">💬 Solicitar por WhatsApp</button>` : ''}</p>
+        </div>
+        <div class="panel">
+          <div class="panel-heading"><div><h2 class="panel-title">Planes disponibles</h2><p class="panel-subtitle">Precios de referencia del proveedor</p></div></div>
+          <div class="plan-grid">${plans.map(([k, p]) => `<div class="plan-card"><b>${esc(p.name)}</b><div class="plan-usd">${p.usd} USD</div><small>${p.days} días de uso</small></div>`).join('')}</div>
+        </div>`;
+    })
+    .catch(e => { if (box.isConnected) box.innerHTML = `<div class="lic-status-card bad"><div class="lic-status-icon">⚠</div><div class="lic-status-copy"><h3>No se pudo consultar la licencia</h3><p>${esc(e.message)}</p></div><button class="secondary-btn" data-action="reload-license">Reintentar</button></div>`; });
 }
 
 /* ── Controls ── */
@@ -203,7 +409,21 @@ function showModal(title, subtitle, body) {
   modalLayer.hidden = false;
   modalLayer.innerHTML = `<div class="modal-card"><div class="modal-head"><div><h2>${esc(title)}</h2><p>${esc(subtitle)}</p></div><button class="modal-close" data-action="close-modal" aria-label="Cerrar">×</button></div><div class="modal-body">${body}</div></div>`;
 }
-function closeModal() { modalLayer.hidden = true; modalLayer.innerHTML = ''; }
+/* Permite abrir un formulario anidado (p. ej. crear un valor del IPV mientras se
+   edita una ficha) sin perder lo que el usuario ya había escrito. */
+let preservedModal = null;
+function preserveModal() {
+  const card = modalLayer.firstElementChild;
+  if (card) { preservedModal = card; card.remove(); }
+}
+function restoreModal() {
+  if (!preservedModal) return false;
+  modalLayer.hidden = false;
+  modalLayer.appendChild(preservedModal);
+  preservedModal = null;
+  return true;
+}
+function closeModal() { modalLayer.hidden = true; modalLayer.innerHTML = ''; restoreModal(); }
 
 /* ── About ── */
 function openAbout() {
@@ -220,38 +440,251 @@ function openAbout() {
 }
 
 /* ── Forms ── */
-function openProductModal() {
-  showModal('Nuevo producto o servicio', 'Se añadirá al catálogo activo.', `<form id="pf"><div class="form-grid"><div class="form-field"><label>Código *</label><input id="p-code" required placeholder="Ej: BEB-003"></div><div class="form-field"><label>Categoría *</label><input id="p-cat" required placeholder="Bebidas, Comidas, Servicios"></div><div class="form-field full"><label>Nombre *</label><input id="p-name" required placeholder="Nombre del producto o servicio"></div><div class="form-field"><label>Unidad</label><input id="p-unit" value="unidad"></div><div class="form-field full"><label>Descripción</label><textarea id="p-desc" placeholder="Notas adicionales"></textarea></div></div><div class="modal-actions"><button type="button" class="secondary-btn" data-action="close-modal">Cancelar</button><button class="primary-btn" type="submit">Registrar producto</button></div></form>`);
-  $('#pf').addEventListener('submit', async e => { e.preventDefault(); try { await api('/api/products', { method: 'POST', body: JSON.stringify({ code: $('#p-code').value, name: $('#p-name').value, category: $('#p-cat').value, unit: $('#p-unit').value || 'unidad', description: $('#p-desc').value }) }); closeModal(); await refreshData(true); toast('Producto registrado correctamente.', 'success'); } catch (err) { toast(err.message, 'error'); } });
+function yieldUnitOptions(selected) {
+  const list = YIELD_UNITS.includes(selected) ? YIELD_UNITS : [selected, ...YIELD_UNITS].filter(Boolean);
+  return list.map(u => `<option value="${esc(u)}" ${u === selected ? 'selected' : ''}>${esc(u)}</option>`).join('');
 }
 
-function openMaterialModal() {
-  showModal('Nuevo valor de referencia', 'Insumo o servicio con precio unitario.', `<form id="mf"><div class="form-grid"><div class="form-field"><label>Código *</label><input id="m-code" required placeholder="INS-013"></div><div class="form-field"><label>Nombre *</label><input id="m-name" required></div><div class="form-field"><label>Unidad *</label><input id="m-unit" required placeholder="kg, L, unidad"></div><div class="form-field"><label>Precio unitario *</label><input id="m-price" type="number" step="0.01" min="0" required></div><div class="form-field"><label>Moneda</label><select id="m-curr"><option>CUP</option><option>MLC</option><option>USD</option></select></div><div class="form-field"><label>Proveedor</label><input id="m-sup"></div><div class="form-field full"><label>Fuente</label><input id="m-src" placeholder="Resolución, factura…"></div><div class="form-field"><label>Vigente desde</label><input id="m-from" type="date" value="${new Date().toISOString().slice(0, 10)}"></div><div class="form-field"><label>Vigente hasta</label><input id="m-to" type="date"></div></div><div class="modal-actions"><button type="button" class="secondary-btn" data-action="close-modal">Cancelar</button><button class="primary-btn" type="submit">Registrar valor</button></div></form>`);
-  $('#mf').addEventListener('submit', async e => { e.preventDefault(); try { await api('/api/materials', { method: 'POST', body: JSON.stringify({ code: $('#m-code').value, name: $('#m-name').value, unit: $('#m-unit').value, unit_price: $('#m-price').value, currency: $('#m-curr').value, supplier: $('#m-sup').value, source: $('#m-src').value, effective_from: $('#m-from').value, effective_to: $('#m-to').value }) }); closeModal(); await refreshData(true); toast('Valor registrado.', 'success'); } catch (err) { toast(err.message, 'error'); } });
+function openProductModal(existing = null) {
+  const isEdit = !!existing;
+  const p = existing || {};
+  const cats = state.categories.products.length ? state.categories.products : ['Comidas', 'Bebidas', 'Servicios'];
+  const unit = p.yield_unit || (/comida/i.test(p.category || '') ? 'comensales' : /bebida/i.test(p.category || '') ? 'copas' : 'unidad');
+  showModal(isEdit ? 'Editar producto o servicio' : 'Nuevo producto o servicio', isEdit ? `Código ${p.code}` : 'Se añadirá al catálogo activo.', `
+    <form id="pf"><div class="form-grid">
+      <div class="form-field"><label>Código *</label><input id="p-code" required value="${esc(p.code || '')}" placeholder="Ej: BEB-003"></div>
+      <div class="form-field"><label>Categoría *</label><input id="p-cat" required list="product-cats" value="${esc(p.category || '')}" placeholder="Comidas, Bebidas, Servicios">
+        <datalist id="product-cats">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist></div>
+      <div class="form-field full"><label>Nombre *</label><input id="p-name" required value="${esc(p.name || '')}" placeholder="Nombre del producto o servicio"></div>
+      <div class="form-field"><label>Unidad de venta</label><input id="p-unit" value="${esc(p.unit || 'unidad')}"></div>
+      <div class="form-field"><label>Rendimiento del lote *</label><input id="p-yield" type="number" step="0.01" min="0.01" required value="${esc(p.yield_qty || p.last_yield_qty || 1)}"><span class="form-hint">Cuántas raciones, copas o comensales salen de una ficha completa.</span></div>
+      <div class="form-field"><label>Unidad del rendimiento</label><select id="p-yield-unit">${yieldUnitOptions(unit)}</select></div>
+      <div class="form-field full"><label>Descripción</label><textarea id="p-desc" placeholder="Notas adicionales">${esc(p.description || '')}</textarea></div>
+    </div><div class="modal-actions">
+      <button type="button" class="secondary-btn" data-action="close-modal">Cancelar</button>
+      <button class="primary-btn" type="submit">${isEdit ? 'Guardar cambios' : 'Registrar producto'}</button></div></form>`);
+  $('#pf').addEventListener('submit', async e => {
+    e.preventDefault();
+    const payload = { code: $('#p-code').value, name: $('#p-name').value, category: $('#p-cat').value,
+      unit: $('#p-unit').value || 'unidad', description: $('#p-desc').value,
+      yield_qty: $('#p-yield').value, yield_unit: $('#p-yield-unit').value };
+    try {
+      if (isEdit) await api(`/api/products/${p.id}`, { method: 'PUT', body: JSON.stringify(payload) });
+      else await api('/api/products', { method: 'POST', body: JSON.stringify(payload) });
+      closeModal(); await refreshData(true);
+      toast(isEdit ? 'Producto actualizado.' : 'Producto registrado correctamente.', 'success');
+    } catch (err) { toast(err.message, 'error'); }
+  });
 }
 
-function openFichaModal(ficha = null) {
+function openMaterialModal(existing = null, afterCreate = false) {
+  const isEdit = !!existing;
+  const m = existing || {};
+  const cats = state.categories.materials.length ? state.categories.materials
+    : ['Licores', 'Cervezas', 'Vinos', 'Bebidas sin alcohol', 'Cafés y tés', 'Granos y básicos', 'Condimentos', 'Vegetales', 'Frutas', 'Carnes', 'Aves', 'Pescados', 'Mariscos', 'Lácteos', 'Panadería', 'Hierbas', 'Servicios', 'Insumos'];
+  const today = new Date().toISOString().slice(0, 10);
+  showModal(isEdit ? 'Editar valor del IPV' : 'Nuevo valor del IPV', isEdit ? `Código ${m.code} · se actualizará en todas las fichas que lo usan` : 'Insumo, licor, bebida o servicio con precio y existencias.', `
+    <form id="mf"><div class="form-grid">
+      <div class="form-field"><label>Código *</label><input id="m-code" required value="${esc(m.code || '')}" placeholder="Ej: LIC-025"></div>
+      <div class="form-field"><label>Nombre *</label><input id="m-name" required value="${esc(m.name || '')}"></div>
+      <div class="form-field"><label>Categoría *</label><input id="m-cat" required list="material-cats" value="${esc(m.category || '')}" placeholder="Licores, Insumos, Servicios">
+        <datalist id="material-cats">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist></div>
+      <div class="form-field"><label>Unidad *</label><input id="m-unit" required value="${esc(m.unit || '')}" placeholder="kg, L, unidad, hora"></div>
+      <div class="form-field"><label>Precio unitario *</label><input id="m-price" type="number" step="0.01" min="0" required value="${esc(m.unit_price ?? '0')}"></div>
+      <div class="form-field"><label>Moneda</label><select id="m-curr">${['CUP', 'MLC', 'USD', 'EUR'].map(c => `<option ${c === (m.currency || 'CUP') ? 'selected' : ''}>${c}</option>`).join('')}</select></div>
+      <div class="form-field"><label>Existencias en almacén</label><input id="m-stock" type="number" step="0.001" min="0" value="${esc(m.stock ?? '0')}"><span class="form-hint">Cuánto queda ahora mismo.</span></div>
+      <div class="form-field"><label>Existencia mínima</label><input id="m-min" type="number" step="0.001" min="0" value="${esc(m.min_stock ?? '0')}"><span class="form-hint">Por debajo de este valor se avisa.</span></div>
+      <div class="form-field"><label>Proveedor</label><input id="m-sup" value="${esc(m.supplier || '')}"></div>
+      <div class="form-field"><label>Estado</label><select id="m-status">${['Vigente', 'Inactivo'].map(s => `<option ${s === (m.status || 'Vigente') ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
+      <div class="form-field full"><label>Fuente</label><input id="m-src" value="${esc(m.source || '')}" placeholder="Resolución, factura, lista de precios…"></div>
+      <div class="form-field"><label>Vigente desde</label><input id="m-from" type="date" value="${esc(m.effective_from || today)}"></div>
+      <div class="form-field"><label>Vigente hasta</label><input id="m-to" type="date" value="${esc(m.effective_to || '')}"></div>
+    </div><div class="modal-actions">
+      <button type="button" class="secondary-btn" data-action="close-modal">Cancelar</button>
+      <button class="primary-btn" type="submit">${isEdit ? 'Guardar cambios' : 'Registrar valor'}</button></div></form>`);
+  $('#mf').addEventListener('submit', async e => {
+    e.preventDefault();
+    const payload = { code: $('#m-code').value, name: $('#m-name').value, unit: $('#m-unit').value,
+      category: $('#m-cat').value, unit_price: $('#m-price').value, currency: $('#m-curr').value,
+      stock: $('#m-stock').value, min_stock: $('#m-min').value, supplier: $('#m-sup').value,
+      source: $('#m-src').value, status: $('#m-status').value,
+      effective_from: $('#m-from').value, effective_to: $('#m-to').value };
+    try {
+      let saved;
+      if (isEdit) saved = await api(`/api/materials/${m.id}`, { method: 'PUT', body: JSON.stringify(payload) });
+      else saved = await api('/api/materials', { method: 'POST', body: JSON.stringify(payload) });
+      closeModal(); await refreshData(true);
+      toast(isEdit ? 'Valor del IPV actualizado.' : 'Valor del IPV registrado.', 'success');
+      // Creado desde el constructor de una ficha: vuelve al lote y lo ofrece en la lista
+      if (afterCreate && saved && saved.id) setTimeout(() => window.__fichaDraft?.add(saved), 80);
+    } catch (err) { toast(err.message, 'error'); }
+  });
+}
+
+/* ── Detalle de un valor del IPV ── */
+async function openMaterialDetail(id) {
+  try {
+    const m = await api(`/api/materials/${id}`);
+    const used = m.used_by.length
+      ? `<div class="table-wrap"><table><thead><tr><th>Se usa en</th><th>Por unidad</th><th>Con el inventario</th><th>Ficha</th></tr></thead><tbody>
+        ${m.used_by.map(u => `<tr><td>${prodCell(u.product_name, u.product_code, u.category)}</td><td>${esc(u.per_serving)} ${esc(m.unit)}</td><td>${u.servings === null ? '—' : `<span class="yield-badge green">≈ ${dec(u.servings)} ${esc(u.yield_unit || 'unidad')}</span>`}</td><td>${stPill(u.ficha_status)}</td></tr>`).join('')}
+        </tbody></table></div>`
+      : '<div class="empty-state"><div class="empty-icon">▤</div><b>Sin recetas que lo usen</b><p>Este valor todavía no aparece en ninguna ficha de costo.</p></div>';
+    showModal(`Valor del IPV · ${m.name}`, `${m.code} · ${m.category || 'Insumos'}`, `
+      <div class="detail-grid">
+        <div class="detail-box"><span>Precio unitario</span><b>${money(m.unit_price)}</b></div>
+        <div class="detail-box"><span>Existencias</span><b style="color:${m.low_stock ? 'var(--red)' : 'var(--text)'}">${dec(m.stock)} ${esc(m.unit)}</b></div>
+        <div class="detail-box"><span>Existencia mínima</span><b>${dec(m.min_stock)} ${esc(m.unit)}</b></div>
+        <div class="detail-box"><span>Valor en almacén</span><b>${money(m.stock_value)}</b></div>
+        <div class="detail-box"><span>Proveedor</span><b>${esc(m.supplier || '—')}</b></div>
+        <div class="detail-box"><span>Fuente / vigencia</span><b>${esc(m.source || '—')} · ${dateLabel(m.effective_from)}</b></div>
+      </div>${used}
+      <div class="modal-actions">
+        <button class="secondary-btn" data-action="close-modal">Cerrar</button>
+        <button class="secondary-btn" data-action="edit-material" data-id="${m.id}">✎ Editar</button>
+        <button class="primary-btn" data-action="view-fichas-of-material" data-id="${m.id}">Ver fichas</button>
+      </div>`);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function openProductDetail(id) {
+  try {
+    const p = await api(`/api/products/${id}`);
+    const fichas = p.fichas.length
+      ? `<div class="table-wrap"><table><thead><tr><th>Versión</th><th>Rinde</th><th>Costo lote</th><th>Por unidad</th><th>Estado</th><th></th></tr></thead><tbody>
+        ${p.fichas.map(f => `<tr><td>v${f.version}</td><td>${yieldBadge(f.yield_qty, f.yield_unit)}</td><td class="amount">${money(f.total_cost)}</td><td class="amount">${money(f.cost_per_serving || '0')}</td><td>${stPill(f.status)}</td><td><button class="text-btn" data-action="view-ficha" data-id="${f.id}">Abrir ↗</button></td></tr>`).join('')}
+        </tbody></table></div>`
+      : '<div class="empty-state"><div class="empty-icon">▤</div><b>Sin fichas de costo</b><p>Cree la primera ficha para este producto.</p></div>';
+    showModal(`Producto · ${p.name}`, `${p.code} · ${p.category}`, `
+      <div class="detail-grid">
+        <div class="detail-box"><span>Unidad de venta</span><b>${esc(p.unit)}</b></div>
+        <div class="detail-box"><span>Rendimiento por lote</span><b>${dec(p.yield_qty)} ${esc(p.yield_unit)}</b></div>
+        <div class="detail-box"><span>Versiones de ficha</span><b>${p.fichas.length}</b></div>
+        <div class="detail-box"><span>Estado</span><b>${p.active ? 'Activo' : 'Inactivo'}</b></div>
+      </div>${p.description ? `<div class="small-note">${esc(p.description)}</div>` : ''}${fichas}
+      <div class="modal-actions">
+        <button class="secondary-btn" data-action="close-modal">Cerrar</button>
+        <button class="secondary-btn" data-action="edit-product" data-id="${p.id}">✎ Editar</button>
+        <button class="primary-btn" data-action="create-ficha-for" data-id="${p.id}">＋ Nueva ficha</button>
+      </div>`);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function openFichaModal(ficha = null, presetProductId = null) {
   const isEdit = !!ficha;
   const ap = state.products.filter(p => p.active);
   if (!ap.length) { toast('Registre un producto activo primero.', 'error'); return; }
   if (!state.materials.length) { toast('Registre un valor de referencia primero.', 'error'); return; }
-  const pid = ficha?.product_id || ap[0].id;
+  const pid = Number(ficha?.product_id || presetProductId || ap[0].id);
+  const sel = ap.find(p => p.id === pid) || ap[0];
   const lines = ficha?.items?.map(i => ({ materialId: i.material_id, description: i.description, quantity: i.quantity, unit: i.unit, unitCost: i.unit_cost })) || [];
+  const defaultUnit = sel.yield_unit || (/comida/i.test(sel.category) ? 'comensales' : /bebida/i.test(sel.category) ? 'copas' : 'unidad');
 
-  showModal(isEdit ? 'Editar ficha' : 'Nueva ficha de costo', isEdit ? `Versión ${ficha.version}` : 'Se creará en estado borrador.', `<form id="ff"><div class="form-grid"><div class="form-field full"><label>Producto *</label><select id="f-prod" ${isEdit ? 'disabled' : ''}>${ap.map(p => `<option value="${p.id}" ${p.id === pid ? 'selected' : ''}>${esc(p.name)} (${esc(p.code)})</option>`).join('')}</select></div><div class="form-field"><label>Vigente desde</label><input id="f-date" type="date" value="${ficha?.valid_from || new Date().toISOString().slice(0, 10)}"></div><div class="form-field full"><label>Observaciones</label><textarea id="f-notes">${esc(ficha?.observations || '')}</textarea></div></div><div class="line-builder"><div class="line-builder-head"><b>Componentes</b><span id="line-total" class="amount">Total: 0.00 CUP</span></div><div class="line-entry"><div class="form-field"><label>Insumo</label><select id="f-mat">${state.materials.map(m => `<option value="${m.id}" data-price="${m.unit_price}" data-unit="${esc(m.unit)}">${esc(m.name)} (${esc(m.code)})</option>`).join('')}</select></div><div class="form-field"><label>Cantidad</label><input id="f-qty" type="number" step="0.001" min="0.001" placeholder="0"></div><div class="form-field">&nbsp;<button type="button" class="secondary-btn add-line-btn" id="add-line">＋ Añadir</button></div></div><div class="line-list" id="line-list"></div></div><div class="modal-actions"><button type="button" class="secondary-btn" data-action="close-modal">Cancelar</button><button class="primary-btn" type="submit">${isEdit ? 'Guardar' : 'Crear borrador'}</button></div></form>`);
+  showModal(isEdit ? 'Editar ficha' : 'Nueva ficha de costo', isEdit ? `Versión ${ficha.version}` : 'Se creará en estado borrador. Indique cuántas raciones, copas o comensales salen del lote.', `
+    <form id="ff"><div class="form-grid">
+      <div class="form-field full"><label>Producto *</label><select id="f-prod" ${isEdit ? 'disabled' : ''}>${ap.map(p => `<option value="${p.id}" ${p.id === pid ? 'selected' : ''}>${esc(p.name)} (${esc(p.code)})</option>`).join('')}</select></div>
+      <div class="form-field"><label>Rinde (cantidad del lote) *</label><input id="f-yield" type="number" step="0.01" min="0.01" required value="${esc(ficha?.yield_qty || sel.yield_qty || 1)}"><span class="form-hint">Ej.: 20 comensales, 15 copas.</span></div>
+      <div class="form-field"><label>Unidad del rendimiento</label><select id="f-yield-unit">${yieldUnitOptions(ficha?.yield_unit || defaultUnit)}</select></div>
+      <div class="form-field"><label>Vigente desde</label><input id="f-date" type="date" value="${ficha?.valid_from || new Date().toISOString().slice(0, 10)}"></div>
+      <div class="form-field full"><label>Observaciones</label><textarea id="f-notes">${esc(ficha?.observations || '')}</textarea></div>
+    </div>
+    <div class="line-builder">
+      <div class="line-builder-head"><b>Componentes del lote</b><span id="line-total" class="amount">Total: 0.00 CUP</span></div>
+      <div class="line-entry">
+        <div class="form-field"><label>Valor del IPV</label><select id="f-mat">${state.materials.map(m => `<option value="${m.id}" data-price="${m.unit_price}" data-unit="${esc(m.unit)}" data-name="${esc(m.name)}">${esc(m.name)} (${esc(m.code)}) — ${money(m.unit_price)}/${esc(m.unit)}</option>`).join('')}</select></div>
+        <div class="form-field"><label>Cantidad del lote</label><input id="f-qty" type="number" step="0.001" min="0.001" placeholder="0"></div>
+        <div class="form-field">&nbsp;<button type="button" class="secondary-btn add-line-btn" id="add-line">＋ Añadir</button></div>
+        <div class="form-field">&nbsp;<button type="button" class="secondary-btn add-line-btn" id="new-material" title="Crear un valor del IPV sin salir de esta ficha">＋ Valor</button></div>
+      </div>
+      <div class="line-list" id="line-list"></div>
+      <div class="yield-preview" id="yield-preview"></div>
+    </div>
+    <div class="modal-actions"><button type="button" class="secondary-btn" data-action="close-modal">Cancelar</button><button class="primary-btn" type="submit">${isEdit ? 'Guardar' : 'Crear borrador'}</button></div></form>`);
 
-  function renderLines() { let t = 0; $('#line-list').innerHTML = lines.map((l, i) => { const s = (parseFloat(l.quantity) || 0) * (parseFloat(l.unitCost) || 0); t += s; return `<div class="line-chip"><span>${esc(l.description)} · ${dec(l.quantity)} ${esc(l.unit)}</span><b>${money(s)}</b><button type="button" class="remove-line" data-idx="${i}">×</button></div>`; }).join(''); $('#line-total').textContent = `Total: ${money(t.toFixed(2))}`; $$('.remove-line', $('#line-list')).forEach(b => b.addEventListener('click', () => { lines.splice(+b.dataset.idx, 1); renderLines(); })); }
+  function renderLines() {
+    let t = 0;
+    $('#line-list').innerHTML = lines.map((l, i) => {
+      const s = (parseFloat(l.quantity) || 0) * (parseFloat(l.unitCost) || 0);
+      t += s;
+      return `<div class="line-chip"><span>${esc(l.description)} · ${dec(l.quantity)} ${esc(l.unit)}</span><b>${money(s)}</b><button type="button" class="remove-line" data-idx="${i}" aria-label="Quitar">×</button></div>`;
+    }).join('');
+    $('#line-total').textContent = `Total del lote: ${money(t.toFixed(2))}`;
+    $$('.remove-line', $('#line-list')).forEach(b => b.addEventListener('click', () => { lines.splice(+b.dataset.idx, 1); renderLines(); }));
+    renderYield();
+  }
+  function renderYield() {
+    const y = parseFloat($('#f-yield').value) || 1;
+    const unit = $('#f-yield-unit').value;
+    const total = lines.reduce((s, l) => s + (parseFloat(l.quantity) || 0) * (parseFloat(l.unitCost) || 0), 0);
+    $('#yield-preview').innerHTML = lines.length
+      ? `<b>Con ${dec(y)} ${esc(unit)}</b> el costo por ${esc(unit.replace(/s$/, ''))} es <b>${money((total / y).toFixed(2))}</b> · total del lote ${money(total.toFixed(2))}`
+      : 'Añada componentes para ver el costo por comensal, copa o vaso.';
+  }
   renderLines();
-  $('#add-line').addEventListener('click', () => { const s = $('#f-mat'), o = s.options[s.selectedIndex], q = parseFloat($('#f-qty').value); if (!q || q <= 0) { toast('Cantidad mayor que cero.', 'error'); return; } lines.push({ materialId: +s.value, description: o.textContent.split(' (')[0], quantity: String(q), unit: o.dataset.unit, unitCost: o.dataset.price }); $('#f-qty').value = ''; renderLines(); });
-  $('#ff').addEventListener('submit', async e => { e.preventDefault(); if (!lines.length) { toast('Añada al menos un componente.', 'error'); return; } const payload = { product_id: isEdit ? ficha.product_id : +$('#f-prod').value, valid_from: $('#f-date').value, observations: $('#f-notes').value, items: lines.map(l => ({ material_id: l.materialId, quantity: l.quantity })) }; try { if (isEdit) await api(`/api/fichas/${ficha.id}`, { method: 'PUT', body: JSON.stringify(payload) }); else await api('/api/fichas', { method: 'POST', body: JSON.stringify(payload) }); closeModal(); await refreshData(true); toast(isEdit ? 'Ficha actualizada.' : 'Ficha creada como borrador.', 'success'); } catch (err) { toast(err.message, 'error'); } });
+  $('#f-yield').addEventListener('input', renderYield);
+  $('#f-yield-unit').addEventListener('change', renderYield);
+  $('#add-line').addEventListener('click', () => {
+    const s = $('#f-mat'), o = s.options[s.selectedIndex], q = parseFloat($('#f-qty').value);
+    if (!q || q <= 0) { toast('Cantidad mayor que cero.', 'error'); return; }
+    lines.push({ materialId: +s.value, description: o.dataset.name, quantity: String(q), unit: o.dataset.unit, unitCost: o.dataset.price });
+    $('#f-qty').value = ''; renderLines();
+  });
+  $('#new-material').addEventListener('click', () => { preserveModal(); openMaterialModal(null, true); });
+  // Permite que un valor creado desde otro formulario se añada a este lote
+  window.__fichaDraft = {
+    add(m) {
+      const sel = $('#f-mat');
+      if (sel && !sel.querySelector(`option[value="${m.id}"]`)) {
+        sel.insertAdjacentHTML('beforeend', `<option value="${m.id}" data-price="${esc(m.unit_price)}" data-unit="${esc(m.unit)}" data-name="${esc(m.name)}">${esc(m.name)} (${esc(m.code)}) — ${money(m.unit_price)}/${esc(m.unit)}</option>`);
+        sel.value = String(m.id);
+      }
+      $('#f-qty').value = '1';
+      toast(`«${m.name}» añadido a la lista. Indique la cantidad del lote.`, 'success');
+    },
+  };
+  $('#ff').addEventListener('submit', async e => {
+    e.preventDefault();
+    if (!lines.length) { toast('Añada al menos un componente.', 'error'); return; }
+    const payload = { product_id: isEdit ? ficha.product_id : +$('#f-prod').value, valid_from: $('#f-date').value,
+      observations: $('#f-notes').value, yield_qty: $('#f-yield').value, yield_unit: $('#f-yield-unit').value,
+      items: lines.map(l => ({ material_id: l.materialId, quantity: l.quantity })) };
+    try {
+      if (isEdit) await api(`/api/fichas/${ficha.id}`, { method: 'PUT', body: JSON.stringify(payload) });
+      else await api('/api/fichas', { method: 'POST', body: JSON.stringify(payload) });
+      window.__fichaDraft = null;
+      closeModal(); await refreshData(true);
+      toast(isEdit ? 'Ficha actualizada.' : 'Ficha creada como borrador.', 'success');
+    } catch (err) { toast(err.message, 'error'); }
+  });
 }
 
 /* ── Detail views ── */
 async function openFichaDetail(id) {
   try {
     const f = await api(`/api/fichas/${id}`);
-    const lines = f.items.map(i => `<tr><td>${esc(i.description)}</td><td>${dec(i.quantity)} ${esc(i.unit)}</td><td class="amount">${money(i.unit_cost)}</td><td class="amount">${money(i.subtotal)}</td></tr>`).join('');
-    showModal(`Ficha de Costo · v${f.version}`, `${f.product_code} · ${f.product_name}`, `<div class="detail-grid"><div class="detail-box"><span>Producto</span><b>${esc(f.product_name)} · ${esc(f.category)}</b></div><div class="detail-box"><span>Versión / estado</span><b>v${f.version} · ${esc(f.status)}</b></div><div class="detail-box"><span>Vigente desde</span><b>${dateLabel(f.valid_from)}</b></div><div class="detail-box"><span>Costo total</span><b>${money(f.total_cost)}</b></div></div><div class="table-wrap"><table><thead><tr><th>Componente</th><th>Cantidad</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${lines}</tbody></table></div>${f.observations ? `<div class="small-note">${esc(f.observations)}</div>` : ''}<div class="modal-actions"><button class="secondary-btn" data-action="close-modal">Cerrar</button>${f.status === 'Borrador' ? `<button class="secondary-btn" data-action="edit-ficha" data-id="${f.id}">Editar</button><button class="primary-btn" data-action="approve-ficha" data-id="${f.id}">Aprobar ficha</button>` : `<button class="primary-btn" data-action="generate-control" data-id="${f.id}">＋ Generar Control IPV</button>`}</div>`);
+    const lines = f.items.map(i => `<tr><td>${esc(i.description)}${i.material_code ? `<br><small style="color:var(--text-4)">${esc(i.material_code)}</small>` : ''}</td><td>${dec(i.quantity)} ${esc(i.unit)}</td><td>${i.per_serving ? `<span class="used-chip">${esc(i.per_serving)} ${esc(i.unit)} / ${esc(f.yield_unit)}</span>` : '—'}</td><td class="amount">${money(i.unit_cost)}</td><td class="amount">${money(i.subtotal)}</td></tr>`).join('');
+    const srv = f.servings_from_stock;
+    const srvBox = `<div class="detail-box"><span>Con el inventario actual</span><b style="color:${srv === 0 ? 'var(--red)' : 'var(--green)'}">${srv === null || srv === undefined ? '—' : `≈ ${dec(srv)} ${esc(f.yield_unit || '')}`}</b>${f.limited_by ? `<small style="color:var(--text-4)">limitado por ${esc(f.limited_by)}</small>` : ''}</div>`;
+    const shortages = (f.shortages || []).length
+      ? `<div class="small-note" style="color:var(--red)">⚠ Faltan existencias de: ${f.shortages.map(s => `${esc(s.material)} (${esc(s.stock)} de ${esc(s.required)} ${esc(f.yield_unit)})`).join(' · ')}</div>`
+      : '';
+    showModal(`Ficha de Costo · v${f.version}`, `${f.product_code} · ${f.product_name}`, `
+      <div class="detail-grid">
+        <div class="detail-box"><span>Producto</span><b>${esc(f.product_name)} · ${esc(f.category)}</b></div>
+        <div class="detail-box"><span>Versión / estado</span><b>v${f.version} · ${esc(f.status)}</b></div>
+        <div class="detail-box"><span>Vigente desde</span><b>${dateLabel(f.valid_from)}</b></div>
+        <div class="detail-box"><span>Rinde</span><b>${yieldBadge(f.yield_qty, f.yield_unit)}</b></div>
+        <div class="detail-box"><span>Costo del lote</span><b>${money(f.total_cost)}</b></div>
+        <div class="detail-box"><span>Costo por ${esc((f.yield_unit || 'unidad').replace(/s$/, ''))}</span><b>${money(f.cost_per_serving)}</b></div>
+        ${srvBox}
+      </div>${shortages}
+      <div class="table-wrap"><table style="min-width:640px"><thead><tr><th>Componente</th><th>Lote</th><th>Por ${esc((f.yield_unit || 'unidad').replace(/s$/, ''))}</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${lines}</tbody></table></div>
+      ${f.observations ? `<div class="small-note">${esc(f.observations)}</div>` : ''}
+      <div class="modal-actions">
+        <button class="secondary-btn" data-action="close-modal">Cerrar</button>
+        <button class="danger-btn" data-action="trash-ficha" data-id="${f.id}">Mover a la papelera</button>
+        ${f.status === 'Borrador' ? `<button class="secondary-btn" data-action="edit-ficha" data-id="${f.id}">Editar</button><button class="primary-btn" data-action="approve-ficha" data-id="${f.id}">Aprobar ficha</button>` : `<button class="primary-btn" data-action="generate-control" data-id="${f.id}">＋ Generar Control IPV</button>`}
+      </div>`);
   } catch (e) { toast(e.message, 'error'); }
 }
 async function approveFicha(id) { try { await api(`/api/fichas/${id}/approve`, { method: 'POST', body: '{}' }); closeModal(); await refreshData(true); toast('Ficha aprobada.', 'success'); } catch (e) { toast(e.message, 'error'); } }
@@ -265,7 +698,7 @@ async function openControlDetail(id) {
     const c = await api(`/api/controls/${id}`);
     const lines = c.items.map(i => `<tr><td>${esc(i.description)}</td><td>${dec(i.quantity)} ${esc(i.unit)}</td><td class="amount">${money(i.unit_cost)}</td><td class="amount">${money(i.subtotal)}</td></tr>`).join('');
     const msgs = (c.validation_messages || []).map(m => `<div class="small-note" style="margin-top:8px;color:${m.type === 'error' ? 'var(--red)' : m.type === 'success' ? 'var(--green)' : 'var(--text-3)'}">${m.type === 'error' ? '⚠ ' : m.type === 'success' ? '✓ ' : '• '}${esc(m.text)}</div>`).join('');
-    showModal(`Control IPV · ${c.code}`, `${c.product_code} · ${c.product_name}`, `<div class="detail-grid"><div class="detail-box"><span>Producto / ficha</span><b>${esc(c.product_name)} · v${c.ficha_version}</b></div><div class="detail-box"><span>Período / estado</span><b>${esc(c.period)} · ${esc(c.status)}</b></div><div class="detail-box"><span>Total</span><b>${money(c.snapshot_total)}</b></div><div class="detail-box"><span>Verificado</span><b>${c.checked_at ? money(c.checked_total) : 'Sin validar'}</b></div></div><div class="table-wrap"><table><thead><tr><th>Componente</th><th>Cantidad</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${lines}</tbody></table></div>${msgs}<div class="modal-actions"><button class="secondary-btn" data-action="close-modal">Cerrar</button>${c.status !== 'Validado' ? `<button class="primary-btn" data-action="validate-control" data-id="${c.id}">Ejecutar validación</button>` : ''}</div>`);
+    showModal(`Control IPV · ${c.code}`, `${c.product_code} · ${c.product_name}`, `<div class="detail-grid"><div class="detail-box"><span>Producto / ficha</span><b>${esc(c.product_name)} · v${c.ficha_version}</b></div><div class="detail-box"><span>Período / estado</span><b>${esc(c.period)} · ${esc(c.status)}</b></div><div class="detail-box"><span>Total del lote</span><b>${money(c.snapshot_total)}</b></div><div class="detail-box"><span>Costo por ${esc((c.yield_unit || 'unidad').replace(/s$/, ''))}</span><b>${money(c.cost_per_serving)}</b></div><div class="detail-box"><span>Verificado</span><b>${c.checked_at ? money(c.checked_total) : 'Sin validar'}</b></div></div><div class="table-wrap"><table><thead><tr><th>Componente</th><th>Cantidad</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${lines}</tbody></table></div>${msgs}<div class="modal-actions"><button class="secondary-btn" data-action="close-modal">Cerrar</button><button class="danger-btn" data-action="trash-control" data-id="${c.id}">Mover a la papelera</button>${c.status !== 'Validado' ? `<button class="primary-btn" data-action="validate-control" data-id="${c.id}">Ejecutar validación</button>` : ''}</div>`);
   } catch (e) { toast(e.message, 'error'); }
 }
 async function validateControl(id) { try { const c = await api(`/api/controls/${id}/validate`, { method: 'POST', body: '{}' }); await refreshData(true); openControlDetail(c.id); toast(c.status === 'Validado' ? 'Control validado.' : 'Se encontraron observaciones.', c.status === 'Validado' ? 'success' : 'error'); } catch (e) { toast(e.message, 'error'); } }
@@ -273,9 +706,10 @@ async function validateControl(id) { try { const c = await api(`/api/controls/${
 /* ── CSV Export ── */
 function exportCsv(type) {
   let rows = [], fn = 'export.csv';
-  if (type === 'products') { fn = 'productos.csv'; rows = [['Código', 'Nombre', 'Categoría', 'Unidad', 'Estado'], ...state.products.map(p => [p.code, p.name, p.category, p.unit, p.active ? 'Activo' : 'Inactivo'])]; }
-  else if (type === 'materials') { fn = 'valores-ipv.csv'; rows = [['Código', 'Nombre', 'Unidad', 'Precio', 'Moneda', 'Fuente', 'Vigencia', 'Estado'], ...state.materials.map(m => [m.code, m.name, m.unit, m.unit_price, m.currency, m.source || m.supplier, m.effective_from, m.status])]; }
-  else if (type === 'fichas') { fn = 'fichas.csv'; rows = [['Producto', 'Código', 'Categoría', 'Versión', 'Vigente', 'Total', 'Estado'], ...state.fichas.map(f => [f.product_name, f.product_code, f.category, f.version, f.valid_from, f.total_cost, f.status])]; }
+  if (type === 'products') { fn = 'productos.csv'; rows = [['Código', 'Nombre', 'Categoría', 'Unidad', 'Rinde', 'Unidad rinde', 'Fichas', 'Estado'], ...state.products.map(p => [p.code, p.name, p.category, p.unit, p.last_yield_qty || p.yield_qty, p.last_yield_unit || p.yield_unit, p.ficha_count, p.active ? 'Activo' : 'Inactivo'])]; }
+  else if (type === 'materials') { fn = 'valores-ipv.csv'; rows = [['Código', 'Nombre', 'Categoría', 'Unidad', 'Precio', 'Moneda', 'Existencias', 'Mínimo', 'Proveedor', 'Fuente', 'Vigencia', 'Estado'], ...state.materials.map(m => [m.code, m.name, m.category, m.unit, m.unit_price, m.currency, m.stock, m.min_stock, m.supplier, m.source, m.effective_from, m.status])]; }
+  else if (type === 'inventory') { const inv = state.inventory || { items: [] }; fn = 'inventario.csv'; rows = [['Código', 'Nombre', 'Categoría', 'Unidad', 'Existencias', 'Mínimo', 'Precio', 'Valor total', 'Recetas'], ...inv.items.map(m => [m.code, m.name, m.category, m.unit, m.stock, m.min_stock, m.unit_price, m.stock_value, m.used_by.map(u => `${u.product_name} (${u.per_serving} ${m.unit}/${u.yield_unit})`).join(' | ')])]; }
+  else if (type === 'fichas') { fn = 'fichas.csv'; rows = [['Producto', 'Código', 'Categoría', 'Versión', 'Vigente', 'Rinde', 'Unidad rinde', 'Total lote', 'Costo por unidad', 'Con inventario', 'Estado'], ...state.fichas.map(f => [f.product_name, f.product_code, f.category, f.version, f.valid_from, f.yield_qty, f.yield_unit, f.total_cost, f.cost_per_serving, f.servings_from_stock ?? '', f.status])]; }
   else { fn = 'controles.csv'; rows = [['Control', 'Producto', 'Código', 'Período', 'Ficha', 'Total', 'Estado'], ...state.controls.map(c => [c.code, c.product_name, c.product_code, c.period, c.ficha_version, c.snapshot_total, c.status])]; }
   const csv = '\ufeff' + rows.map(r => r.map(c => `"${String(c ?? '').replaceAll('"', '""')}"`).join(';')).join('\r\n');
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })); const a = document.createElement('a'); a.href = url; a.download = fn; a.click(); URL.revokeObjectURL(url); toast('CSV exportado.', 'success');
@@ -298,41 +732,178 @@ function globalSearch(query) {
   overlay.hidden = false;
 }
 
+/* ── Acciones compartidas entre la página y los diálogos ── */
+async function loadEntity(kind, id) {
+  const url = { material: '/api/materials/', product: '/api/products/', ficha: '/api/fichas/' }[kind] + id;
+  return api(url);
+}
+async function adjustStock(id, delta) {
+  const m = await api(`/api/materials/${id}/stock`, { method: 'POST', body: JSON.stringify({ delta: String(delta) }) });
+  await refreshData(true);
+  toast(`«${m.name}»: ${dec(m.stock)} ${m.unit} en almacén.`, 'success');
+  return m;
+}
+async function saveStock(id) {
+  const input = $(`[data-stock-input="${id}"]`);
+  if (!input) return;
+  try {
+    const m = await api(`/api/materials/${id}/stock`, { method: 'POST', body: JSON.stringify({ set: input.value }) });
+    await refreshData(true);
+    toast(`Existencias de «${m.name}» actualizadas a ${dec(m.stock)} ${m.unit}.`, 'success');
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function moveToTrash(kind, id) {
+  const nouns = { material: ['el valor del IPV', 'Valor del IPV'], product: ['el producto', 'Producto'],
+    ficha: ['la ficha de costo', 'Ficha de costo'], control: ['el control', 'Control de IPV'] };
+  const [article, label] = nouns[kind] || nouns.material;
+  const ok = await confirm2(`Mover ${article} a la papelera`,
+    `El elemento dejará de aparecer en las listas, pero podrá restaurarlo desde la Papelera de reciclaje.`, 'warning');
+  if (!ok) return;
+  try {
+    await api(`/api/${kind === 'material' ? 'materials' : kind === 'product' ? 'products' : kind + 's'}/${id}`, { method: 'DELETE' });
+    closeModal(); await refreshData(true);
+    toast(`${label} movido a la papelera. Puede restaurarlo cuando quiera.`, 'success');
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function restoreFromTrash(kind, id) {
+  try {
+    await api(`/api/trash/${kind}/${id}/restore`, { method: 'POST', body: '{}' });
+    await refreshData(true);
+    toast('Elemento restaurado.', 'success');
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function purgeFromTrash(kind, id) {
+  const ok = await confirm2('Borrado definitivo',
+    'Se eliminará para siempre, junto con sus fichas y controles dependientes. Esta acción no se puede deshacer.', 'danger');
+  if (!ok) return;
+  try {
+    await api(`/api/trash/${kind}/${id}`, { method: 'DELETE' });
+    await refreshData(true);
+    toast('Elemento borrado definitivamente.', 'success');
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function emptyTrash() {
+  const ok = await confirm2('Vaciar la papelera',
+    `Se borrarán definitivamente los ${state.trash.length} elemento(s) de la papelera y sus documentos derivados.`, 'danger');
+  if (!ok) return;
+  try {
+    const r = await api('/api/trash/empty', { method: 'POST', body: '{}' });
+    await refreshData(true);
+    toast(`Papelera vaciada: ${r.removed} elemento(s) eliminado(s).`, 'success');
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function seedDemo() {
+  const ok = await confirm2('Cargar datos de prueba',
+    'Se añadirán inventarios, productos y fichas de ejemplo (comidas con comensales, bebidas con licores de distintos IPV) para poder aprender el sistema. No se borra nada de lo que ya tenga.', 'info');
+  if (!ok) return;
+  try {
+    const r = await api('/api/demo/seed', { method: 'POST', body: '{}' });
+    await refreshData(true);
+    const n = Object.values(r).reduce((a, b) => a + b, 0);
+    toast(n ? `Datos de prueba cargados: ${n} registros nuevos.` : 'Ya estaban cargados los datos de prueba.', 'success');
+  } catch (err) { toast(err.message, 'error'); }
+}
+async function editEntity(kind, id) {
+  try { openKindModal(kind, await loadEntity(kind, id)); }
+  catch (err) { toast(err.message, 'error'); }
+}
+function openKindModal(kind, entity) {
+  if (kind === 'material') openMaterialModal(entity);
+  else if (kind === 'product') openProductModal(entity);
+  else openFichaModal(entity);
+}
+async function viewEntity(kind, id) {
+  if (kind === 'material') return openMaterialDetail(id);
+  if (kind === 'product') return openProductDetail(id);
+  if (kind === 'ficha') return openFichaDetail(id);
+  return openControlDetail(id);
+}
+
+async function runAction(action, id, el, extra = {}) {
+  const kind = { 'view-material': 'material', 'edit-material': 'material', 'trash-material': 'material',
+    'view-product': 'product', 'edit-product': 'product', 'trash-product': 'product',
+    'view-ficha': 'ficha', 'edit-ficha': 'ficha', 'trash-ficha': 'ficha',
+    'trash-control': 'control' }[action];
+  switch (action) {
+    case 'refresh': return refreshData();
+    case 'create-product': return openProductModal();
+    case 'create-material': return openMaterialModal();
+    case 'create-ficha': return openFichaModal(null, extra.productId ? Number(extra.productId) : null);
+    case 'view-ficha': return openFichaDetail(id);
+    case 'approve-ficha': return approveFicha(id);
+    case 'generate-control': return openGenerateControl(id);
+    case 'view-control': return openControlDetail(id);
+    case 'validate-control': return validateControl(id);
+    case 'export-products': return exportCsv('products');
+    case 'export-materials': return exportCsv('materials');
+    case 'export-fichas': return exportCsv('fichas');
+    case 'export-controls': return exportCsv('controls');
+    case 'export-inventory': return exportCsv('inventory');
+    case 'close-modal': return closeModal();
+    case 'seed-demo': return seedDemo();
+    case 'stock-plus': return adjustStock(id, 1);
+    case 'stock-minus': return adjustStock(id, -1);
+    case 'stock-save': return saveStock(id);
+    case 'restore-trash': return restoreFromTrash(el.dataset.kind, id);
+    case 'purge-trash': return purgeFromTrash(el.dataset.kind, id);
+    case 'empty-trash': return emptyTrash();
+    case 'open-license': return window.IPVLicense?.renew();
+    case 'reload-license': return loadLicenseInto($('#lic-body'));
+    case 'copy-device': {
+      await navigator.clipboard.writeText(state.license?.request_code || '').catch(() => {});
+      return toast('ID del equipo copiado.', 'success');
+    }
+    case 'whatsapp-license': return window.IPVLicense?.show(state.license, { closable: true });
+    case 'view-fichas-of-material': {
+      closeModal();
+      const m = state.materials.find(x => String(x.id) === String(id));
+      setView('fichas');
+      setTimeout(() => { state.search = m ? m.name : ''; renderFichas(); }, 60);
+      return;
+    }
+    case 'create-ficha-for': { closeModal(); return openFichaModal(null, id); }
+    case 'view-product-search': return openProductDetail(id);
+    default:
+      if (kind) {
+        if (action.startsWith('view-')) return viewEntity(kind, id);
+        if (action.startsWith('edit-')) return editEntity(kind, id);
+        if (action.startsWith('trash-')) return moveToTrash(kind, id);
+      }
+      return undefined;
+  }
+}
+
 /* ── Event Delegation ── */
 modalLayer.addEventListener('click', async e => {
   const b = e.target.closest('[data-action]'); if (!b) return;
   const { action, id } = b.dataset;
-  try { if (action === 'close-modal') closeModal(); else if (action === 'approve-ficha') approveFicha(id); else if (action === 'edit-ficha') { const f = await api(`/api/fichas/${id}`); openFichaModal(f); } else if (action === 'generate-control') openGenerateControl(id); else if (action === 'validate-control') validateControl(id); } catch (err) { toast(err.message, 'error'); }
+  try {
+    if (action === 'edit-ficha') { const f = await api(`/api/fichas/${id}`); openFichaModal(f); return; }
+    if (action === 'edit-material') { preserveModal(); openMaterialModal(await api(`/api/materials/${id}`)); return; }
+    if (action === 'edit-product') { preserveModal(); openProductModal(await api(`/api/products/${id}`)); return; }
+    if (action === 'view-fichas-of-material') { await runAction(action, id, b); return; }
+    await runAction(action, id, b);
+  } catch (err) { toast(err.message, 'error'); }
 });
 
 content.addEventListener('click', async e => {
   const nav = e.target.closest('[data-view]'); if (nav) { setView(nav.dataset.view); return; }
   const b = e.target.closest('[data-action]'); if (!b) return;
-  const { action, id } = b.dataset;
-  try {
-    if (action === 'refresh') refreshData();
-    else if (action === 'create-product') openProductModal();
-    else if (action === 'create-material') openMaterialModal();
-    else if (action === 'create-ficha') openFichaModal();
-    else if (action === 'view-ficha') openFichaDetail(id);
-    else if (action === 'approve-ficha') approveFicha(id);
-    else if (action === 'generate-control') openGenerateControl(id);
-    else if (action === 'view-control') openControlDetail(id);
-    else if (action === 'validate-control') validateControl(id);
-    else if (action === 'export-products') exportCsv('products');
-    else if (action === 'export-materials') exportCsv('materials');
-    else if (action === 'export-fichas') exportCsv('fichas');
-    else if (action === 'export-controls') exportCsv('controls');
-    else if (action === 'close-modal') closeModal();
-    else if (action === 'deactivate-product') { if (confirm('¿Desactivar este producto?')) { await api(`/api/products/${id}`, { method: 'DELETE' }); await refreshData(true); toast('Producto desactivado.'); } }
-  } catch (err) { toast(err.message, 'error'); }
+  try { await runAction(b.dataset.action, b.dataset.id, b, { productId: b.dataset.id }); }
+  catch (err) { toast(err.message, 'error'); }
 });
 
 // Search overlay clicks
 $('#search-overlay').addEventListener('click', async e => {
   const item = e.target.closest('[data-action]');
-  if (item && item.dataset.action) { $('#search-overlay').hidden = true; $('#global-search').value = ''; const { action, id } = item.dataset; if (action === 'view-ficha') openFichaDetail(id); else if (action === 'view-control') openControlDetail(id); }
-  else if (e.target === $('#search-overlay')) { $('#search-overlay').hidden = true; $('#global-search').value = ''; }
+  if (item && item.dataset.action) {
+    $('#search-overlay').hidden = true; $('#global-search').value = '';
+    const { action, id } = item.dataset;
+    if (action === 'view-ficha') openFichaDetail(id);
+    else if (action === 'view-control') openControlDetail(id);
+    else if (action === 'view-product') openProductDetail(id);
+    else if (action === 'view-material') openMaterialDetail(id);
+  } else if (e.target === $('#search-overlay')) { $('#search-overlay').hidden = true; $('#global-search').value = ''; }
 });
 
 $$('[data-view]').forEach(el => el.addEventListener('click', () => setView(el.dataset.view)));
@@ -352,11 +923,9 @@ document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); $('#global-search')?.focus(); }
   if (e.key === 'F5') { e.preventDefault(); refreshData(); }
   if (!e.ctrlKey && !e.metaKey && !e.altKey && modalLayer.hidden && $('#search-overlay').hidden) {
-    if (e.key === '1') setView('dashboard');
-    else if (e.key === '2') setView('products');
-    else if (e.key === '3') setView('materials');
-    else if (e.key === '4') setView('fichas');
-    else if (e.key === '5') setView('controls');
+    const byKey = { '1': 'dashboard', '2': 'products', '3': 'materials', '4': 'inventory',
+      '5': 'fichas', '6': 'controls', '7': 'trash', '8': 'license' };
+    if (byKey[e.key]) setView(byKey[e.key]);
   }
 });
 
@@ -524,25 +1093,6 @@ function animateValue(el, start, end, duration = 600) {
   }
 })();
 
-/* ── Override deactivate to use confirm dialog ── */
-(function() {
-  const origClick = content.onclick;
-  content.addEventListener('click', async e => {
-    const btn = e.target.closest('[data-action="deactivate-product"]');
-    if (btn) {
-      e.stopImmediatePropagation();
-      const ok = await confirm2('Desactivar producto', 'El producto se marcará como inactivo. Los documentos históricos se conservarán.', 'warning');
-      if (ok) {
-        try {
-          await api(`/api/products/${btn.dataset.id}`, { method: 'DELETE' });
-          await refreshData(true);
-          toast('Producto desactivado.', 'success');
-        } catch (err) { toast(err.message, 'error'); }
-      }
-    }
-  }, true);
-})();
-
 /* ── Keyboard shortcut overlay ── */
 function showShortcutsHelp() {
   showModal('Atajos de teclado', 'Navega más rápido por el sistema', `
@@ -550,8 +1100,11 @@ function showShortcutsHelp() {
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Resumen</span><div class="kbd-hint"><kbd>1</kbd></div></div>
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Productos</span><div class="kbd-hint"><kbd>2</kbd></div></div>
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Valores IPV</span><div class="kbd-hint"><kbd>3</kbd></div></div>
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Fichas</span><div class="kbd-hint"><kbd>4</kbd></div></div>
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Controles</span><div class="kbd-hint"><kbd>5</kbd></div></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Inventario</span><div class="kbd-hint"><kbd>4</kbd></div></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Fichas</span><div class="kbd-hint"><kbd>5</kbd></div></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Controles</span><div class="kbd-hint"><kbd>6</kbd></div></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Papelera</span><div class="kbd-hint"><kbd>7</kbd></div></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Licencia</span><div class="kbd-hint"><kbd>8</kbd></div></div>
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Búsqueda global</span><div class="kbd-hint"><kbd>Ctrl</kbd>+<kbd>K</kbd></div></div>
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Actualizar datos</span><div class="kbd-hint"><kbd>F5</kbd></div></div>
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Cerrar modal/búsqueda</span><div class="kbd-hint"><kbd>Esc</kbd></div></div>
@@ -739,6 +1292,11 @@ async function renderStatisticsPanel() {
 }
 
 /* ── Floating Action Button ── */
+const QUICK_TILES = [
+  ['create-material', '◈', 'Nuevo Valor del IPV', 'Licor, insumo, bebida o servicio con precio y existencias'],
+  ['create-product', '▦', 'Nuevo Producto', 'Agregar al catálogo de comidas, bebidas o servicios'],
+  ['create-ficha', '▤', 'Nueva Ficha de Costo', 'Documento versionado con rendimiento y componentes'],
+];
 function addFAB() {
   if ($('#fab-main')) return;
   const fab = document.createElement('button');
@@ -747,53 +1305,29 @@ function addFAB() {
   fab.innerHTML = '＋';
   fab.setAttribute('aria-label', 'Acciones rápidas');
   fab.addEventListener('click', () => {
-    showModal('Acciones Rápidas', '¿Qué deseas crear?', `
-      <div style="display:grid;gap:12px">
-        <button class="primary-btn" data-action="quick-product" style="justify-content:flex-start;padding:16px">
-          <span style="font-size:20px;margin-right:12px">▦</span>
-          <div style="text-align:left">
-            <div style="font-weight:600">Nuevo Producto</div>
-            <div style="font-size:11px;opacity:0.8;margin-top:2px">Agregar al catálogo</div>
-          </div>
-        </button>
-        <button class="primary-btn" data-action="quick-material" style="justify-content:flex-start;padding:16px">
-          <span style="font-size:20px;margin-right:12px">◈</span>
-          <div style="text-align:left">
-            <div style="font-weight:600">Nuevo Valor IPV</div>
-            <div style="font-size:11px;opacity:0.8;margin-top:2px">Registrar insumo o servicio</div>
-          </div>
-        </button>
-        <button class="primary-btn" data-action="quick-ficha" style="justify-content:flex-start;padding:16px">
-          <span style="font-size:20px;margin-right:12px">▤</span>
-          <div style="text-align:left">
-            <div style="font-weight:600">Nueva Ficha de Costo</div>
-            <div style="font-size:11px;opacity:0.8;margin-top:2px">Crear documento versionado</div>
-          </div>
-        </button>
+    showModal('Acciones rápidas', 'Disponible en cualquier apartado del sistema', `
+      <div class="quick-grid">
+        ${QUICK_TILES.map(([a, i, t, s]) => `<button class="quick-tile" data-action="${a}"><span>${i}</span><b>${t}</b><small>${s}</small></button>`).join('')}
+        <button class="quick-tile" data-view="inventory"><span>▣</span><b>Ver inventario</b><small>Cuánto queda y para qué se usa</small></button>
+        <button class="quick-tile" data-view="trash"><span>🗑</span><b>Papelera</b><small>Restaurar o borrar definitivamente</small></button>
+        <button class="quick-tile" data-action="seed-demo"><span>🧪</span><b>Datos de prueba</b><small>Catálogo de ejemplo para aprender</small></button>
       </div>
-      <div class="modal-actions">
-        <button class="secondary-btn" data-action="close-modal">Cancelar</button>
-      </div>
-    `);
+      <div class="modal-actions"><button class="secondary-btn" data-action="close-modal">Cerrar</button></div>`);
   });
   document.body.appendChild(fab);
 }
 
 /* ── Quick Actions Handler ── */
 modalLayer.addEventListener('click', async e => {
+  const nav = e.target.closest('[data-view]');
+  if (nav) { closeModal(); setTimeout(() => setView(nav.dataset.view), 120); return; }
   const btn = e.target.closest('[data-action]');
   if (!btn) return;
-  const action = btn.dataset.action;
-  
-  if (action === 'quick-product') {
+  if (QUICK_TILES.some(t => t[0] === btn.dataset.action) || btn.dataset.action === 'seed-demo') {
+    const action = btn.dataset.action;
     closeModal();
-    setTimeout(() => openProductModal(), 200);
-  } else if (action === 'quick-material') {
-    closeModal();
-    setTimeout(() => openMaterialModal(), 200);
-  } else if (action === 'quick-ficha') {
-    closeModal();
-    setTimeout(() => openFichaModal(), 200);
+    await refreshData(true);
+    setTimeout(() => runAction(action), 140);
   }
 });
 

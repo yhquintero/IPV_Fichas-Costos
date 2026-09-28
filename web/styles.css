@@ -99,7 +99,12 @@ a:hover { text-decoration: underline; }
 h1, h2, h3, p { margin-top: 0; }
 
 /* ============ APP SHELL ============ */
-.app-shell { min-height: 100vh; display: flex; }
+/* La barra lateral está fija (position: fixed), así que NO debe ocupar sitio en
+   el flujo: si además fuera un elemento flex, el ancho total se calcularía dos
+   veces (sidebar + margen) y la página se saldría de la ventana, obligando a
+   reducir el zoom al 90 % para verla. Por eso .app-shell es un bloque simple. */
+.app-shell { min-height: 100vh; }
+.app-shell > * { min-width: 0; }
 
 /* ============ SIDEBAR ============ */
 .sidebar {
@@ -229,7 +234,10 @@ h1, h2, h3, p { margin-top: 0; }
 .theme-toggle:hover { background: rgba(255,255,255,.2); color: var(--accent); transform: rotate(15deg); }
 
 /* ============ MAIN SHELL ============ */
-.main-shell { min-width: 0; width: calc(100% - var(--sidebar-w)); margin-left: var(--sidebar-w); }
+/* Bloque con width:auto: ocupa exactamente el hueco que deja la barra fija
+   (ancho de la ventana − barra lateral). Nunca se desborda horizontalmente. */
+.main-shell { min-width: 0; margin-left: var(--sidebar-w); max-width: 100%; }
+body { overflow-x: hidden; }
 
 .topbar {
   height: var(--topbar-h);
@@ -338,7 +346,7 @@ h1, h2, h3, p { margin-top: 0; }
 .mobile-brand { display: none; }
 
 /* ============ PAGE AREA ============ */
-.page-area { max-width: 1480px; padding: 38px 44px 24px; margin: 0 auto; }
+.page-area { width: 100%; max-width: 1480px; padding: 38px 44px 24px; margin: 0 auto; }
 .page-footer {
   display: flex;
   justify-content: space-between;
@@ -458,6 +466,8 @@ h1 { font: 700 clamp(26px, 3vw, 34px)/1.15 Manrope, sans-serif; letter-spacing: 
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 22px;
+  min-width: 0;
+  max-width: 100%;
   box-shadow: var(--shadow-sm);
   transition: all var(--transition);
 }
@@ -858,7 +868,7 @@ tbody tr:hover .product-avatar { transform: scale(1.1); }
 @media (max-width: 760px) {
   .sidebar { transform: translateX(-100%); width: 280px; flex-basis: 280px; }
   .sidebar.open { transform: translateX(0); }
-  .main-shell { width: 100%; margin-left: 0; }
+  .main-shell { margin-left: 0; width: 100%; }
   .topbar { height: 60px; padding: 0 18px; }
   .mobile-menu-btn { display: block; }
   .mobile-brand { display: flex; align-items: center; gap: 8px; color: var(--primary); font: 800 18px Manrope,sans-serif; }
@@ -1834,3 +1844,103 @@ html.reduce-motion .confetti-container, html.reduce-motion .confetti { display: 
 .lic-foot { color: var(--text-3, #5b6b66); font-size: 11px; text-align: center; }
 .lic-banner { position: sticky; top: 0; z-index: 2500; display: flex; gap: 12px; align-items: center; justify-content: center; flex-wrap: wrap;
   padding: 8px 14px; background: linear-gradient(90deg, #f59e0b, #f97316); color: #1f1300; font-weight: 700; font-size: 13px; }
+
+/* ==========================================================================
+   IPV v1.1 — Inventario, Papelera, Licencia y rendimiento de fichas
+   ========================================================================== */
+
+/* ---- Distintivos de rendimiento (comensales / copas) ---- */
+.yield-badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px;
+  background: var(--accent-glow); color: var(--primary); font-size: 10px; font-weight: 700; white-space: nowrap; }
+.yield-badge.blue { background: var(--blue-glow); color: var(--blue); }
+.yield-badge.orange { background: var(--orange-glow); color: var(--orange); }
+.yield-badge.red { background: var(--red-glow); color: var(--red); }
+.yield-badge.green { background: var(--green-glow); color: var(--green); }
+.stock-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 700;
+  background: var(--surface-3); color: var(--text-2); white-space: nowrap; }
+.stock-pill.low { background: var(--red-glow); color: var(--red); }
+.stock-pill.ok { background: var(--green-glow); color: var(--green); }
+.cat-pill { display: inline-block; padding: 3px 9px; border-radius: 7px; background: var(--primary-glow);
+  color: var(--primary-light); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; white-space: nowrap; }
+
+/* ---- Acciones por fila ---- */
+.row-actions { display: flex; gap: 5px; justify-content: flex-end; flex-wrap: wrap; }
+.icon-btn { border: 1px solid var(--border); background: var(--surface); color: var(--text-3); width: 28px; height: 28px;
+  border-radius: 8px; display: inline-grid; place-items: center; font-size: 12px; transition: all var(--transition); }
+.icon-btn:hover { border-color: var(--primary-light); color: var(--primary-light); background: var(--primary-glow); }
+.icon-btn.danger:hover { border-color: var(--red); color: var(--red); background: var(--red-glow); }
+
+/* ---- Tarjetas de inventario ---- */
+.inv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; margin-bottom: 20px; }
+.inv-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; }
+.inv-card small { display: block; font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-4); font-weight: 700; }
+.inv-card b { display: block; font: 800 24px Manrope, sans-serif; color: var(--text); margin-top: 6px; letter-spacing: -.5px; }
+.inv-card span { font-size: 10px; color: var(--text-3); }
+.inv-card.warn { border-color: var(--orange); background: var(--orange-glow); }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.used-chip { font-size: 10px; padding: 3px 8px; border-radius: 7px; background: var(--surface-3); color: var(--text-2); border: 1px solid var(--border); }
+.used-chip b { color: var(--text); }
+
+/* ---- Ajustes rápidos de existencias ---- */
+.stock-stepper { display: inline-flex; align-items: center; gap: 4px; }
+.stock-stepper button { width: 24px; height: 24px; border-radius: 7px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text-2); font-weight: 700; line-height: 1; }
+.stock-stepper button:hover { border-color: var(--primary-light); color: var(--primary-light); }
+.stock-stepper input { width: 62px; text-align: center; padding: 4px; border-radius: 7px; border: 1px solid var(--border);
+  background: var(--surface-2); color: var(--text); font: inherit; font-size: 11px; }
+
+/* ---- Papelera ---- */
+.trash-item { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--surface); margin-bottom: 8px; }
+.trash-item .trash-icon { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center;
+  background: var(--red-glow); color: var(--red); font-size: 15px; flex: none; }
+.trash-body { flex: 1; min-width: 0; }
+.trash-body b { display: block; font-size: 12px; color: var(--text); }
+.trash-body small { display: block; font-size: 10px; color: var(--text-3); }
+.trash-actions { display: flex; gap: 6px; flex: none; }
+.trash-empty-note { text-align: center; color: var(--text-3); font-size: 12px; padding: 40px 20px; }
+
+/* ---- Página de licencia ---- */
+.lic-page { display: grid; gap: 18px; max-width: 760px; }
+.lic-status-card { display: flex; gap: 18px; align-items: center; padding: 22px; border-radius: var(--radius);
+  background: var(--surface); border: 1px solid var(--border); }
+.lic-status-card.ok { border-color: var(--green); background: linear-gradient(135deg, var(--green-glow), transparent 60%); }
+.lic-status-card.bad { border-color: var(--orange); background: linear-gradient(135deg, var(--orange-glow), transparent 60%); }
+.lic-status-card.off { border-color: var(--blue); background: linear-gradient(135deg, var(--blue-glow), transparent 60%); }
+.lic-status-icon { width: 56px; height: 56px; border-radius: 16px; display: grid; place-items: center; font-size: 26px; flex: none;
+  background: var(--surface-2); }
+.lic-status-copy { flex: 1; min-width: 0; }
+.lic-status-copy h3 { font: 800 19px Manrope, sans-serif; color: var(--text); margin: 0 0 4px; }
+.lic-status-copy p { margin: 0; font-size: 12px; color: var(--text-3); }
+.lic-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.lic-kv div { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px; }
+.lic-kv small { display: block; font-size: 9px; text-transform: uppercase; letter-spacing: .8px; color: var(--text-4); font-weight: 700; }
+.lic-kv b { font-size: 13px; color: var(--text); }
+.plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.plan-card { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px; background: var(--surface-2); }
+.plan-card b { display: block; font-size: 13px; color: var(--text); }
+.plan-card .plan-usd { font: 800 18px Manrope, sans-serif; color: var(--primary-light); }
+.plan-card small { font-size: 10px; color: var(--text-3); }
+
+/* ---- Diálogo de confirmación con detalle ---- */
+.confirm-card ul { text-align: left; margin: 10px 0; padding-left: 18px; font-size: 12px; color: var(--text-2); }
+
+/* ---- Utilidades nuevas ---- */
+.btn-row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.check-inline { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; color: var(--text-2);
+  padding: 0 12px; height: 40px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); cursor: pointer; }
+.check-inline input { accent-color: var(--primary-light); width: 15px; height: 15px; }
+.quick-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-top: 18px; }
+.quick-tile { display: grid; gap: 3px; text-align: left; padding: 14px 15px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); transition: all var(--transition); }
+.quick-tile:hover { border-color: var(--primary-light); background: var(--primary-glow); transform: translateY(-2px); }
+.quick-tile > span { font-size: 19px; }
+.quick-tile b { font-size: 12px; }
+.quick-tile small { font-size: 10px; color: var(--text-3); line-height: 1.4; }
+.yield-preview { margin-top: 10px; padding: 10px 13px; border-radius: var(--radius-sm);
+  background: var(--accent-glow); color: var(--primary); font-size: 11px; }
+.yield-preview b { font-weight: 700; }
+.line-entry { grid-template-columns: minmax(0,2.2fr) minmax(90px,.8fr) auto auto; }
+.datalist-hint { font-size: 10px; color: var(--text-4); }
+@media (max-width: 1100px) { .line-entry { grid-template-columns: minmax(0,1fr) minmax(80px,.6fr) auto; } .line-entry .add-line-btn:last-child { grid-column: 3; } }

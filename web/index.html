@@ -35,15 +35,18 @@
       <nav class="side-nav" aria-label="Navegación principal">
         <button class="nav-item active" data-view="dashboard"><span class="nav-icon">◫</span><span>Resumen</span></button>
         <button class="nav-item" data-view="products"><span class="nav-icon">▦</span><span>Productos y servicios</span><span class="nav-count" id="nav-products">—</span></button>
-        <button class="nav-item" data-view="materials"><span class="nav-icon">◈</span><span>Valores del IPV</span></button>
+        <button class="nav-item" data-view="materials"><span class="nav-icon">◈</span><span>Valores del IPV</span><span class="nav-count" id="nav-materials">—</span></button>
+        <button class="nav-item" data-view="inventory"><span class="nav-icon">▣</span><span>Inventario</span><span class="nav-count" id="nav-stock">—</span></button>
         <button class="nav-item" data-view="fichas"><span class="nav-icon">▤</span><span>Fichas de costo</span><span class="nav-count" id="nav-fichas">—</span></button>
         <button class="nav-item" data-view="controls"><span class="nav-icon">✓</span><span>Controles de IPV</span><span class="nav-dot" id="nav-pending-dot"></span></button>
+        <button class="nav-item" data-view="trash"><span class="nav-icon">🗑</span><span>Papelera de reciclaje</span><span class="nav-count" id="nav-trash">—</span></button>
+        <button class="nav-item" data-view="license"><span class="nav-icon">🔑</span><span>Licencia</span></button>
       </nav>
       <div class="sidebar-bottom">
         <div class="help-card">
           <div class="help-mark">✦</div>
-          <b>Sistema IPV v1.0</b>
-          <p>Gestión integral de fichas de costo, valores de referencia y controles de verificación.</p>
+          <b>Sistema IPV v1.1</b>
+          <p>Gestión integral de fichas de costo, valores de referencia, inventario y controles de verificación.</p>
           <button id="about-btn">Acerca de IPV <span>↗</span></button>
         </div>
         <div class="profile-row">
@@ -90,14 +93,17 @@
         <button class="active" data-view="dashboard">Resumen</button>
         <button data-view="products">Catálogo</button>
         <button data-view="materials">Valores</button>
+        <button data-view="inventory">Inventario</button>
         <button data-view="fichas">Fichas</button>
         <button data-view="controls">Controles</button>
+        <button data-view="trash">Papelera</button>
+        <button data-view="license">Licencia</button>
       </div>
 
       <section class="page-area">
         <div id="page-content" aria-live="polite"></div>
         <footer class="page-footer">
-          <span>IPV · Fichas y Costos — v1.0</span>
+          <span>IPV · Fichas y Costos — v1.1</span>
           <span>Ing. Yosvany Hernández Quintero <i class="footer-sep">·</i> Sistema profesional con cifrado TLS</span>
         </footer>
       </section>

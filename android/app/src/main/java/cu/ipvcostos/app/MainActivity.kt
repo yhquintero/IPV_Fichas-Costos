@@ -55,7 +55,7 @@ private val WARNING = 0xFFF59E0B.toInt()
 private val BLUE = 0xFF3B82F6.toInt()
 private val PURPLE = 0xFF8B5CF6.toInt()
 
-private const val APP_VERSION = "1.0.0"
+private const val APP_VERSION = "1.1.0"
 
 private data class DraftLine(val materialId: Int, val quantity: String)
 
@@ -193,7 +193,9 @@ class MainActivity : Activity() {
     private var materials = JSONArray()
     private var fichas = JSONArray()
     private var controls = JSONArray()
-    private val tabs = listOf("Resumen", "Productos", "Valores IPV", "Fichas", "Controles")
+    private var inventory = JSONObject()
+    private var trash = JSONArray()
+    private val tabs = listOf("Resumen", "Productos", "Valores IPV", "Inventario", "Fichas", "Controles", "Papelera")
 
     private var realtime: RealtimeClient? = null
     private var unlocked = false
@@ -479,12 +481,16 @@ class MainActivity : Activity() {
                 val freshMaterials = api.request("GET", "/api/materials") as JSONArray
                 val freshFichas = api.request("GET", "/api/fichas") as JSONArray
                 val freshControls = api.request("GET", "/api/controls") as JSONArray
+                val freshInventory = api.request("GET", "/api/inventory") as JSONObject
+                val freshTrash = api.request("GET", "/api/trash") as JSONObject
                 runOnUiThread {
                     dashboard = freshDashboard
                     products = freshProducts
                     materials = freshMaterials
                     fichas = freshFichas
                     controls = freshControls
+                    inventory = freshInventory
+                    trash = freshTrash.optJSONArray("items") ?: JSONArray()
                     val offline = api.lastFromCacheMinutes
                     if (offline >= 0) {
                         connectionLabel.text = "●  Sin conexión · datos guardados hace $offline min"
@@ -542,8 +548,10 @@ class MainActivity : Activity() {
             "Resumen" -> renderDashboard()
             "Productos" -> renderProducts()
             "Valores IPV" -> renderMaterials()
+            "Inventario" -> renderInventory()
             "Fichas" -> renderFichas()
             "Controles" -> renderControls()
+            "Papelera" -> renderTrash()
         }
     }
 
@@ -556,7 +564,9 @@ class MainActivity : Activity() {
         statRow(grid, "Productos activos", dashboard.optString("products", "0"), "Catálogo vigente")
         statRow(grid, "Fichas de costo", dashboard.optString("fichas", "0"), "${dashboard.optString("approved_fichas", "0")} aprobadas")
         statRow(grid, "Controles pendientes", dashboard.optString("pending_controls", "0"), if (dashboard.optInt("pending_controls", 0) > 0) "Requieren revisión" else "Todos al día")
-        statRow(grid, "Valores de referencia", dashboard.optString("materials", "0"), "Insumos registrados")
+        statRow(grid, "Valores del IPV", dashboard.optString("materials", "0"),
+            if (dashboard.optInt("low_stock", 0) > 0) "${dashboard.optInt("low_stock")} bajo mínimo"
+            else "Inventario ${formatAmount(dashboard.optString("stock_value", "0"))} CUP")
         content.addView(grid)
 
         addSpacer(content, 12)
@@ -567,9 +577,8 @@ class MainActivity : Activity() {
         } else {
             for (i in 0 until recentFichas.length()) {
                 val f = recentFichas.getJSONObject(i)
-                val card = card(f.optString("product_name", ""), "${f.optString("status", "")} · ${formatAmount(f.optString("total_cost", "0"))} CUP")
-                card.setOnClickListener { openFichaDetail(f.optInt("id")) }
-                content.addView(card)
+                val row = card(f.optString("product_name", ""), "${f.optString("status", "")} · ${formatAmount(f.optString("total_cost", "0"))} CUP")
+                row.setOnClickListener { openFichaDetail(f.optInt("id")) }
             }
         }
     }
@@ -577,7 +586,7 @@ class MainActivity : Activity() {
     // ==================== Products ====================
 
     private fun renderProducts() {
-        addHeading(content, "Productos y servicios", "Catálogo de elementos con ficha de costo.")
+        addHeading(content, "Productos y servicios", "Catálogo con ficha de costo y rendimiento (comensales / copas).")
         addButton(content, "＋  Nuevo producto", true) { openProductForm() }
         addSpacer(content, 6)
         val active = products.toObjectList().filter { it.optInt("active", 1) == 1 }
@@ -585,8 +594,10 @@ class MainActivity : Activity() {
             addText(content, "No hay productos activos en el catálogo.", 11f, MUTED)
         } else {
             active.forEach { p ->
-                val card = card(p.optString("name", ""), "${p.optString("category", "")} · ${p.optString("code", "")}")
-                content.addView(card)
+                val yq = p.optString("last_yield_qty", p.optString("yield_qty", "1"))
+                val yu = p.optString("last_yield_unit", p.optString("yield_unit", "unidad"))
+                val row = card(p.optString("name", ""), "${p.optString("category", "")} · ${p.optString("code", "")} · rinde $yq $yu")
+                row.setOnClickListener { openProductDetail(p.optInt("id")) }
             }
         }
     }
@@ -594,7 +605,7 @@ class MainActivity : Activity() {
     // ==================== Materials ====================
 
     private fun renderMaterials() {
-        addHeading(content, "Valores del IPV", "Insumos, materias primas y servicios con precios unitarios.")
+        addHeading(content, "Valores del IPV", "Insumos, licores, bebidas y servicios. Pulse para editar, ajustar existencias o enviar a la papelera.")
         addButton(content, "＋  Nuevo valor", true) { openMaterialForm() }
         addSpacer(content, 6)
         val list = materials.toObjectList()
@@ -602,8 +613,13 @@ class MainActivity : Activity() {
             addText(content, "No hay valores de referencia registrados.", 11f, MUTED)
         } else {
             list.forEach { m ->
-                val card = card(m.optString("name", ""), "${formatAmount(m.optString("unit_price", "0"))} CUP / ${m.optString("unit", "")} · ${m.optString("status", "")}")
-                content.addView(card)
+                val low = m.optString("min_stock", "0").toDoubleOrNull() ?: 0.0
+                val stock = m.optString("stock", "0").toDoubleOrNull() ?: 0.0
+                val stockNote = if (low > 0 && stock <= low) "⚠ ${m.optString("stock")} ${m.optString("unit")} (mín. ${m.optString("min_stock")})"
+                else "${m.optString("stock", "0")} ${m.optString("unit")} en almacén"
+                val row = card(m.optString("name", ""),
+                    "${formatAmount(m.optString("unit_price", "0"))} CUP / ${m.optString("unit", "")} · ${m.optString("category", "Insumos")} · $stockNote")
+                row.setOnClickListener { openMaterialDetail(m.optInt("id")) }
             }
         }
     }
@@ -611,7 +627,7 @@ class MainActivity : Activity() {
     // ==================== Fichas ====================
 
     private fun renderFichas() {
-        addHeading(content, "Fichas de costo", "Documentos versionados con los componentes y el costo total.")
+        addHeading(content, "Fichas de costo", "Cada ficha rinde un número de comensales o copas. El inventario indica cuántas se pueden preparar.")
         addButton(content, "＋  Nueva ficha", true) { openFichaForm() }
         addSpacer(content, 6)
         val list = fichas.toObjectList()
@@ -619,14 +635,71 @@ class MainActivity : Activity() {
             addText(content, "No hay fichas de costo registradas.", 11f, MUTED)
         } else {
             list.forEach { f ->
-                val card = card("${f.optString("product_name", "")} · v${f.optInt("version", 0)}", "${f.optString("status", "")} · ${formatAmount(f.optString("total_cost", "0"))} CUP")
-                card.setOnClickListener { openFichaDetail(f.optInt("id")) }
-                content.addView(card)
+                val yq = f.optString("yield_qty", "1")
+                val yu = f.optString("yield_unit", "unidad")
+                val fromStock = f.opt("servings_from_stock")
+                val stockNote = if (fromStock == null || fromStock.toString() == "null") ""
+                else " · inventario ≈ ${f.opt("servings_from_stock")} $yu"
+                val row = card("${f.optString("product_name", "")} · v${f.optInt("version", 0)}",
+                    "${f.optString("status", "")} · rinde $yq $yu · ${formatAmount(f.optString("total_cost", "0"))} CUP$stockNote")
+                row.setOnClickListener { openFichaDetail(f.optInt("id")) }
             }
         }
     }
 
     // ==================== Controls ====================
+
+    private fun renderInventory() {
+        val totals = inventory.optJSONObject("totals") ?: JSONObject()
+        addHeading(content, "Inventario", "Existencias de cada valor del IPV y cuántas raciones o copas se pueden preparar.")
+        addButton(content, "＋  Nuevo valor", true) { openMaterialForm() }
+        statIndex = 0
+        val grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        statRow(grid, "Valores", totals.optString("materials", "0"), "${totals.optString("categories", "0")} categorías")
+        statRow(grid, "Valor del almacén", formatAmount(totals.optString("stock_value", "0")) + " CUP", "existencias × precio")
+        statRow(grid, "Bajo mínimo", totals.optString("low_stock", "0"), if (totals.optInt("low_stock", 0) > 0) "Requieren reposición" else "Todo en orden")
+        content.addView(grid)
+        addSpacer(content, 10)
+        val items = inventory.optJSONArray("items") ?: JSONArray()
+        if (items.length() == 0) {
+            addText(content, "Inventario vacío. Cargue datos de prueba desde la web o registre valores.", 11f, MUTED)
+        } else {
+            items.toObjectList().forEach { m ->
+                val used = m.optJSONArray("used_by") ?: JSONArray()
+                val first = if (used.length() > 0) {
+                    val u = used.getJSONObject(0)
+                    " · ${u.optString("product_name")} ≈ ${u.opt("servings")} ${u.optString("yield_unit")}"
+                } else ""
+                val row = card(m.optString("name", ""),
+                    "${m.optString("stock")} ${m.optString("unit")} · mín. ${m.optString("min_stock")} · ${formatAmount(m.optString("stock_value", "0"))} CUP$first")
+                row.setOnClickListener { openMaterialDetail(m.optInt("id")) }
+            }
+        }
+    }
+
+    private fun renderTrash() {
+        addHeading(content, "Papelera de reciclaje", "Restaure lo eliminado o bórrelo definitivamente. Nada se pierde por accidente.")
+        val list = trash.toObjectList()
+        if (list.isEmpty()) {
+            addText(content, "La papelera está vacía.", 11f, MUTED)
+        } else {
+            addButton(content, "Vaciar papelera", false) { emptyTrash() }
+            addSpacer(content, 6)
+            list.forEach { t ->
+                val row = card("${t.optString("kind_label")}: ${t.optString("name")}",
+                    listOf(t.optString("code"), t.optString("detail"), t.optString("deleted_at")).filter { it.isNotBlank() }.joinToString(" · "))
+                row.setOnClickListener {
+                    AlertDialog.Builder(this)
+                        .setTitle(t.optString("name"))
+                        .setMessage("¿Restaurar este elemento o eliminarlo para siempre?")
+                        .setPositiveButton("Restaurar") { _, _ -> restoreTrash(t.optString("kind"), t.optInt("id")) }
+                        .setNeutralButton("Eliminar") { _, _ -> purgeTrash(t.optString("kind"), t.optInt("id")) }
+                        .setNegativeButton("Cancelar", null)
+                        .show()
+                }
+            }
+        }
+    }
 
     private fun renderControls() {
         addHeading(content, "Controles de IPV", "Instantáneas de verificación vinculadas a fichas aprobadas.")
@@ -635,9 +708,8 @@ class MainActivity : Activity() {
             addText(content, "No hay controles registrados. Genera uno desde una ficha aprobada.", 11f, MUTED)
         } else {
             list.forEach { c ->
-                val card = card(c.optString("code", ""), "${c.optString("product_name", "")} · ${c.optString("period", "")} · ${c.optString("status", "")}")
-                card.setOnClickListener { openControlDetail(c.optInt("id")) }
-                content.addView(card)
+                val row = card(c.optString("code", ""), "${c.optString("product_name", "")} · ${c.optString("period", "")} · ${c.optString("status", "")}")
+                row.setOnClickListener { openControlDetail(c.optInt("id")) }
             }
         }
     }
@@ -758,40 +830,62 @@ class MainActivity : Activity() {
 
     // ==================== Forms ====================
 
-    private fun openProductForm() {
+    private fun openProductForm(existing: JSONObject? = null) {
         val form = formContainer()
-        val code = field(form, "Código *")
-        val name = field(form, "Nombre *")
-        val category = field(form, "Categoría *", value = "Bebidas")
-        val unit = field(form, "Unidad", value = "unidad")
-        showFormDialog("Nuevo producto o servicio", scrollForm(form), "Registrar") { dialog ->
+        val code = field(form, "Código *", value = existing?.optString("code") ?: "")
+        val name = field(form, "Nombre *", value = existing?.optString("name") ?: "")
+        val category = field(form, "Categoría *", value = existing?.optString("category") ?: "Comidas")
+        val unit = field(form, "Unidad de venta", value = existing?.optString("unit") ?: "unidad")
+        val yieldQty = field(form, "Rendimiento del lote *", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL,
+            existing?.optString("yield_qty") ?: "1")
+        val yieldUnit = field(form, "Unidad del rendimiento (comensales, copas, vasos…)",
+            value = existing?.optString("yield_unit") ?: "comensales")
+        val desc = field(form, "Descripción", value = existing?.optString("description") ?: "")
+        val isEdit = existing != null
+        showFormDialog(if (isEdit) "Editar producto" else "Nuevo producto o servicio", scrollForm(form), if (isEdit) "Guardar" else "Registrar") { dialog ->
             val c = code.text.toString().trim()
             val n = name.text.toString().trim()
             val cat = category.text.toString().trim()
             if (c.isEmpty() || n.isEmpty() || cat.isEmpty()) { toast("Código, nombre y categoría son obligatorios."); return@showFormDialog }
-            val body = JSONObject().put("code", c).put("name", n).put("category", cat).put("unit", unit.text.toString().ifBlank { "unidad" })
-            runApi(dialog, "Producto registrado correctamente.") { api.request("POST", "/api/products", body) }
+            val body = JSONObject().put("code", c).put("name", n).put("category", cat)
+                .put("unit", unit.text.toString().ifBlank { "unidad" })
+                .put("yield_qty", yieldQty.text.toString().ifBlank { "1" })
+                .put("yield_unit", yieldUnit.text.toString().ifBlank { "unidad" })
+                .put("description", desc.text.toString())
+            if (isEdit) runApi(dialog, "Producto actualizado.") { api.request("PUT", "/api/products/${existing!!.optInt("id")}", body) }
+            else runApi(dialog, "Producto registrado correctamente.") { api.request("POST", "/api/products", body) }
         }
     }
 
-    private fun openMaterialForm() {
+    private fun openMaterialForm(existing: JSONObject? = null) {
         val form = formContainer()
-        val code = field(form, "Código *")
-        val name = field(form, "Nombre *")
-        val unit = field(form, "Unidad *", value = "kg")
-        val price = field(form, "Precio unitario *", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
-        val supplier = field(form, "Proveedor")
-        val source = field(form, "Fuente / documento")
-        showFormDialog("Nuevo valor de referencia", scrollForm(form), "Registrar") { dialog ->
+        val code = field(form, "Código *", value = existing?.optString("code") ?: "")
+        val name = field(form, "Nombre *", value = existing?.optString("name") ?: "")
+        val category = field(form, "Categoría *", value = existing?.optString("category") ?: "Licores")
+        val unit = field(form, "Unidad *", value = existing?.optString("unit") ?: "L")
+        val price = field(form, "Precio unitario *", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL,
+            existing?.optString("unit_price") ?: "")
+        val stock = field(form, "Existencias en almacén", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL,
+            existing?.optString("stock") ?: "0")
+        val minStock = field(form, "Existencia mínima", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL,
+            existing?.optString("min_stock") ?: "0")
+        val supplier = field(form, "Proveedor", value = existing?.optString("supplier") ?: "")
+        val source = field(form, "Fuente / documento", value = existing?.optString("source") ?: "")
+        val isEdit = existing != null
+        showFormDialog(if (isEdit) "Editar valor del IPV" else "Nuevo valor del IPV", scrollForm(form), if (isEdit) "Guardar" else "Registrar") { dialog ->
             val c = code.text.toString().trim()
             val n = name.text.toString().trim()
             val u = unit.text.toString().trim()
             if (c.isEmpty() || n.isEmpty() || u.isEmpty()) { toast("Código, nombre y unidad son obligatorios."); return@showFormDialog }
             val body = JSONObject().put("code", c).put("name", n).put("unit", u)
+                .put("category", category.text.toString().ifBlank { "Insumos" })
                 .put("unit_price", price.text.toString().ifBlank { "0" })
+                .put("stock", stock.text.toString().ifBlank { "0" })
+                .put("min_stock", minStock.text.toString().ifBlank { "0" })
                 .put("supplier", supplier.text.toString())
                 .put("source", source.text.toString())
-            runApi(dialog, "Valor de referencia registrado.") { api.request("POST", "/api/materials", body) }
+            if (isEdit) runApi(dialog, "Valor del IPV actualizado.") { api.request("PUT", "/api/materials/${existing!!.optInt("id")}", body) }
+            else runApi(dialog, "Valor del IPV registrado.") { api.request("POST", "/api/materials", body) }
         }
     }
 
@@ -818,7 +912,11 @@ class MainActivity : Activity() {
         }
         form.addView(materialSpinner, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(10) })
 
-        val quantity = field(form, "Cantidad", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL, "1")
+        val first = activeProducts.first()
+        val yieldQty = field(form, "Rinde (comensales, copas o vasos del lote)", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL,
+            first.optString("yield_qty", "1"))
+        val yieldUnit = field(form, "Unidad del rendimiento", value = first.optString("yield_unit", "comensales"))
+        val quantity = field(form, "Cantidad del lote", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL, "1")
         val lines = mutableListOf<DraftLine>()
         val lineList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val addLine = makeButton("＋  Añadir componente", false) {
@@ -837,6 +935,8 @@ class MainActivity : Activity() {
             val itemArray = JSONArray()
             lines.forEach { itemArray.put(JSONObject().put("material_id", it.materialId).put("quantity", it.quantity)) }
             val body = JSONObject().put("product_id", activeProducts[productSpinner.selectedItemPosition].optInt("id"))
+                .put("yield_qty", yieldQty.text.toString().ifBlank { "1" })
+                .put("yield_unit", yieldUnit.text.toString().ifBlank { "unidad" })
                 .put("items", itemArray)
             runApi(dialog, "Ficha creada como borrador.") { api.request("POST", "/api/fichas", body) }
         }
@@ -869,7 +969,12 @@ class MainActivity : Activity() {
                     val message = buildString {
                         append("${ficha.optString("product_name")} · versión ${ficha.optInt("version")}\n")
                         append("Estado: ${ficha.optString("status")}\nVigente desde: ${ficha.optString("valid_from")}\n")
-                        append("Costo total: ${formatAmount(ficha.optString("total_cost"))} CUP\n\n")
+                        append("Rinde: ${ficha.optString("yield_qty")} ${ficha.optString("yield_unit")}\n")
+                        append("Costo del lote: ${formatAmount(ficha.optString("total_cost"))} CUP\n")
+                        append("Costo por ${ficha.optString("yield_unit")}: ${formatAmount(ficha.optString("cost_per_serving"))} CUP\n")
+                        val srv = ficha.opt("servings_from_stock")
+                        if (srv != null && srv.toString() != "null") append("Con el inventario: ≈ $srv ${ficha.optString("yield_unit")}\n")
+                        append("\n")
                         val lines = ficha.optJSONArray("items") ?: JSONArray()
                         for (i in 0 until lines.length()) {
                             val line = lines.getJSONObject(i)
@@ -879,6 +984,7 @@ class MainActivity : Activity() {
                     }
                     AlertDialog.Builder(this).setTitle("Ficha de Costo").setMessage(message)
                         .setPositiveButton("Cerrar", null)
+                        .setNegativeButton("Papelera") { _, _ -> trashItem("fichas", id, ficha.optString("product_name")) }
                         .apply { if (ficha.optString("status") == "Borrador") setNeutralButton("Aprobar", null) }
                         .apply { if (ficha.optString("status") == "Aprobada") setNeutralButton("Generar Control", null) }
                         .create().also { dialog ->
@@ -964,6 +1070,113 @@ class MainActivity : Activity() {
                 runOnUiThread { dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true; toast(error.message ?: "Error al guardar.") }
             }
         }
+    }
+
+    private fun openMaterialDetail(id: Int) {
+        executor.execute {
+            try {
+                val m = api.request("GET", "/api/materials/$id") as JSONObject
+                runOnUiThread {
+                    val used = m.optJSONArray("used_by") ?: JSONArray()
+                    val usage = if (used.length() == 0) "Sin recetas que lo usen."
+                    else (0 until used.length()).joinToString("\n") {
+                        val u = used.getJSONObject(it)
+                        "• ${u.optString("product_name")}: ${u.optString("per_serving")} ${m.optString("unit")} por ${u.optString("yield_unit")} · inventario ≈ ${u.opt("servings")} ${u.optString("yield_unit")}"
+                    }
+                    val msg = buildString {
+                        append("${m.optString("code")} · ${m.optString("category")}\n")
+                        append("Precio: ${formatAmount(m.optString("unit_price"))} ${m.optString("currency")} / ${m.optString("unit")}\n")
+                        append("Existencias: ${m.optString("stock")} ${m.optString("unit")} (mín. ${m.optString("min_stock")})\n")
+                        append("Valor en almacén: ${formatAmount(m.optString("stock_value"))} CUP\n\n")
+                        append(usage)
+                    }
+                    AlertDialog.Builder(this).setTitle(m.optString("name")).setMessage(msg)
+                        .setPositiveButton("Editar") { _, _ -> openMaterialForm(m) }
+                        .setNeutralButton("Papelera") { _, _ -> trashItem("materials", id, m.optString("name")) }
+                        .setNegativeButton("Cerrar", null)
+                        .show()
+                }
+            } catch (error: Exception) { runOnUiThread { toast(error.message ?: "No se pudo abrir el valor.") } }
+        }
+    }
+
+    private fun openProductDetail(id: Int) {
+        executor.execute {
+            try {
+                val p = api.request("GET", "/api/products/$id") as JSONObject
+                runOnUiThread {
+                    val fichasOf = p.optJSONArray("fichas") ?: JSONArray()
+                    val msg = buildString {
+                        append("${p.optString("code")} · ${p.optString("category")}\n")
+                        append("Rinde ${p.optString("yield_qty")} ${p.optString("yield_unit")} por lote\n")
+                        append("Fichas: ${fichasOf.length()}\n")
+                        if (p.optString("description").isNotBlank()) append("\n${p.optString("description")}")
+                    }
+                    AlertDialog.Builder(this).setTitle(p.optString("name")).setMessage(msg)
+                        .setPositiveButton("Editar") { _, _ -> openProductForm(p) }
+                        .setNeutralButton("Papelera") { _, _ -> trashItem("products", id, p.optString("name")) }
+                        .setNegativeButton("Cerrar", null)
+                        .show()
+                }
+            } catch (error: Exception) { runOnUiThread { toast(error.message ?: "No se pudo abrir el producto.") } }
+        }
+    }
+
+    private fun trashItem(kind: String, id: Int, name: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Mover a la papelera")
+            .setMessage("«$name» dejará de aparecer en las listas. Podrá restaurarlo desde Papelera.")
+            .setPositiveButton("Mover") { _, _ ->
+                executor.execute {
+                    try {
+                        api.request("DELETE", "/api/$kind/$id")
+                        runOnUiThread { toast("Movido a la papelera."); refresh() }
+                    } catch (error: Exception) { runOnUiThread { toast(error.message ?: "No se pudo eliminar.") } }
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun restoreTrash(kind: String, id: Int) {
+        executor.execute {
+            try {
+                api.request("POST", "/api/trash/$kind/$id/restore", JSONObject())
+                runOnUiThread { toast("Elemento restaurado."); refresh() }
+            } catch (error: Exception) { runOnUiThread { toast(error.message ?: "No se pudo restaurar.") } }
+        }
+    }
+
+    private fun purgeTrash(kind: String, id: Int) {
+        AlertDialog.Builder(this)
+            .setTitle("Borrado definitivo")
+            .setMessage("Se eliminará para siempre, junto con sus documentos derivados.")
+            .setPositiveButton("Eliminar") { _, _ ->
+                executor.execute {
+                    try {
+                        api.request("DELETE", "/api/trash/$kind/$id")
+                        runOnUiThread { toast("Eliminado definitivamente."); refresh() }
+                    } catch (error: Exception) { runOnUiThread { toast(error.message ?: "No se pudo eliminar.") } }
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun emptyTrash() {
+        AlertDialog.Builder(this)
+            .setTitle("Vaciar la papelera")
+            .setMessage("Se borrarán definitivamente todos los elementos de la papelera.")
+            .setPositiveButton("Vaciar") { _, _ ->
+                executor.execute {
+                    try {
+                        api.request("POST", "/api/trash/empty", JSONObject())
+                        runOnUiThread { toast("Papelera vaciada."); refresh() }
+                    } catch (error: Exception) { runOnUiThread { toast(error.message ?: "No se pudo vaciar.") } }
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
     }
 
     // ==================== Settings ====================

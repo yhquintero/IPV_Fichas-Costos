@@ -538,14 +538,15 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
             try:
                 with srv.WRITE_LOCK, srv.connect() as conn:
                     if kind == "products":
-                        cur = conn.execute("UPDATE products SET active=1, updated_at=? WHERE id=? AND active=0", (srv.now_iso(), ident))
+                        cur = conn.execute("UPDATE products SET active=1, deleted_at='', updated_at=? "
+                                           "WHERE id=? AND (active=0 OR deleted_at<>'')", (srv.now_iso(), ident))
                     else:
-                        cur = conn.execute("UPDATE materials SET status='Vigente', effective_to='', updated_at=? "
-                                           "WHERE id=? AND status='Inactivo'", (srv.now_iso(), ident))
+                        cur = conn.execute("UPDATE materials SET status='Vigente', effective_to='', deleted_at='', updated_at=? "
+                                           "WHERE id=? AND (status='Inactivo' OR deleted_at<>'')", (srv.now_iso(), ident))
                     if cur.rowcount == 0:
                         raise srv.APIError("Registro no encontrado o ya activo.", 404)
                 srv.audit_log(f"RESTORE_{'PRODUCT' if kind == 'products' else 'MATERIAL'}", f"id={ident}", self.client_ip())
-                return self.send_json({"ok": True})
+                return self.send_json({"ok": True, "restored": True})
             except srv.APIError as exc:
                 return _error(self, exc)
         if not (path.startswith("/api/auth/") or path == "/api/users"):
@@ -585,24 +586,7 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
                 return self.send_json({"error": exc.message}, exc.status)
             except srv.APIError as exc:
                 return _error(self, exc)
-        if not path.startswith("/api/materials/"):
-            return original_delete(self)
-        if not self._pre_check():
-            return
-        try:
-            material_id = int(path.split("/")[-1])
-            with srv.WRITE_LOCK, srv.connect() as conn:
-                cur = conn.execute(
-                    "UPDATE materials SET status='Inactivo', effective_to=?, updated_at=? WHERE id=?",
-                    (datetime.now().date().isoformat(), srv.now_iso(), material_id))
-                if cur.rowcount == 0:
-                    raise srv.APIError("Valor de referencia no encontrado.", 404)
-            srv.audit_log("DEACTIVATE_MATERIAL", f"id={material_id}", self.client_ip())
-            self.send_json({"ok": True})
-        except ValueError:
-            self.send_json({"error": "Identificador no válido."}, 400)
-        except srv.APIError as exc:
-            _error(self, exc)
+        return original_delete(self)
 
     def do_PUT(self):
         self._normalize_version()
