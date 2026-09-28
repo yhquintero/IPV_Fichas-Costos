@@ -3,7 +3,7 @@
 // · Recursos estáticos: stale-while-revalidate.
 // · API: red primero; si no hay red se usa la última respuesta pública en caché.
 // · Nunca se almacenan respuestas autenticadas ni el flujo de eventos en tiempo real.
-const CACHE = 'ipv-fichas-costos-v6';
+const CACHE = 'ipv-fichas-costos-v7';
 const STATIC = ['/', '/index.html', '/styles.css', '/app.js', '/enterprise.js', '/qr.js', '/license.js', '/ux.js', '/manifest.json', '/fonts/dm-sans.woff2', '/fonts/manrope.woff2'];
 
 self.addEventListener('install', e => {

@@ -24,8 +24,8 @@
   const Auth = {
     get user() { try { return JSON.parse(S.getItem(K.user) || 'null'); } catch { return null; } },
     headers() { const t = S.getItem(K.access); return t ? { Authorization: `Bearer ${t}` } : {}; },
-    save(d) { S.setItem(K.access, d.access_token); S.setItem(K.refresh, d.refresh_token); S.setItem(K.user, JSON.stringify(d.user)); renderUserBadge(); connectEvents(); },
-    clear() { Object.values(K).forEach(k => S.removeItem(k)); renderUserBadge(); },
+    save(d) { S.setItem(K.access, d.access_token); S.setItem(K.refresh, d.refresh_token); S.setItem(K.user, JSON.stringify(d.user)); renderUserBadge(); connectEvents(); try { document.dispatchEvent(new CustomEvent('ipv:auth')); } catch {} },
+    clear() { Object.values(K).forEach(k => S.removeItem(k)); renderUserBadge(); try { document.dispatchEvent(new CustomEvent('ipv:auth')); } catch {} },
     async tryRefresh() {
       const rt = S.getItem(K.refresh);
       if (!rt) return false;
@@ -182,6 +182,7 @@
     userBadge.querySelector('.user-avatar').dataset.mfa = u.mfa ? '1' : '0';
   }
   renderUserBadge();
+  try { document.dispatchEvent(new CustomEvent('ipv:auth')); } catch {}  // sincroniza la visibilidad del Creador
 
   /* ───────────── Centro de notificaciones ───────────── */
   const ACTION_LABELS = {
@@ -605,6 +606,7 @@
     { icon: '🔑', label: 'Licencia: estado, planes y renovación', run: () => { closePalette(); setView('license'); } },
     ...(Auth.user ? [{ icon: '🔐', label: 'Seguridad de mi cuenta (2FA y contraseña)', run: () => { closePalette(); openAccountSecurity(); } }] : []),
     ...(Auth.user?.role === 'admin' ? [
+      { icon: '🛠', label: 'Creador de Licencias: crear clave y emitir licencias', run: () => { closePalette(); setView('creator'); } },
       { icon: '👥', label: 'Gestionar usuarios y permisos', run: () => { closePalette(); openUsers(); } },
       { icon: '✅', label: 'Verificar integridad de la auditoría', run: () => { closePalette(); verifyAudit(); } },
       { icon: '🛡', label: 'Registro de auditoría', run: () => { closePalette(); openAudit(); } },

@@ -201,6 +201,7 @@ class MainActivity : Activity() {
     private var unlocked = false
     private lateinit var license: LicenseManager
     private var licenseDialog: AlertDialog? = null
+    private var licenseNoticeShown = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -783,9 +784,13 @@ class MainActivity : Activity() {
         parent.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(6) })
     }
 
+    /** Importes en formato $ 3,163,138.00 CUP: $ delante, miles con coma y decimales con punto. */
     private fun formatAmount(value: String): String {
         val n = value.toDoubleOrNull() ?: 0.0
-        return String.format("%.2f", n)
+        val fmt = java.text.NumberFormat.getNumberInstance(java.util.Locale.US)
+        fmt.minimumFractionDigits = 2
+        fmt.maximumFractionDigits = 2
+        return "$ " + fmt.format(n)
     }
 
     private fun formContainer(): LinearLayout = LinearLayout(this).apply {
@@ -1205,7 +1210,7 @@ class MainActivity : Activity() {
         }
         form.addView(resetPin)
         if (user != null) addButton(form, "🛡  Seguridad de la cuenta (dispositivos y contraseña)", true) { openAccountSecurity() }
-        if (LicenseCore.enforced) addButton(form, "🔑  Licencia: estado y renovación", false) { openLicense(forced = false) {} }
+        addButton(form, "🔑  Licencia: estado y renovación", false) { openLicense(forced = false) {} }
         if (user != null) addButton(form, "Cerrar sesión y borrar datos locales", false) {
             executor.execute {
                 api.logout()
@@ -1230,9 +1235,17 @@ class MainActivity : Activity() {
 
     // ==================== Licencia por período ====================
 
-    /** Ejecuta [action] solo si hay licencia vigente; si no, muestra la activación (no se puede omitir). */
+    /** Ejecuta [action] solo si hay licencia vigente; si no, muestra la activación (no se puede omitir).
+     *  Igual que la web: al arrancar, lo primero es la licencia. Con licencias desactivadas
+     *  (sin clave pública) avisa una vez y continúa, como el aviso de la página Licencia web. */
     private fun licenseGate(action: () -> Unit) {
-        if (!LicenseCore.enforced) { action(); return }
+        if (!LicenseCore.enforced) {
+            if (!licenseNoticeShown) {
+                licenseNoticeShown = true
+                toast("🛡 Licencias desactivadas: cree la clave en el Creador de Licencias (web, menú Licencia).")
+            }
+            action(); return
+        }
         try {
             val info = license.current()
             val left = info.daysLeft(System.currentTimeMillis() / 1000)
@@ -1243,8 +1256,42 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Diálogo informativo cuando las licencias están desactivadas en el servidor. */
+    private fun openLicenseDisabled() {
+        if (licenseDialog?.isShowing == true) return
+        val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(4)) }
+        form.addView(label("🛡 Licencias desactivadas (sin clave pública configurada).", 13f, WARNING, true).apply { setPadding(0, 0, 0, dp(10)) })
+        form.addView(label(
+            "El proveedor aún no creó la clave de firma. Desde la aplicación web abra el «Creador de Licencias» " +
+            "(menú Licencia → Abrir Creador de Licencias): la clave se crea una sola vez y el sistema se activa al " +
+            "instante. Después recompile este APK con la nueva clave pública.", 12f, MUTED))
+        form.addView(label("ID Dispositivo (cifrado)", 11f, MUTED, true).apply { setPadding(0, dp(12), 0, dp(2)) })
+        form.addView(TextView(this).apply {
+            text = license.requestCode
+            typeface = Typeface.MONOSPACE
+            textSize = 14f
+            setTextColor(LIME_VIVID)
+            setTextIsSelectable(true)
+            background = rounded(GREEN_DARK, 10)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        })
+        form.addView(makeButton("📋 Copiar código", false) {
+            val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("ID Dispositivo IPV", license.requestCode))
+            toast("Código copiado")
+        }.apply { setPadding(0, dp(8), 0, 0) })
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("🔑 Licencia")
+            .setView(ScrollView(this).apply { addView(form) })
+            .setPositiveButton("Cerrar", null)
+            .create()
+        licenseDialog = dialog
+        dialog.show()
+    }
+
     private fun openLicense(forced: Boolean, reason: String = "", onActivated: () -> Unit) {
         if (licenseDialog?.isShowing == true) return
+        if (!LicenseCore.enforced) { openLicenseDisabled(); return }
         val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(4)) }
         val current = runCatching { license.current() }.getOrNull()
         val status = when {

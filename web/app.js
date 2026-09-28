@@ -23,17 +23,20 @@ const views = {
   materials: { crumb: 'Valores del IPV' }, inventory: { crumb: 'Inventario' },
   fichas: { crumb: 'Fichas de costo' }, controls: { crumb: 'Controles de IPV' },
   trash: { crumb: 'Papelera de reciclaje' }, license: { crumb: 'Licencia' },
+  creator: { crumb: 'Creador de Licencias' },
 };
 const viewRenderers = {
   dashboard: 'renderDashboard', products: 'renderProducts', materials: 'renderMaterials',
   inventory: 'renderInventory', fichas: 'renderFichas', controls: 'renderControls',
-  trash: 'renderTrash', license: 'renderLicense',
+  trash: 'renderTrash', license: 'renderLicense', creator: 'renderCreator',
 };
 
 /* ── Utilities ── */
 function esc(v = '') { return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
-function money(v) { const n = Number(v || 0); return `${new Intl.NumberFormat('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number.isFinite(n) ? n : 0)} CUP`; }
-function dec(v, d = 3) { const n = Number(v || 0); return new Intl.NumberFormat('es-ES', { maximumFractionDigits: d }).format(Number.isFinite(n) ? n : 0); }
+/* Dinero en formato $ 3,163,138.00 CUP: $ delante, miles con coma y decimales con punto. */
+const NUM_FMT = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function money(v) { const n = Number(v || 0); return `$ ${NUM_FMT.format(Number.isFinite(n) ? n : 0)} CUP`; }
+function dec(v, d = 3) { const n = Number(v || 0); return new Intl.NumberFormat('en-US', { maximumFractionDigits: d }).format(Number.isFinite(n) ? n : 0); }
 function dateLabel(v) { if (!v) return '—'; const d = new Date(v); if (Number.isNaN(d.getTime())) return esc(v); return new Intl.DateTimeFormat('es', { day: '2-digit', month: 'short', year: 'numeric' }).format(d); }
 function currentMonth() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }
 function catClass(c = '') { const v = c.toLowerCase(); if (v.includes('comida') || v.includes('alimento')) return 'food'; if (v.includes('serv')) return 'service'; if (v.includes('beb')) return ''; return 'other'; }
@@ -63,7 +66,12 @@ async function api(path, opts = {}, retried = false) {
     if (await window.IPVAuth.recover()) return api(path, opts, true);
   }
   const d = await r.json().catch(() => ({}));
-  if (r.status === 402 && d.license_required && window.IPVLicense) window.IPVLicense.show(null);
+  if (r.status === 402 && d.license_required && window.IPVLicense) {
+    /* Dentro del Creador de Licencias no se tapa la pantalla: allí mismo se emite
+       y activa la licencia de este equipo con el código de solicitud. */
+    if (state.view === 'creator') toast(`🔒 Emita la licencia de este equipo con su código ${d.request_code || ''} y pulse «Activar en este equipo».`, 'info');
+    else window.IPVLicense.show(null);
+  }
   if (r.status === 403 && d.password_expired && window.IPVAuth?.forcePasswordChange && !retried) {
     if (await window.IPVAuth.forcePasswordChange()) return api(path, opts, true);
   }
@@ -111,11 +119,13 @@ function setView(v) {
   render();
 }
 function render() {
-  if (!state.dashboard) return;
+  /* El Creador de Licencias funciona aunque la API esté bloqueada por licencia (402):
+     sus rutas están exentas y es donde se emite la licencia del propio equipo. */
+  if (!state.dashboard && state.view !== 'creator') return;
   const fns = {
     dashboard: renderDashboard, products: renderProducts, materials: renderMaterials,
     inventory: renderInventory, fichas: renderFichas, controls: renderControls,
-    trash: renderTrash, license: renderLicense,
+    trash: renderTrash, license: renderLicense, creator: renderCreator,
   };
   (fns[state.view] || renderDashboard)();
 }
@@ -353,11 +363,14 @@ function loadLicenseInto(box) {
       state.license = lic;
       if (!box.isConnected) return;
       if (!lic.enforced) {
+        const canCreate = !window.IPVAuth?.user || window.IPVAuth.user.role === 'admin';
         box.innerHTML = `<div class="lic-status-card off"><div class="lic-status-icon">🛡</div><div class="lic-status-copy">
-          <h3>Licencias desactivadas</h3><p>${esc(lic.reason || 'El proveedor no configuró la clave pública.')}</p></div>
-          <button class="secondary-btn" data-action="reload-license">Actualizar</button></div>
+          <h3>Licencias desactivadas</h3><p>Este servidor aún no tiene clave pública de licencias. Cree la clave de firma con el <b>Creador de Licencias</b> y el sistema quedará activado al instante, sin reiniciar.</p></div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+          ${canCreate ? '<button class="primary-btn" data-action="open-creator">🛠 Abrir Creador de Licencias</button>' : ''}
+          <button class="secondary-btn" data-action="reload-license">Actualizar</button></div></div>
           <div class="panel"><h3 class="panel-title">¿Cómo se activan?</h3>
-          <p class="small-note">El proveedor ejecuta <code>python keygen/keygen.py init --whatsapp 53XXXXXXXX</code> una sola vez; a partir de ahí el servidor exige licencia y la web muestra este apartado con el código de solicitud del equipo.</p></div>`;
+          <p class="small-note">Abra el <b>Creador de Licencias</b> (menú lateral) y cree la clave de firma una sola vez: a partir de ahí el servidor exige licencia y cada equipo o teléfono solicita la suya con su código IPVW-… / IPVA-…. También puede usar el Keygen de escritorio: <code>python keygen/keygen.py init --whatsapp 53XXXXXXXX</code>.</p></div>`;
         return;
       }
       const days = lic.days_left ?? 0;
@@ -387,6 +400,190 @@ function loadLicenseInto(box) {
         </div>`;
     })
     .catch(e => { if (box.isConnected) box.innerHTML = `<div class="lic-status-card bad"><div class="lic-status-icon">⚠</div><div class="lic-status-copy"><h3>No se pudo consultar la licencia</h3><p>${esc(e.message)}</p></div><button class="secondary-btn" data-action="reload-license">Reintentar</button></div>`; });
+}
+
+/* ── Creador de Licencias (administradores) ── */
+function creatorPriceHint() {
+  const st = state.creator; if (!st) return;
+  const hint = $('#creator-price'); if (!hint) return;
+  const code = ($('#creator-code')?.value || '').trim().toUpperCase();
+  const p = (st.plans || {})[$('#creator-plan')?.value || '1M'];
+  if (!p) return;
+  if (code.startsWith('IPVA')) { hint.innerHTML = `📱 IPV Android (móvil) · <b>${esc(p.name)}</b> — ${p.usd_android} USD ≈ ${money(p.cup_android)}`; return; }
+  if (code.startsWith('IPVW')) { hint.innerHTML = `💻 IPV Web (servidor/PC) · <b>${esc(p.name)}</b> — ${p.usd_web} USD ≈ ${money(p.cup_web)}`; return; }
+  hint.innerHTML = code ? '<span style="color:var(--orange)">El código debe empezar por IPVW- (PC) o IPVA- (móvil).</span>'
+    : 'Pegue el código de solicitud recibido por WhatsApp: IPVW-… (PC) o IPVA-… (móvil).';
+}
+
+function creatorResultPanel(r) {
+  const self = state.creator?.license && !state.creator.license.valid;
+  return `<div class="panel animate-fade" id="creator-result">
+    <div class="panel-heading"><div><h2 class="panel-title">✅ Licencia creada — ${esc(r.plan_name)}</h2>
+      <p class="panel-subtitle">${esc(r.app_name)} · Usuario: ${esc(r.user)} · Serie ${esc(r.serial)} · vence el ${fmtDate(r.expires_at)} · ${r.price_usd} USD ≈ ${money(r.price_cup)}</p></div></div>
+    <textarea class="lic-input lic-token" id="creator-token" rows="4" readonly spellcheck="false">${esc(r.license)}</textarea>
+    <div class="lic-actions">
+      <button class="secondary-btn" data-action="creator-copy" data-target="#creator-token">📋 Copiar licencia</button>
+      <button class="secondary-btn" data-action="creator-copy" data-target="#creator-reply">📋 Copiar mensaje de WhatsApp</button>
+      ${self ? '<button class="primary-btn" data-action="creator-activate-here">🔓 Activar en este equipo</button>' : ''}
+    </div>
+    <pre id="creator-reply" hidden>${esc(r.reply)}</pre>
+    <p class="small-note" style="margin-top:10px">Pegue la licencia en el equipo o teléfono del cliente (botón Activar licencia) o envíela por WhatsApp con el mensaje copiado. Quedó registrada en el historial.</p></div>`;
+}
+
+function renderCreator() {
+  content.innerHTML = `<div class="lic-page">
+    ${heading('Licencias', 'Creador de Licencias', 'Cree la clave de firma, active el sistema de licencias y emita licencias firmadas para sus clientes (PC y móvil) sin salir de la aplicación.', '<button class="secondary-btn" data-action="creator-refresh">↻ Actualizar</button>')}
+    <div id="creator-body"><div class="lic-status-card"><div class="lic-status-icon">🛠</div><div class="lic-status-copy"><h3>Consultando…</h3><p>Cargando el estado del sistema de licencias.</p></div></div></div>
+  </div>`;
+  loadCreatorInto($('#creator-body'));
+}
+
+async function loadCreatorInto(box) {
+  if (!box) return;
+  let st;
+  try { st = await api('/api/keygen/status'); }
+  catch (e) {
+    box.innerHTML = `<div class="lic-status-card bad"><div class="lic-status-icon">⚠</div><div class="lic-status-copy"><h3>No se pudo abrir el Creador de Licencias</h3><p>${esc(e.message)}</p></div><button class="secondary-btn" data-action="creator-refresh">Reintentar</button></div>`;
+    return;
+  }
+  state.creator = st;
+  const lic = st.license || {};
+  const planOpts = Object.entries(st.plans || {}).map(([k, p]) => `<option value="${k}" ${k === '1M' ? 'selected' : ''}>${esc(p.name)} (${k})</option>`).join('');
+  const rateInputs = Object.entries(st.rates || {}).map(([k, v]) =>
+    `<div class="form-field"><label>${k} → CUP</label><input id="rate-${k}" value="${esc(v)}" inputmode="decimal" autocomplete="off"></div>`).join('');
+
+  box.innerHTML = `
+    <div class="lic-status-card ${st.configured ? (lic.valid ? 'ok' : 'bad') : 'off'}"><div class="lic-status-icon">${st.configured ? (lic.valid ? '✅' : '🔒') : '🛡'}</div>
+      <div class="lic-status-copy"><h3>${st.configured ? `Licencias activadas — clave ${esc(st.fingerprint)}` : 'Licencias desactivadas (sin clave pública configurada)'}</h3>
+        <p>${st.configured
+          ? (lic.valid ? `Este equipo tiene licencia: ${esc(lic.plan_name || '')}, vence en ${lic.days_left ?? '—'} día(s).` : `Este equipo aún no tiene licencia: emítala abajo con su propio código de solicitud.`)
+          : 'Cree la clave de firma una sola vez: el sistema quedará activado al instante, sin reiniciar el servidor.'}</p></div></div>
+
+    ${st.configured && !lic.valid ? `<div class="panel">
+      <div class="panel-heading"><div><h2 class="panel-title">Licencia de este equipo</h2>
+        <p class="panel-subtitle">Emítala abajo pegando este código, para no bloquear la API (error 402)</p></div>
+        <button class="secondary-btn" data-action="creator-copy" data-target="#creator-self-code">📋 Copiar</button></div>
+      <code class="lic-code" id="creator-self-code">${esc(lic.request_code || '')}</code></div>` : ''}
+
+    <div class="panel">
+      <div class="panel-heading"><div><h2 class="panel-title">🔑 Emitir licencia</h2>
+        <p class="panel-subtitle">Pegue el código de solicitud del cliente (IPVW-… PC · IPVA-… móvil) y firme su licencia</p></div></div>
+      <div class="form-grid">
+        <div class="form-field"><label>Usuario / cliente</label><input id="creator-user" maxlength="80" placeholder="Nombre o empresa" autocomplete="off"></div>
+        <div class="form-field"><label>Plan</label><select id="creator-plan">${planOpts}</select></div>
+        <div class="form-field full"><label>Código de solicitud</label><input id="creator-code" style="letter-spacing:1px" placeholder="IPVW-XXXXX-XXXXX-XXXXX-XXXXX-XX" spellcheck="false" autocomplete="off"></div>
+        <div class="form-field full"><label>Contraseña de la clave de firma</label><input id="creator-pass" type="password" autocomplete="off" placeholder="La del archivo clave_privada.json"></div>
+      </div>
+      <p class="small-note" id="creator-price" style="margin:4px 0 12px"></p>
+      <button class="primary-btn" id="creator-emit-btn">⚙️ Crear licencia</button>
+      <p class="lic-msg" id="creator-emit-msg" role="alert" hidden></p>
+    </div>
+    <div id="creator-result-box"></div>
+
+    <div class="panel">
+      <div class="panel-heading"><div><h2 class="panel-title">🛠 Clave de firma</h2>
+        <p class="panel-subtitle">${st.has_key_file ? 'Existe keygen/clave_privada.json (cifrada con su contraseña); es intercambiable con el Keygen de escritorio.' : 'Aún no existe keygen/clave_privada.json'}</p></div></div>
+      ${st.configured ? `<details><summary class="small-note" style="cursor:pointer">⚠ Reemplazar la clave (invalida TODAS las licencias emitidas)</summary>
+        <div class="form-grid" style="margin-top:10px">
+          <div class="form-field"><label>Nueva contraseña (mín. 10)</label><input id="creator-pass2" type="password" autocomplete="new-password"></div>
+          <div class="form-field"><label>Repetir</label><input id="creator-pass2b" type="password" autocomplete="new-password"></div>
+          <div class="form-field full"><label>WhatsApp de solicitudes</label><input id="creator-wa2" value="${esc(st.whatsapp || '')}" placeholder="5355555555" inputmode="numeric"></div>
+        </div>
+        <button class="danger-btn" id="creator-init2-btn">♻ Reemplazar clave y activar licencias</button></details>`
+      : `<div class="form-grid">
+          <div class="form-field"><label>Contraseña de la clave (mín. 10)</label><input id="creator-pass2" type="password" autocomplete="new-password"></div>
+          <div class="form-field"><label>Repetir</label><input id="creator-pass2b" type="password" autocomplete="new-password"></div>
+          <div class="form-field full"><label>WhatsApp de solicitudes</label><input id="creator-wa2" value="${esc(st.whatsapp || '')}" placeholder="5355555555" inputmode="numeric"></div>
+        </div>
+        <button class="primary-btn" id="creator-init2-btn">🔐 Crear clave de firma y activar licencias</button>
+        <p class="small-note" style="margin-top:8px">Guarde la contraseña en un lugar seguro: sin ella no podrá emitir renovaciones.</p>`}
+      <p class="lic-msg" id="creator-init-msg" role="alert" hidden></p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-heading"><div><h2 class="panel-title">🔍 Verificar una licencia</h2>
+        <p class="panel-subtitle">Comprueba firma, usuario, dispositivo y vigencia</p></div></div>
+      <textarea class="lic-input lic-token" id="creator-verify-token" rows="3" placeholder="Pegue la licencia IPV1.…" spellcheck="false"></textarea>
+      <div class="lic-actions"><button class="secondary-btn" id="creator-verify-btn">Verificar</button></div>
+      <p class="lic-msg" id="creator-verify-msg" role="alert" hidden></p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-heading"><div><h2 class="panel-title">💱 Tasas de cambio</h2>
+        <p class="panel-subtitle">Se usan para calcular el precio en CUP de cada licencia</p></div></div>
+      <div class="form-grid">${rateInputs}</div>
+      <button class="secondary-btn" id="creator-rates-btn">Guardar tasas</button>
+      <p class="lic-msg" id="creator-rates-msg" role="alert" hidden></p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-heading"><div><h2 class="panel-title">📜 Historial (${st.ledger_count} emitidas)</h2>
+        <p class="panel-subtitle">keygen/registro_licencias.csv</p></div>
+        <button class="secondary-btn" data-action="creator-ledger">↻ Cargar</button></div>
+      <div class="table-wrap"><table id="creator-ledger"><thead><tr><th>Fecha</th><th>Serie</th><th>Usuario</th><th>App</th><th>Plan</th><th>Vence</th><th style="text-align:right">USD</th><th style="text-align:right">CUP</th></tr></thead>
+      <tbody><tr><td colspan="8" class="small-note">Pulse «Cargar» para ver las últimas licencias emitidas.</td></tr></tbody></table></div>
+    </div>`;
+
+  creatorPriceHint();
+  $('#creator-code')?.addEventListener('input', creatorPriceHint);
+  $('#creator-plan')?.addEventListener('change', creatorPriceHint);
+
+  const showMsg = (sel, msg, ok = false) => { const m = $(sel); if (m) { m.textContent = msg; m.hidden = false; m.style.color = ok ? 'var(--green)' : 'var(--red)'; } };
+
+  $('#creator-emit-btn')?.addEventListener('click', async () => {
+    const btn = $('#creator-emit-btn'), msg = $('#creator-emit-msg');
+    btn.disabled = true; msg.hidden = true;
+    try {
+      const r = await api('/api/keygen/emit', { method: 'POST', body: JSON.stringify({
+        user: $('#creator-user').value.trim(), code: $('#creator-code').value.trim(),
+        plan: $('#creator-plan').value, passphrase: $('#creator-pass').value }) });
+      $('#creator-result-box').innerHTML = creatorResultPanel(r);
+      $('#creator-pass').value = '';
+    } catch (e) { showMsg('#creator-emit-msg', e.message); }
+    finally { btn.disabled = false; }
+  });
+
+  $('#creator-init2-btn')?.addEventListener('click', async () => {
+    const btn = $('#creator-init2-btn');
+    const force = st.configured || st.has_key_file;
+    if (force && !await confirm2('Reemplazar la clave de firma', 'Se invalidarán TODAS las licencias ya emitidas (habrá que emitirlas de nuevo). ¿Continuar?', 'danger')) return;
+    btn.disabled = true;
+    try {
+      const r = await api('/api/keygen/init', { method: 'POST', body: JSON.stringify({
+        passphrase: $('#creator-pass2').value, whatsapp: $('#creator-wa2').value.trim(), force }) });
+      toast(`🔑 Clave creada (${r.fingerprint}). Licencias activadas.`, 'success');
+      if (r.patched?.includes('License.kt')) toast('📱 License.kt actualizado: recompile el APK para distribuirlo.', 'info');
+      loadCreatorInto(box);
+    } catch (e) { showMsg('#creator-init-msg', e.message); }
+    finally { btn.disabled = false; }
+  });
+
+  $('#creator-verify-btn')?.addEventListener('click', async () => {
+    try {
+      const r = await api('/api/keygen/verify', { method: 'POST', body: JSON.stringify({ license: $('#creator-verify-token').value }) });
+      showMsg('#creator-verify-msg', `✅ Firma ${r.signature} · ${r.app_name} · ${r.user} · ${r.plan_name} · vence el ${fmtDate(r.expires_at)} · serie ${r.serial}`, true);
+    } catch (e) { showMsg('#creator-verify-msg', e.message); }
+  });
+
+  $('#creator-rates-btn')?.addEventListener('click', async () => {
+    const rates = {};
+    Object.keys(st.rates || {}).forEach(k => { const el = $(`#rate-${k}`); if (el) rates[k] = el.value.trim(); });
+    try {
+      const r = await api('/api/keygen/rates', { method: 'POST', body: JSON.stringify({ rates }) });
+      state.creator.rates = r.rates; toast('Tasas actualizadas.', 'success'); creatorPriceHint();
+    } catch (e) { showMsg('#creator-rates-msg', e.message); }
+  });
+}
+
+async function loadCreatorLedger() {
+  try {
+    const { items } = await api('/api/keygen/ledger?limit=100');
+    const tb = $('#creator-ledger tbody'); if (!tb) return;
+    tb.innerHTML = items.length ? items.map(r => `<tr><td>${esc(r.fecha || '')}</td><td>${esc(r.serie || '')}</td><td>${esc(r.usuario || '')}</td>
+      <td>${r.app === 'A' ? '📱 Móvil' : '💻 Web'}</td><td>${esc(r.plan || '')}</td><td>${esc(r.vence || '')}</td>
+      <td class="amount">${r.precio_usd ?? ''}</td><td class="amount">${money(r.precio_cup || 0).replace(' CUP', '')}</td></tr>`).join('')
+      : '<tr><td colspan="8" class="small-note">Aún no se ha emitido ninguna licencia.</td></tr>';
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 /* ── Controls ── */
@@ -589,7 +786,7 @@ function openFichaModal(ficha = null, presetProductId = null) {
       <div class="form-field full"><label>Observaciones</label><textarea id="f-notes">${esc(ficha?.observations || '')}</textarea></div>
     </div>
     <div class="line-builder">
-      <div class="line-builder-head"><b>Componentes del lote</b><span id="line-total" class="amount">Total: 0.00 CUP</span></div>
+      <div class="line-builder-head"><b>Componentes del lote</b><span id="line-total" class="amount">Total: $ 0.00 CUP</span></div>
       <div class="line-entry">
         <div class="form-field"><label>Valor del IPV</label><select id="f-mat">${state.materials.map(m => `<option value="${m.id}" data-price="${m.unit_price}" data-unit="${esc(m.unit)}" data-name="${esc(m.name)}">${esc(m.name)} (${esc(m.code)}) — ${money(m.unit_price)}/${esc(m.unit)}</option>`).join('')}</select></div>
         <div class="form-field"><label>Cantidad del lote</label><input id="f-qty" type="number" step="0.001" min="0.001" placeholder="0"></div>
@@ -849,6 +1046,25 @@ async function runAction(action, id, el, extra = {}) {
     case 'empty-trash': return emptyTrash();
     case 'open-license': return window.IPVLicense?.renew();
     case 'reload-license': return loadLicenseInto($('#lic-body'));
+    case 'open-creator': return setView('creator');
+    case 'creator-refresh': return loadCreatorInto($('#creator-body'));
+    case 'creator-ledger': return loadCreatorLedger();
+    case 'creator-copy': {
+      const src = $(el.dataset.target);
+      await navigator.clipboard.writeText(src?.value || src?.textContent || '').catch(() => {});
+      return toast('Copiado al portapapeles.', 'success');
+    }
+    case 'creator-activate-here': {
+      const token = $('#creator-token')?.value || '';
+      if (!token) return;
+      const auth = window.IPVAuth ? window.IPVAuth.headers() : {};
+      const r = await fetch('/api/license', { method: 'POST', headers: { 'Content-Type': 'application/json', ...auth }, body: JSON.stringify({ license: token }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || `Error ${r.status}`);
+      toast('🔓 Licencia de este equipo activada.', 'success');
+      setTimeout(() => location.reload(), 900);
+      return;
+    }
     case 'copy-device': {
       await navigator.clipboard.writeText(state.license?.request_code || '').catch(() => {});
       return toast('ID del equipo copiado.', 'success');
@@ -924,12 +1140,21 @@ document.addEventListener('keydown', e => {
   if (e.key === 'F5') { e.preventDefault(); refreshData(); }
   if (!e.ctrlKey && !e.metaKey && !e.altKey && modalLayer.hidden && $('#search-overlay').hidden) {
     const byKey = { '1': 'dashboard', '2': 'products', '3': 'materials', '4': 'inventory',
-      '5': 'fichas', '6': 'controls', '7': 'trash', '8': 'license' };
+      '5': 'fichas', '6': 'controls', '7': 'trash', '8': 'license', '9': 'creator' };
     if (byKey[e.key]) setView(byKey[e.key]);
   }
 });
 
+/* El Creador de Licencias solo se muestra a administradores (o en modo abierto) */
+function updateCreatorNav() {
+  const u = window.IPVAuth ? window.IPVAuth.user : null;
+  const btn = $('#nav-creator');
+  if (btn) btn.style.display = (!u || u.role === 'admin') ? '' : 'none';
+}
+document.addEventListener('ipv:auth', updateCreatorNav);
+
 /* ── Init ── */
+updateCreatorNav();
 refreshData();
 
 /* ==========================================================================

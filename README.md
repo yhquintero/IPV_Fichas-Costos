@@ -15,6 +15,7 @@ Autor: **Ing. Yosvany Hernández Quintero**
 - **Rendimiento de fichas**: cada plato indica comensales (o copas/vasos) y el costo por unidad; el inventario calcula cuántas raciones salen
 - **Papelera de reciclaje** en todos los módulos: restaurar o borrar definitivamente
 - **Licencia**: pantalla propia con ID del equipo, planes, WhatsApp y activación/renovación
+- **Creador de Licencias** (web, administradores): crea la clave de firma, activa las licencias al instante y emite, verifica y registra licencias para PC y móvil
 - **Datos de prueba**: catálogo amplio de comidas, licores, bebidas e inventario para aprender
 - **La app Android replica la web** y comparte la misma base de datos SQLite del servidor
 - **Diseño moderno** con glassmorphism, neumorphism y efectos 3D
@@ -138,15 +139,19 @@ IPV_BACKUP_S3_SECRET_KEY=...
 - Si la BD está cifrada, las copias remotas **también lo están** (nunca se sube nada en claro).
 - Un destino caído no interrumpe el backup local: queda registrado en la auditoría (`BACKUP_OFFSITE_FAILED`).
 
-### Licencias por período (1 semana … 2 años)
+### Licencias por período (1 semana … 2 años) y Creador de Licencias
 
 El servidor y la app Android se activan con una **licencia firmada (ECDSA P-256)** atada al dispositivo:
 
-1. La app muestra **Activar licencia** con el *ID Dispositivo* cifrado (`IPVW-…` en PC, `IPVA-…` en móvil) y un botón **Solicitar por WhatsApp**.
-2. El proveedor genera la licencia con el **Keygen** (`python keygen\keygen.py`, interfaz gráfica o CLI) indicando *Usuario*, *ID Dispositivo* y *Plan* (`1S`, `1M`, `3M`, `6M`, `1A`, `2A`).
+1. La app muestra **Activar licencia** con el *ID Dispositivo* cifrado (`IPVW-…` en PC, `IPVA-…` en móvil) y un botón **Solicitar por WhatsApp**. La web y el móvil lo hacen **al arrancar, antes del inicio de sesión**.
+2. El proveedor crea la licencia con el **Creador de Licencias** integrado (menú lateral, solo administradores): pega el código de solicitud, elige el plan y pulsa *Crear licencia*. También puede usar el **Keygen** de escritorio (`python keygen\keygen.py`, GUI o CLI); ambos comparten clave y registro.
 3. El cliente pega la licencia y pulsa **Activar**. Sin licencia vigente la API responde `402` y la app queda bloqueada; 7 días antes del vencimiento se avisa.
 
-Configuración inicial del proveedor: `python keygen\keygen.py init --whatsapp 53XXXXXXXX` (escribe la clave pública en `licencia.py` y `License.kt`). Precios, estudio de mercado y guía completa: **[docs/precios-y-licencias.md](docs/precios-y-licencias.md)**.
+**Primera vez (activar el sistema de licencias):** abra **Creador de Licencias** en la web, escriba una contraseña (mín. 10) y su WhatsApp, y pulse *Crear clave de firma y activar licencias*. Las licencias quedan **activadas al instante**, sin reiniciar: la clave pública se escribe en `licencia.py` y `License.kt` (recompile el APK para el móvil). El equivalente en consola es `python keygen\keygen.py init --whatsapp 53XXXXXXXX`. La clave privada se guarda cifrada en `keygen/clave_privada.json`; la contraseña **no** se guarda en el servidor. Si el propio servidor se queda sin licencia, las rutas `/api/keygen` siguen accesibles para que el administrador se la emita a sí mismo. Precios, estudio de mercado y guía completa: **[docs/precios-y-licencias.md](docs/precios-y-licencias.md)**.
+
+### Formato monetario
+
+Todos los importes se muestran como **$ 3,163,138.00 CUP**: símbolo `$` delante, miles separados con coma y decimales con punto (igual en la web y en la app Android).
 
 ### Comandos de administración
 
@@ -235,7 +240,7 @@ docker compose up -d    # contenedor de solo lectura, sin privilegios, usuario n
 
 | Tecla | Acción |
 |-------|--------|
-| `1-8` | Navegar entre vistas (Resumen, Productos, Valores, Inventario, Fichas, Controles, Papelera, Licencia) |
+| `1-9` | Navegar entre vistas (Resumen, Productos, Valores, Inventario, Fichas, Controles, Papelera, Licencia, Creador de Licencias) |
 | `Ctrl+K` | Búsqueda global |
 | `F5` | Actualizar datos |
 | `Esc` | Cerrar modal |

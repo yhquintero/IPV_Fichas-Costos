@@ -1751,5 +1751,9 @@ import licencia  # noqa: E402  — licencias por período (keygen/keygen.py)
 
 licencia.install(sys.modules[__name__])
 
+import creador_licencias  # noqa: E402  — Creador de Licencias (web, solo administradores)
+
+creador_licencias.install(sys.modules[__name__])
+
 if __name__ == "__main__":
     main()
