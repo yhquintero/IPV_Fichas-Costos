@@ -69,7 +69,10 @@ Autor: **Ing. Yosvany Hernández Quintero**
 - **Rate limiting granular**: login 5/min, exportaciones 10/5 min, masivas 10/min, escritura 60/min, lectura 300/min, con cabeceras `X-RateLimit-*`
 - **Auditoría persistente** en SQLite (usuario, IP, acción, detalle) con visor web para administradores
 - **Cabeceras**: CSP, HSTS, COOP, CORP, X-Frame-Options, nosniff, Referrer-Policy, Permissions-Policy
-- **TLS 1.2+** con cifrados ECDHE/AES-GCM/ChaCha20
+- **TLS 1.2+** (o **1.3 exclusivo**) con cifrados ECDHE/AES-GCM/ChaCha20, sin compresión ni renegociación y con las curvas modernas seleccionadas por el servidor
+- **Redirección HTTP → HTTPS** opcional (308) para que nadie entre por error en claro, y **modo estricto** (`IPV_REQUIRE_TLS=1`) que impide arrancar sin certificado válido
+- **Vigilancia del certificado**: aviso al arrancar y en `/api/health` (`tls_expires_at`, `tls_days_left`) cuando faltan menos de 30 días, con reemisión automática desde `iniciar-https.ps1`
+- **Diagnóstico `-Check`**: comprueba requisitos, CA instalada, handshake TLS real, HSTS, `.env`, cifrado de la BD y copias de seguridad
 - **Android**: sesión cifrada con AES-256-GCM en Android Keystore, **fijación de certificado** (huella de la CA, verificada en el handshake TLS), login con 2FA, cambio obligatorio de contraseña caducada, lista de dispositivos con cierre remoto de sesiones, avisos de IP nueva e intentos fallidos, bloqueo biométrico, `FLAG_SECURE`, sin copias en la nube
 
 ### ⚙️ Backend
@@ -80,6 +83,17 @@ Autor: **Ing. Yosvany Hernández Quintero**
 - **Notificaciones por correo** al aprobar fichas y validar controles (SMTP opcional)
 - Estadísticas, reportes, operaciones masivas y búsqueda global
 - **Sin dependencias externas** en producción: solo Python estándar + SQLite
+
+---
+
+## 📚 Documentación
+
+| Guía | Para qué |
+|---|---|
+| [Acceso seguro por HTTPS](docs/acceso-seguro-https.md) | **Todos los pasos desde el principio**: CA, certificado, primer inicio, otro equipo de la red, móvil Android, uso diario y solución de problemas |
+| [Plan de mejora continua](docs/plan-mejora-continua.md) | Cómo evolucionan la web y el móvil: ciclo de trabajo, criterios de calidad, métricas, hoja de ruta y cómo pedir una mejora |
+| [Precios y licencias](docs/precios-y-licencias.md) | Planes, precios y uso del Creador de Licencias |
+| [OpenAPI](docs/openapi.yaml) | Contrato de la API REST |
 
 ---
 
@@ -98,21 +112,35 @@ Autor: **Ing. Yosvany Hernández Quintero**
 git clone <repo-url>
 cd IPV_Fichas-Costos
 
-# 2. Iniciar servidor HTTPS
-.\iniciar-https.ps1
+# 2. Preparar la seguridad (una sola vez): .env, secreto JWT y administrador
+.\iniciar-https.ps1 -InitSecurity
 
-# 3. Abrir en navegador
+# 3. Iniciar el servidor HTTPS (crea la CA y el certificado si faltan)
+.\iniciar-https.ps1 -Open
+
+# 4. Abrir en navegador
 # https://sqlserver:8443
 ```
 
-### Seguridad (recomendado antes del primer inicio)
-
-```powershell
-.\iniciar-https.ps1 -InitSecurity   # crea .env con secreto JWT y administrador
-.\iniciar-https.ps1                 # inicia el servidor HTTPS (lee .env)
-```
+> 📘 **¿Primera vez?** La guía [docs/acceso-seguro-https.md](docs/acceso-seguro-https.md) explica **todos los pasos desde cero**: instalar la CA, entrar desde la propia PC, desde otro equipo de la red y desde el móvil Android, cifrar la base de datos y resolver los errores más comunes.
 
 Sin `IPV_JWT_SECRET` el servidor funciona en **modo abierto** (solo para redes de confianza y pruebas).
+
+### Acceso seguro (HTTPS)
+
+```powershell
+.\iniciar-https.ps1 -Check             # diagnóstico completo del acceso seguro
+.\iniciar-https.ps1 -Port 8443         # cambiar el puerto HTTPS
+.\iniciar-https.ps1 -RedirectPort 8080 # redirigir http://…:8080 → https://…:8443 (308)
+.\iniciar-https.ps1 -NoRedirect        # no levantar el redirector HTTP
+.\iniciar-https.ps1 -Tls13Only         # exigir TLS 1.3 (clientes modernos)
+.\iniciar-https.ps1 -Renew             # reemitir la CA y el certificado
+.\iniciar-https.ps1 -ExportCa D:\CA    # copiar la CA para instalarla en otros equipos
+.\iniciar-https.ps1 -Help              # ayuda con todos los comandos
+```
+
+- El certificado se **reemite solo** cuando hace falta: si caduca en menos de 30 días, si cambian las IP del equipo o si lo emitió otra CA.
+- `-Check` verifica requisitos, certificados, red, **handshake TLS real**, `/api/health`, HSTS, `.env`, cifrado de la BD y copias de seguridad, y resume los problemas y avisos encontrados.
 
 ### Cifrar la base de datos (SQLCipher, AES-256)
 
@@ -177,6 +205,8 @@ El último número dice cuántos ítems hay y la barra de herramientas lo repite
 .\iniciar-https.ps1 -AuditLog      # últimos 40 eventos de auditoría
 .\iniciar-https.ps1 -ShowPin       # huella de la CA para fijarla en Android
 .\iniciar-https.ps1 -EncryptDb     # cifra la base de datos (SQLCipher AES-256)
+.\iniciar-https.ps1 -Check         # diagnóstico del acceso seguro (certificado, TLS, red, .env)
+.\iniciar-https.ps1 -Stop          # detiene el servidor
 ```
 
 ### Docker
@@ -289,6 +319,18 @@ docker compose up -d    # contenedor de solo lectura, sin privilegios, usuario n
 
 Consulte `.env.example`. Las principales: `IPV_JWT_SECRET`, `IPV_ADMIN_EMAIL`, `IPV_ADMIN_PASSWORD`, `IPV_API_TOKEN` (integraciones), `IPV_ALLOWED_ORIGINS`, `IPV_ACCESS_TTL`, `IPV_REFRESH_TTL`, `IPV_BACKUP_INTERVAL_HOURS`, `IPV_BACKUP_KEEP`, `IPV_NOTIFY_EMAIL` y `SMTP_*`.
 
+**Acceso seguro (HTTPS):**
+
+| Variable | Por defecto | Para qué sirve |
+|---|---|---|
+| `IPV_TLS_CERT` / `IPV_TLS_KEY` | `certs\ipv-server.crt` / `.key` | Certificado y clave privada del servidor |
+| `IPV_TLS_MIN` | `1.2` | Versión mínima de TLS (`1.2` o `1.3`); nunca baja de 1.2 |
+| `IPV_REQUIRE_TLS` | `0` | `1` = el servidor **se niega a arrancar** sin certificado válido |
+| `IPV_HTTP_REDIRECT_PORT` | `0` | Puerto HTTP que redirige a HTTPS con 308 (`0` = desactivado) |
+| `IPV_HSTS_MAX_AGE` | `31536000` | Duración de HSTS en segundos (`0` = sin cabecera) |
+
+`iniciar-https.ps1` fija estas variables automáticamente según los parámetros que se le pasen.
+
 ---
 
 ## 📱 App Android
@@ -305,8 +347,11 @@ cd android
 2. Configurar URL: `https://10.0.2.2:8443`
 
 ### Instalación en Dispositivo Físico
-1. Instalar CA root en el dispositivo
+1. Instalar CA root en el dispositivo (`.\iniciar-https.ps1 -ExportCa` para copiarla)
 2. Configurar URL: `https://IP_DEL_SERVIDOR:8443`
+3. Comprobar la huella con `.\iniciar-https.ps1 -ShowPin`: la app la fija en la primera conexión y avisa si cambia
+
+Pasos detallados con capturas de cada pantalla: [docs/acceso-seguro-https.md](docs/acceso-seguro-https.md#4-entrar-desde-el-móvil-android).
 
 ---
 
@@ -326,7 +371,7 @@ La integración continua (`.github/workflows/ci-cd.yml`) ejecuta Ruff, Bandit y 
 
 ## 📈 Próximos pasos
 
-Ver la sección de mejoras sugeridas en el historial del proyecto: paquetes **Seguridad Máxima**, **UX/UI Premium**, **IA/ML** y **Multi-Tenancy**.
+La evolución de las dos aplicaciones se gestiona con el **[Plan de mejora continua](docs/plan-mejora-continua.md)**: ciclo de trabajo de dos semanas, criterios de «terminado», métricas trimestrales, tabla de paridad **Web ↔ Móvil** y hoja de ruta (informes y comparador de fichas, trabajo sin conexión con cola de cambios, multi-almacén y roles finos por módulo).
 
 ---
 

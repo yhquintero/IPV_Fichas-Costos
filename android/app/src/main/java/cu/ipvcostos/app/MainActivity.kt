@@ -277,7 +277,8 @@ class MainActivity : Activity() {
         if (loginOpen) return
         loginOpen = true
         val form = formContainer()
-        addText(form, "🔒 Acceso seguro · ${api.baseUrl}", 11f, MUTED, false, bottom = 8)
+        val pinEstado = if (api.pinner.pin != null) "certificado fijado" else "primera conexión: se fijará el certificado"
+        addText(form, "🔒 Acceso seguro · ${api.baseUrl}\n$pinEstado", 11f, MUTED, false, bottom = 8)
         if (message != null) addText(form, message, 11f, ERROR, true, bottom = 8)
         val email = field(form, "Correo electrónico", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS)
         val password = field(form, "Contraseña", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
@@ -1214,7 +1215,8 @@ class MainActivity : Activity() {
             setTextColor(INK)
         }
         form.addView(bio)
-        addText(form, "Huella del certificado fijado (SHA-256):", 10f, MUTED, true)
+        val fijada = api.pinner.pin != null
+        addText(form, if (fijada) "✅ Huella del certificado fijada (SHA-256):" else "⚠ Sin huella fijada: se aceptará la del próximo servidor al que se conecte.", 10f, if (fijada) MUTED else WARNING, true)
         addText(form, api.pinner.pretty(api.pinner.pin), 9f, INK)
         val pinField = field(form, "Nueva huella (de: iniciar-https.ps1 -ShowPin) — vacío = no cambiar")
         val resetPin = android.widget.CheckBox(this).apply {

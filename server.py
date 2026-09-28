@@ -26,8 +26,8 @@ import secrets
 import sqlite3
 
 import dbcrypt
-import ssl
 import threading
+import tls_seguro
 import time
 from collections import defaultdict
 from contextlib import contextmanager
@@ -48,6 +48,10 @@ HOST = os.environ.get("IPV_HOST", "0.0.0.0")  # nosec B104
 PORT = int(os.environ.get("PORT", os.environ.get("IPV_PORT", "8000")))
 TLS_CERT = os.environ.get("IPV_TLS_CERT", "").strip()
 TLS_KEY = os.environ.get("IPV_TLS_KEY", "").strip()
+TLS_MIN = os.environ.get("IPV_TLS_MIN", "1.2").strip()          # «1.2» (compatible) o «1.3» (máximo)
+REQUIRE_TLS = os.environ.get("IPV_REQUIRE_TLS", "0").strip() == "1"   # se niega a arrancar en claro
+HTTP_REDIRECT_PORT = int(os.environ.get("IPV_HTTP_REDIRECT_PORT", "0") or 0)  # 0 = desactivado
+HSTS_MAX_AGE = int(os.environ.get("IPV_HSTS_MAX_AGE", "31536000"))
 
 # Seguridad
 API_TOKEN = os.environ.get("IPV_API_TOKEN", "").strip()
@@ -809,7 +813,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Max-Age", "3600")
         if TLS_CERT:
-            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+            self.send_header("Strict-Transport-Security", f"max-age={HSTS_MAX_AGE}; includeSubDomains")
 
     def send_json(self, payload, status=200):
         raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -886,6 +890,12 @@ class Handler(BaseHTTPRequestHandler):
                         "tls": bool(TLS_CERT),
                         "auth_required": bool(API_TOKEN),
                     }
+                    if TLS_CERT:
+                        cert = tls_seguro.certificate_info(TLS_CERT)
+                        result["tls_min_version"] = TLS_MIN
+                        result["tls_expires_at"] = cert.get("expires_at", "")
+                        result["tls_days_left"] = cert.get("days_left")
+                        result["tls_hostnames"] = cert.get("hostnames", [])
                 elif path == "/api/dashboard":
                     result = dashboard(conn)
                 elif path == "/api/search":
@@ -1504,31 +1514,44 @@ def auto_backup():
 
 def main():
     init_db()
-    if bool(TLS_CERT) != bool(TLS_KEY):
-        raise RuntimeError("Configura IPV_TLS_CERT e IPV_TLS_KEY juntos para habilitar HTTPS.")
+    tls_seguro.validate_config(TLS_CERT, TLS_KEY, REQUIRE_TLS)
     # Auto-backup on startup
     auto_backup()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     scheme = "http"
+    redirector = None
+    cert_line = ""
     if TLS_CERT and TLS_KEY:
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
-        # Strong cipher suites only
-        context.set_ciphers("ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS")
-        context.load_cert_chain(certfile=TLS_CERT, keyfile=TLS_KEY)
+        context = tls_seguro.build_context(TLS_CERT, TLS_KEY, minimum=TLS_MIN)
         httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
         scheme = "https"
-    print(f"═══════════════════════════════════════════════════")
-    print(f"  IPV · Fichas y Costos v1.0")
+        info = tls_seguro.certificate_info(TLS_CERT)
+        if info.get("days_left") is not None:
+            cert_line = f"  Certificado: {info.get('subject') or '—'} · caduca en {info['days_left']} día(s)"
+        redirector = tls_seguro.start_redirector(HTTP_REDIRECT_PORT, PORT, HOST)
+    print("═══════════════════════════════════════════════════")
+    print("  IPV · Fichas y Costos v1.0")
     print(f"  {scheme}://{HOST}:{PORT}")
     print(f"  SQLite: {DB_PATH}")
-    print(f"  TLS: {'✓' if TLS_CERT else '✗'}  Auth: {'✓' if API_TOKEN else '✗'}  Rate limit: {RATE_LIMIT_MAX}/{RATE_LIMIT_WINDOW}s")
-    print(f"═══════════════════════════════════════════════════")
+    print(f"  TLS: {'✓ ' + TLS_MIN if TLS_CERT else '✗'}  Auth: {'✓' if API_TOKEN else '✗'}  Rate limit: {RATE_LIMIT_MAX}/{RATE_LIMIT_WINDOW}s")
+    if cert_line:
+        print(cert_line)
+    if redirector:
+        print(f"  Redirección: http://{HOST}:{HTTP_REDIRECT_PORT} → https://…:{PORT}")
+    if not TLS_CERT:
+        print("  ⚠ Sin TLS: use .\\iniciar-https.ps1 para servir cifrado (no exponga este puerto a Internet).")
+    aviso = tls_seguro.certificate_warning(TLS_CERT) if TLS_CERT else ""
+    if aviso:
+        print(f"  ⚠ {aviso}")
+    print("═══════════════════════════════════════════════════")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nCerrando servidor…")
     finally:
+        if redirector:
+            redirector.shutdown()
+            redirector.server_close()
         httpd.server_close()
 
 
