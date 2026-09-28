@@ -9,6 +9,10 @@ Uso (en el equipo del proveedor, NUNCA en el del cliente):
     python keygen/keygen.py verificar --licencia IPV1....
     python keygen/keygen.py precios
 
+Alternativa integrada: el **Creador de Licencias** de la aplicación web (creador_licencias.py,
+menú «Creador de Licencias», solo administradores) usa este mismo módulo, por lo que comparten
+clave_privada.json, tasas.json y registro_licencias.csv; puede alternar entre ambos.
+
 `init` crea la clave de firma (cifrada con su contraseña) y escribe la clave pública y
 su número de WhatsApp en licencia.py (servidor) y en License.kt (Android). Después hay
 que volver a distribuir el servidor y recompilar el APK.
@@ -106,7 +110,8 @@ def price_usd(app: str, plan: str) -> int:
 
 
 def fmt_cup(v: float) -> str:
-    return f"{v:,.0f}".replace(",", " ")
+    """Formato monetario unificado: $ 3,163,138.00 (miles con coma, decimales con punto)."""
+    return f"$ {v:,.2f}"
 
 
 def price_line(app: str, plan: str) -> str:

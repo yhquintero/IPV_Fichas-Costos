@@ -195,6 +195,8 @@ Guarde **`keygen\clave_privada.json` y su contraseña** en dos lugares seguros (
 
 ### Uso diario
 
+Lo habitual ya no requiere consola: en la aplicación web abra **Creador de Licencias** (menú lateral, solo administradores) para crear la clave, emitir, verificar y consultar el historial sin salir del sistema. El Keygen de escritorio sigue disponible y comparte clave y registro:
+
 ```powershell
 python keygen\keygen.py                         # interfaz gráfica: Usuario · ID Dispositivo · Plan → Generar
 python keygen\keygen.py emitir --usuario "Mipyme X" --codigo IPVW-XXXXX-XXXXX-XXXXX-XXXXX-XX --plan 1A

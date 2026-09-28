@@ -24,8 +24,8 @@
   const Auth = {
     get user() { try { return JSON.parse(S.getItem(K.user) || 'null'); } catch { return null; } },
     headers() { const t = S.getItem(K.access); return t ? { Authorization: `Bearer ${t}` } : {}; },
-    save(d) { S.setItem(K.access, d.access_token); S.setItem(K.refresh, d.refresh_token); S.setItem(K.user, JSON.stringify(d.user)); renderUserBadge(); connectEvents(); },
-    clear() { Object.values(K).forEach(k => S.removeItem(k)); renderUserBadge(); },
+    save(d) { S.setItem(K.access, d.access_token); S.setItem(K.refresh, d.refresh_token); S.setItem(K.user, JSON.stringify(d.user)); renderUserBadge(); connectEvents(); try { document.dispatchEvent(new CustomEvent('ipv:auth')); } catch {} },
+    clear() { Object.values(K).forEach(k => S.removeItem(k)); renderUserBadge(); try { document.dispatchEvent(new CustomEvent('ipv:auth')); } catch {} },
     async tryRefresh() {
       const rt = S.getItem(K.refresh);
       if (!rt) return false;
@@ -182,6 +182,7 @@
     userBadge.querySelector('.user-avatar').dataset.mfa = u.mfa ? '1' : '0';
   }
   renderUserBadge();
+  try { document.dispatchEvent(new CustomEvent('ipv:auth')); } catch {}  // sincroniza la visibilidad del Creador
 
   /* ───────────── Centro de notificaciones ───────────── */
   const ACTION_LABELS = {
@@ -323,8 +324,8 @@
     let items;
     try { items = mapRows(parseCSV(await file.text())); } catch (e) { toast(e.message, 'error'); return; }
     if (!items.length) { toast('No se encontraron filas válidas.', 'error'); return; }
-    box.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Código</th><th>Nombre</th><th>Unidad</th><th>Precio</th><th>Moneda</th></tr></thead><tbody>
-      ${items.slice(0, 8).map(m => `<tr><td>${esc(m.code)}</td><td>${esc(m.name)}</td><td>${esc(m.unit)}</td><td>${esc(m.unit_price)}</td><td>${esc(m.currency)}</td></tr>`).join('')}
+    box.innerHTML = `<div class="table-wrap"><table><thead><tr>${idTh()}<th>Código</th><th>Nombre</th><th>Unidad</th><th>Precio</th><th>Moneda</th></tr></thead><tbody>
+      ${items.slice(0, 8).map((m, i) => `<tr>${idTd(i)}<td>${esc(m.code)}</td><td>${esc(m.name)}</td><td>${esc(m.unit)}</td><td>${esc(m.unit_price)}</td><td>${esc(m.currency)}</td></tr>`).join('')}
       </tbody></table></div><p class="muted">${items.length} filas listas${items.length > 8 ? ' (vista previa de 8)' : ''}.</p>
       <div class="progress-bar" hidden><div class="progress-fill" style="width:0"></div></div>
       <div class="form-actions"><button class="primary-btn" id="csv-go">Importar ${items.length} valores</button></div>`;
@@ -365,8 +366,8 @@
       showModal('Registro de auditoría', `${d.total} eventos registrados`, `
         <div class="audit-filters"><input type="search" id="audit-q" placeholder="Buscar en detalles, IP o usuario…" value="${esc(q)}">
         <select id="audit-action"><option value="">Todas las acciones</option>${d.actions.map(a => `<option ${a === action ? 'selected' : ''}>${esc(a)}</option>`).join('')}</select></div>
-        <div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Acción</th><th>Usuario</th><th>IP</th><th>Detalles</th></tr></thead><tbody>
-        ${d.entries.map(e => `<tr><td>${esc(new Date(e.timestamp).toLocaleString('es'))}</td><td><span class="status ${/FAIL|FORBID|RATE/.test(e.action) ? 'difference' : 'approved'}">${esc(e.action)}</span></td><td>${esc(e.user_email || '—')}</td><td>${esc(e.client)}</td><td>${esc(e.details)}</td></tr>`).join('') || '<tr><td colspan="5">Sin eventos.</td></tr>'}
+        <div class="table-wrap"><table><thead><tr>${idTh()}<th>Fecha</th><th>Acción</th><th>Usuario</th><th>IP</th><th>Detalles</th></tr></thead><tbody>
+        ${d.entries.map((e, i) => `<tr>${idTd(i, e.id)}<td>${esc(new Date(e.timestamp).toLocaleString('es'))}</td><td><span class="status ${/FAIL|FORBID|RATE/.test(e.action) ? 'difference' : 'approved'}">${esc(e.action)}</span></td><td>${esc(e.user_email || '—')}</td><td>${esc(e.client)}</td><td>${esc(e.details)}</td></tr>`).join('') || '<tr><td colspan="6">Sin eventos.</td></tr>'}
         </tbody></table></div>`);
       let t;
       document.getElementById('audit-q').oninput = ev => { clearTimeout(t); t = setTimeout(() => openAudit(ev.target.value, document.getElementById('audit-action').value), 400); };
@@ -506,8 +507,8 @@
   async function openUsers() {
     let users; try { users = await api('/api/users'); } catch (e) { toast(e.message, 'error'); return; }
     showModal('Usuarios y permisos', `${users.length} cuentas · los cambios de rol o estado cierran sus sesiones al instante`, `
-      <div class="table-wrap"><table class="users-table"><thead><tr><th>Usuario</th><th>Rol</th><th>2FA</th><th>Estado</th><th>Último acceso</th><th>Acciones</th></tr></thead><tbody>
-      ${users.map(u => `<tr data-id="${u.id}">
+      <div class="table-wrap"><table class="users-table"><thead><tr>${idTh()}<th>Usuario</th><th>Rol</th><th>2FA</th><th>Estado</th><th>Último acceso</th><th>Acciones</th></tr></thead><tbody>
+      ${users.map((u, i) => `<tr data-id="${u.id}">${idTd(i, u.id)}
         <td><b>${esc(u.name)}</b><br><small>${esc(u.email)}</small></td>
         <td><select data-role>${Object.entries(ROLE_LABEL).map(([k, v]) => `<option value="${k}" ${k === u.role ? 'selected' : ''}>${v}</option>`).join('')}</select></td>
         <td>${u.mfa ? '<span class="status approved">Activa</span>' : '<span class="status pending">No</span>'}</td>
@@ -605,6 +606,7 @@
     { icon: '🔑', label: 'Licencia: estado, planes y renovación', run: () => { closePalette(); setView('license'); } },
     ...(Auth.user ? [{ icon: '🔐', label: 'Seguridad de mi cuenta (2FA y contraseña)', run: () => { closePalette(); openAccountSecurity(); } }] : []),
     ...(Auth.user?.role === 'admin' ? [
+      { icon: '🛠', label: 'Creador de Licencias: crear clave y emitir licencias', run: () => { closePalette(); setView('creator'); } },
       { icon: '👥', label: 'Gestionar usuarios y permisos', run: () => { closePalette(); openUsers(); } },
       { icon: '✅', label: 'Verificar integridad de la auditoría', run: () => { closePalette(); verifyAudit(); } },
       { icon: '🛡', label: 'Registro de auditoría', run: () => { closePalette(); openAudit(); } },

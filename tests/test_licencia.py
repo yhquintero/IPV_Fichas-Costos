@@ -176,7 +176,7 @@ class KeygenCliTest(unittest.TestCase):
             self.assertEqual(out.returncode, 0, out.stderr)
             token = next(line for line in out.stdout.splitlines() if line.startswith("IPV1."))
             self.assertEqual(L.decode(token, key["public"])["plan"], "6M")
-            self.assertIn("39 USD = 28 860 CUP", out.stdout)
+            self.assertIn("39 USD = $ 28,860.00 CUP", out.stdout)
             self.assertIn("Firma válida", run("verificar", "--licencia", token).stdout)
             bad = run("emitir", "--usuario", "x", "--codigo", code, "--plan", "1M", e={**env, "IPV_KEYGEN_PASS": "mala"})
             self.assertNotEqual(bad.returncode, 0)

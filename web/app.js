@@ -23,17 +23,20 @@ const views = {
   materials: { crumb: 'Valores del IPV' }, inventory: { crumb: 'Inventario' },
   fichas: { crumb: 'Fichas de costo' }, controls: { crumb: 'Controles de IPV' },
   trash: { crumb: 'Papelera de reciclaje' }, license: { crumb: 'Licencia' },
+  creator: { crumb: 'Creador de Licencias' },
 };
 const viewRenderers = {
   dashboard: 'renderDashboard', products: 'renderProducts', materials: 'renderMaterials',
   inventory: 'renderInventory', fichas: 'renderFichas', controls: 'renderControls',
-  trash: 'renderTrash', license: 'renderLicense',
+  trash: 'renderTrash', license: 'renderLicense', creator: 'renderCreator',
 };
 
 /* ── Utilities ── */
 function esc(v = '') { return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
-function money(v) { const n = Number(v || 0); return `${new Intl.NumberFormat('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number.isFinite(n) ? n : 0)} CUP`; }
-function dec(v, d = 3) { const n = Number(v || 0); return new Intl.NumberFormat('es-ES', { maximumFractionDigits: d }).format(Number.isFinite(n) ? n : 0); }
+/* Dinero en formato $ 3,163,138.00 CUP: $ delante, miles con coma y decimales con punto. */
+const NUM_FMT = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function money(v) { const n = Number(v || 0); return `$ ${NUM_FMT.format(Number.isFinite(n) ? n : 0)} CUP`; }
+function dec(v, d = 3) { const n = Number(v || 0); return new Intl.NumberFormat('en-US', { maximumFractionDigits: d }).format(Number.isFinite(n) ? n : 0); }
 function dateLabel(v) { if (!v) return '—'; const d = new Date(v); if (Number.isNaN(d.getTime())) return esc(v); return new Intl.DateTimeFormat('es', { day: '2-digit', month: 'short', year: 'numeric' }).format(d); }
 function currentMonth() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }
 function catClass(c = '') { const v = c.toLowerCase(); if (v.includes('comida') || v.includes('alimento')) return 'food'; if (v.includes('serv')) return 'service'; if (v.includes('beb')) return ''; return 'other'; }
@@ -63,7 +66,12 @@ async function api(path, opts = {}, retried = false) {
     if (await window.IPVAuth.recover()) return api(path, opts, true);
   }
   const d = await r.json().catch(() => ({}));
-  if (r.status === 402 && d.license_required && window.IPVLicense) window.IPVLicense.show(null);
+  if (r.status === 402 && d.license_required && window.IPVLicense) {
+    /* Dentro del Creador de Licencias no se tapa la pantalla: allí mismo se emite
+       y activa la licencia de este equipo con el código de solicitud. */
+    if (state.view === 'creator') toast(`🔒 Emita la licencia de este equipo con su código ${d.request_code || ''} y pulse «Activar en este equipo».`, 'info');
+    else window.IPVLicense.show(null);
+  }
   if (r.status === 403 && d.password_expired && window.IPVAuth?.forcePasswordChange && !retried) {
     if (await window.IPVAuth.forcePasswordChange()) return api(path, opts, true);
   }
@@ -111,11 +119,13 @@ function setView(v) {
   render();
 }
 function render() {
-  if (!state.dashboard) return;
+  /* El Creador de Licencias funciona aunque la API esté bloqueada por licencia (402):
+     sus rutas están exentas y es donde se emite la licencia del propio equipo. */
+  if (!state.dashboard && state.view !== 'creator') return;
   const fns = {
     dashboard: renderDashboard, products: renderProducts, materials: renderMaterials,
     inventory: renderInventory, fichas: renderFichas, controls: renderControls,
-    trash: renderTrash, license: renderLicense,
+    trash: renderTrash, license: renderLicense, creator: renderCreator,
   };
   (fns[state.view] || renderDashboard)();
 }
@@ -137,6 +147,22 @@ function rowActions(kind, item) {
     <button class="icon-btn" data-action="edit-${kind}" data-id="${id}" title="Editar" aria-label="Editar">✎</button>
     <button class="icon-btn danger" data-action="trash-${kind}" data-id="${id}" title="Mover a la papelera" aria-label="Eliminar">🗑</button>
   </div>`;
+}
+
+/* ── Columna «Id»: numera las filas de 1 a N ──
+   Va siempre delante de las demás columnas, así el último número de la lista
+   dice de un vistazo cuántos ítems hay. El atributo title muestra el Id interno
+   (el de la base de datos) por si hace falta para soporte. */
+function idTh() { return '<th class="row-id-h" title="Número de orden del ítem">Id</th>'; }
+function idTd(i, realId) {
+  const t = realId === undefined || realId === null || realId === '' ? '' : ` title="Id interno: ${esc(realId)}"`;
+  return `<td class="row-id"${t}>${i + 1}</td>`;
+}
+/* Contador de ítems para las barras de herramientas: «33 ítems» o «5 de 33 ítems». */
+function countPill(shown, total, label = 'ítems') {
+  const t = Number(total === undefined || total === null ? shown : total);
+  const s = Number(shown);
+  return `<span class="count-pill" title="Cantidad de ${label} en la lista">▤ ${s === t ? `${t} ${label}` : `${s} de ${t} ${label}`}</span>`;
 }
 
 /* ── Dashboard ── */
@@ -167,7 +193,7 @@ function renderDashboard() {
       <section class="panel">
         <div class="panel-heading"><div><h2 class="panel-title">Fichas recientes</h2><p class="panel-subtitle">Últimos documentos modificados</p></div><button class="text-btn" data-view="fichas">Ver todas →</button></div>
         ${d.recent_fichas?.length
-          ? `<div class="table-wrap"><table><thead><tr><th>Producto</th><th>Rendimiento</th><th>Estado</th><th>Costo total</th><th>Actualización</th><th></th></tr></thead><tbody>${d.recent_fichas.map(f => `<tr><td>${prodCell(f.product_name, f.product_code, f.category)}</td><td>${yieldBadge(f.yield_qty, f.yield_unit)}</td><td>${stPill(f.status)}</td><td class="amount">${money(f.total_cost)}</td><td>${dateLabel(f.updated_at)}</td><td><button class="text-btn" data-action="view-ficha" data-id="${f.id}">Abrir ↗</button></td></tr>`).join('')}</tbody></table></div>`
+          ? `<div class="table-wrap"><table><thead><tr>${idTh()}<th>Producto</th><th>Rendimiento</th><th>Estado</th><th>Costo total</th><th>Actualización</th><th></th></tr></thead><tbody>${d.recent_fichas.map((f, i) => `<tr>${idTd(i, f.id)}<td>${prodCell(f.product_name, f.product_code, f.category)}</td><td>${yieldBadge(f.yield_qty, f.yield_unit)}</td><td>${stPill(f.status)}</td><td class="amount">${money(f.total_cost)}</td><td>${dateLabel(f.updated_at)}</td><td><button class="text-btn" data-action="view-ficha" data-id="${f.id}">Abrir ↗</button></td></tr>`).join('')}</tbody></table></div>`
           : '<div class="empty-state"><div class="empty-icon">▤</div><b>Empieza con una ficha</b><p>Crea la primera ficha de costo.</p><button class="primary-btn" data-action="create-ficha">Crear ficha</button></div>'}
       </section>
       <section class="panel category-panel">
@@ -192,11 +218,11 @@ function renderProducts() {
   const rows = state.products.filter(p => `${p.name} ${p.code} ${p.category}`.toLowerCase().includes(q) && (!cf || p.category === cf));
   content.innerHTML = `
     ${heading('Catálogo', 'Productos y servicios', 'Organiza los elementos que tendrán una Ficha de Costo asociada. El rendimiento indica cuántos comensales, copas o vasos salen de cada lote.', '<button class="primary-btn" data-action="create-product"><span class="plus">＋</span> Nuevo producto</button>')}
-    <div class="toolbar">${searchBox()}<select class="filter-select" id="product-category"><option value="">Todas las categorías</option>${cats.map(c => `<option value="${esc(c)}" ${c === cf ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select><button class="secondary-btn" data-action="export-products">⤓ Exportar CSV</button></div>
+    <div class="toolbar">${searchBox()}<select class="filter-select" id="product-category"><option value="">Todas las categorías</option>${cats.map(c => `<option value="${esc(c)}" ${c === cf ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select><button class="secondary-btn" data-action="export-products">⤓ Exportar CSV</button>${countPill(rows.length, state.products.length, 'productos')}</div>
     <section class="panel table-panel">${rows.length
-      ? `<div class="table-wrap"><table style="min-width:920px"><thead><tr><th>Producto</th><th>Categoría</th><th>Unidad</th><th>Rendimiento</th><th>Fichas</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map(p => {
+      ? `<div class="table-wrap"><table style="min-width:980px"><thead><tr>${idTh()}<th>Producto</th><th>Categoría</th><th>Unidad</th><th>Rendimiento</th><th>Fichas</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map((p, i) => {
         const yq = p.last_yield_qty || p.yield_qty || 1, yu = p.last_yield_unit || p.yield_unit || 'unidad';
-        return `<tr><td>${prodCell(p.name, p.code, p.category)}</td><td><span class="cat-pill">${esc(p.category)}</span></td><td>${esc(p.unit)}</td><td>${yieldBadge(yq, yu, p.category === 'Comidas' ? 'orange' : p.category === 'Bebidas' ? 'blue' : '')}</td><td>${p.ficha_count || 0}</td><td>${p.active ? (p.last_status ? stPill(p.last_status) : '<span class="status approved">Activo</span>') : '<span class="status">Inactivo</span>'}</td><td>${rowActions('product', p)}</td></tr>`;
+        return `<tr>${idTd(i, p.id)}<td>${prodCell(p.name, p.code, p.category)}</td><td><span class="cat-pill">${esc(p.category)}</span></td><td>${esc(p.unit)}</td><td>${yieldBadge(yq, yu, p.category === 'Comidas' ? 'orange' : p.category === 'Bebidas' ? 'blue' : '')}</td><td>${p.ficha_count || 0}</td><td>${p.active ? (p.last_status ? stPill(p.last_status) : '<span class="status approved">Activo</span>') : '<span class="status">Inactivo</span>'}</td><td>${rowActions('product', p)}</td></tr>`;
       }).join('')}</tbody></table></div>`
       : `<div class="empty-state"><div class="empty-icon">▦</div><b>${q || cf ? 'Sin resultados' : 'No hay productos'}</b><p>${q || cf ? 'Ajusta los filtros.' : 'Registra el primer producto del catálogo.'}</p></div>`}</section>`;
   $('#table-search')?.addEventListener('input', e => { state.search = e.target.value; renderProducts(); });
@@ -229,9 +255,9 @@ function renderMaterials() {
     <div class="toolbar">${searchBox()}
       <select class="filter-select" id="material-category"><option value="">Todas las categorías</option>${cats.map(c => `<option value="${esc(c)}" ${c === category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
       <select class="filter-select" id="material-status"><option value="">Todos los estados</option><option value="Vigente" ${status === 'Vigente' ? 'selected' : ''}>Vigente</option><option value="Inactivo" ${status === 'Inactivo' ? 'selected' : ''}>Inactivo</option></select>
-      <button class="secondary-btn" data-action="export-materials">⤓ Exportar CSV</button></div>
+      <button class="secondary-btn" data-action="export-materials">⤓ Exportar CSV</button>${countPill(rows.length, state.materials.length, 'valores')}</div>
     <section class="panel table-panel">${rows.length
-      ? `<div class="table-wrap"><table style="min-width:1080px"><thead><tr><th>Valor del IPV</th><th>Categoría</th><th>Unidad</th><th>Precio</th><th>Existencias</th><th>Mínimo</th><th>Fuente</th><th>Vigencia</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map(m => `<tr><td><div class="product-cell"><div class="product-avatar" style="background:var(--orange-glow);color:var(--orange)">◈</div><div><span class="product-title">${esc(m.name)}</span><span class="product-code">${esc(m.code)}</span></div></div></td><td><span class="cat-pill">${esc(m.category || 'Insumos')}</span></td><td>${esc(m.unit)}</td><td class="amount">${money(m.unit_price)}</td><td>${stockPill(m)}</td><td>${dec(m.min_stock)}</td><td class="category-tag">${esc(m.source || m.supplier || '—')}</td><td>${dateLabel(m.effective_from)}</td><td>${stPill(m.status)}</td><td>${rowActions('material', m)}</td></tr>`).join('')}</tbody></table></div>`
+      ? `<div class="table-wrap"><table style="min-width:1140px"><thead><tr>${idTh()}<th>Valor del IPV</th><th>Categoría</th><th>Unidad</th><th>Precio</th><th>Existencias</th><th>Mínimo</th><th>Fuente</th><th>Vigencia</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map((m, i) => `<tr>${idTd(i, m.id)}<td><div class="product-cell"><div class="product-avatar" style="background:var(--orange-glow);color:var(--orange)">◈</div><div><span class="product-title">${esc(m.name)}</span><span class="product-code">${esc(m.code)}</span></div></div></td><td><span class="cat-pill">${esc(m.category || 'Insumos')}</span></td><td>${esc(m.unit)}</td><td class="amount">${money(m.unit_price)}</td><td>${stockPill(m)}</td><td>${dec(m.min_stock)}</td><td class="category-tag">${esc(m.source || m.supplier || '—')}</td><td>${dateLabel(m.effective_from)}</td><td>${stPill(m.status)}</td><td>${rowActions('material', m)}</td></tr>`).join('')}</tbody></table></div>`
       : `<div class="empty-state"><div class="empty-icon">◈</div><b>${q || category || status ? 'Sin resultados' : 'No hay valores'}</b><p>${q || category || status ? 'Ajusta los filtros.' : 'Registra los insumos de referencia.'}</p><button class="primary-btn" data-action="create-material">Crear el primero</button></div>`}</section>`;
   $('#table-search')?.addEventListener('input', e => { state.search = e.target.value; renderMaterials(); });
   $('#material-category')?.addEventListener('change', e => { state.filters.materials.category = e.target.value; renderMaterials(); });
@@ -257,9 +283,9 @@ function renderInventory() {
     <div class="toolbar">${searchBox('Buscar en el inventario…')}
       <select class="filter-select" id="inv-category"><option value="">Todas las categorías</option>${cats.map(c => `<option value="${esc(c)}" ${c === category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
       <label class="check-inline"><input type="checkbox" id="inv-low" ${low ? 'checked' : ''}> Solo bajo mínimo</label>
-      <button class="secondary-btn" data-action="export-inventory">⤓ Exportar CSV</button></div>
+      <button class="secondary-btn" data-action="export-inventory">⤓ Exportar CSV</button>${countPill(rows.length, inv.items.length, 'ítems')}</div>
     <section class="panel table-panel">${rows.length
-      ? `<div class="table-wrap"><table style="min-width:1120px"><thead><tr><th>Valor</th><th>Categoría</th><th>Existencias</th><th>Mínimo</th><th>Precio</th><th>Valor total</th><th>Entradas / salidas</th><th>Se usa en</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map(m => `<tr>
+      ? `<div class="table-wrap"><table style="min-width:1180px"><thead><tr>${idTh()}<th>Valor</th><th>Categoría</th><th>Existencias</th><th>Mínimo</th><th>Precio</th><th>Valor total</th><th>Entradas / salidas</th><th>Se usa en</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map((m, i) => `<tr>${idTd(i, m.id)}
         <td><div class="product-cell"><div class="product-avatar" style="background:var(--orange-glow);color:var(--orange)">◈</div><div><span class="product-title">${esc(m.name)}</span><span class="product-code">${esc(m.code)}</span></div></div></td>
         <td><span class="cat-pill">${esc(m.category || 'Insumos')}</span></td>
         <td>${stockPill(m)}</td><td>${dec(m.min_stock)} ${esc(m.unit)}</td>
@@ -289,9 +315,10 @@ function renderTrash() {
   content.innerHTML = `
     ${heading('Recuperación', 'Papelera de reciclaje', 'Todo lo que elimina pasa aquí: puede restaurarlo o borrarlo definitivamente. Nada se pierde por accidente.', rows.length
       ? `<button class="danger-btn" data-action="empty-trash">Vaciar papelera</button>` : '')}
-    <div class="toolbar">${searchBox('Buscar en la papelera…')}</div>
+    <div class="toolbar">${searchBox('Buscar en la papelera…')}${countPill(rows.length, state.trash.length, 'elementos')}</div>
     <section class="panel">
-      ${rows.length ? rows.map(t => `<div class="trash-item">
+      ${rows.length ? rows.map((t, i) => `<div class="trash-item">
+        <div class="trash-index" title="Número de orden del ítem">${i + 1}</div>
         <div class="trash-icon">${TRASH_ICON[t.kind] || '•'}</div>
         <div class="trash-body">
           <b>${esc(t.name)}</b>
@@ -313,12 +340,12 @@ function renderFichas() {
   const rows = state.fichas.filter(f => `${f.product_name} ${f.product_code} ${f.category}`.toLowerCase().includes(q) && (!sf || f.status === sf));
   content.innerHTML = `
     ${heading('Documentos', 'Fichas de costo', 'Cada ficha registra los componentes, el costo del lote, cuántos comensales o copas salen de él y cuánto queda en inventario.', '<button class="primary-btn" data-action="create-ficha"><span class="plus">＋</span> Nueva ficha</button>')}
-    <div class="toolbar">${searchBox()}<select class="filter-select" id="ficha-status"><option value="">Todos los estados</option><option value="Borrador" ${sf === 'Borrador' ? 'selected' : ''}>Borrador</option><option value="Aprobada" ${sf === 'Aprobada' ? 'selected' : ''}>Aprobada</option></select><button class="secondary-btn" data-action="export-fichas">⤓ Exportar CSV</button></div>
+    <div class="toolbar">${searchBox()}<select class="filter-select" id="ficha-status"><option value="">Todos los estados</option><option value="Borrador" ${sf === 'Borrador' ? 'selected' : ''}>Borrador</option><option value="Aprobada" ${sf === 'Aprobada' ? 'selected' : ''}>Aprobada</option></select><button class="secondary-btn" data-action="export-fichas">⤓ Exportar CSV</button>${countPill(rows.length, state.fichas.length, 'fichas')}</div>
     <section class="panel table-panel">${rows.length
-      ? `<div class="table-wrap"><table style="min-width:1000px"><thead><tr><th>Producto</th><th>Versión</th><th>Vigente</th><th>Rinde</th><th>Componentes</th><th>Costo lote</th><th>Costo por unidad</th><th>Con el inventario</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map(f => {
+      ? `<div class="table-wrap"><table style="min-width:1060px"><thead><tr>${idTh()}<th>Producto</th><th>Versión</th><th>Vigente</th><th>Rinde</th><th>Componentes</th><th>Costo lote</th><th>Costo por unidad</th><th>Con el inventario</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map((f, i) => {
         const short = Number(f.servings_from_stock);
         const tone = f.servings_from_stock === null || f.servings_from_stock === undefined ? '' : short <= 0 ? 'red' : short < Number(f.yield_qty || 1) ? 'orange' : 'green';
-        return `<tr><td>${prodCell(f.product_name, f.product_code, f.category)}</td><td>v${f.version}</td><td>${dateLabel(f.valid_from)}</td>
+        return `<tr>${idTd(i, f.id)}<td>${prodCell(f.product_name, f.product_code, f.category)}</td><td>v${f.version}</td><td>${dateLabel(f.valid_from)}</td>
         <td>${yieldBadge(f.yield_qty, f.yield_unit, f.category === 'Comidas' ? 'orange' : 'blue')}</td>
         <td>${f.item_count || 0}</td><td class="amount">${money(f.total_cost)}</td>
         <td class="amount">${money(f.cost_per_serving)} <small style="color:var(--text-4)">/ ${esc(f.yield_unit || '')}</small></td>
@@ -353,11 +380,14 @@ function loadLicenseInto(box) {
       state.license = lic;
       if (!box.isConnected) return;
       if (!lic.enforced) {
+        const canCreate = !window.IPVAuth?.user || window.IPVAuth.user.role === 'admin';
         box.innerHTML = `<div class="lic-status-card off"><div class="lic-status-icon">🛡</div><div class="lic-status-copy">
-          <h3>Licencias desactivadas</h3><p>${esc(lic.reason || 'El proveedor no configuró la clave pública.')}</p></div>
-          <button class="secondary-btn" data-action="reload-license">Actualizar</button></div>
+          <h3>Licencias desactivadas</h3><p>Este servidor aún no tiene clave pública de licencias. Cree la clave de firma con el <b>Creador de Licencias</b> y el sistema quedará activado al instante, sin reiniciar.</p></div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+          ${canCreate ? '<button class="primary-btn" data-action="open-creator">🛠 Abrir Creador de Licencias</button>' : ''}
+          <button class="secondary-btn" data-action="reload-license">Actualizar</button></div></div>
           <div class="panel"><h3 class="panel-title">¿Cómo se activan?</h3>
-          <p class="small-note">El proveedor ejecuta <code>python keygen/keygen.py init --whatsapp 53XXXXXXXX</code> una sola vez; a partir de ahí el servidor exige licencia y la web muestra este apartado con el código de solicitud del equipo.</p></div>`;
+          <p class="small-note">Abra el <b>Creador de Licencias</b> (menú lateral) y cree la clave de firma una sola vez: a partir de ahí el servidor exige licencia y cada equipo o teléfono solicita la suya con su código IPVW-… / IPVA-…. También puede usar el Keygen de escritorio: <code>python keygen/keygen.py init --whatsapp 53XXXXXXXX</code>.</p></div>`;
         return;
       }
       const days = lic.days_left ?? 0;
@@ -389,6 +419,190 @@ function loadLicenseInto(box) {
     .catch(e => { if (box.isConnected) box.innerHTML = `<div class="lic-status-card bad"><div class="lic-status-icon">⚠</div><div class="lic-status-copy"><h3>No se pudo consultar la licencia</h3><p>${esc(e.message)}</p></div><button class="secondary-btn" data-action="reload-license">Reintentar</button></div>`; });
 }
 
+/* ── Creador de Licencias (administradores) ── */
+function creatorPriceHint() {
+  const st = state.creator; if (!st) return;
+  const hint = $('#creator-price'); if (!hint) return;
+  const code = ($('#creator-code')?.value || '').trim().toUpperCase();
+  const p = (st.plans || {})[$('#creator-plan')?.value || '1M'];
+  if (!p) return;
+  if (code.startsWith('IPVA')) { hint.innerHTML = `📱 IPV Android (móvil) · <b>${esc(p.name)}</b> — ${p.usd_android} USD ≈ ${money(p.cup_android)}`; return; }
+  if (code.startsWith('IPVW')) { hint.innerHTML = `💻 IPV Web (servidor/PC) · <b>${esc(p.name)}</b> — ${p.usd_web} USD ≈ ${money(p.cup_web)}`; return; }
+  hint.innerHTML = code ? '<span style="color:var(--orange)">El código debe empezar por IPVW- (PC) o IPVA- (móvil).</span>'
+    : 'Pegue el código de solicitud recibido por WhatsApp: IPVW-… (PC) o IPVA-… (móvil).';
+}
+
+function creatorResultPanel(r) {
+  const self = state.creator?.license && !state.creator.license.valid;
+  return `<div class="panel animate-fade" id="creator-result">
+    <div class="panel-heading"><div><h2 class="panel-title">✅ Licencia creada — ${esc(r.plan_name)}</h2>
+      <p class="panel-subtitle">${esc(r.app_name)} · Usuario: ${esc(r.user)} · Serie ${esc(r.serial)} · vence el ${fmtDate(r.expires_at)} · ${r.price_usd} USD ≈ ${money(r.price_cup)}</p></div></div>
+    <textarea class="lic-input lic-token" id="creator-token" rows="4" readonly spellcheck="false">${esc(r.license)}</textarea>
+    <div class="lic-actions">
+      <button class="secondary-btn" data-action="creator-copy" data-target="#creator-token">📋 Copiar licencia</button>
+      <button class="secondary-btn" data-action="creator-copy" data-target="#creator-reply">📋 Copiar mensaje de WhatsApp</button>
+      ${self ? '<button class="primary-btn" data-action="creator-activate-here">🔓 Activar en este equipo</button>' : ''}
+    </div>
+    <pre id="creator-reply" hidden>${esc(r.reply)}</pre>
+    <p class="small-note" style="margin-top:10px">Pegue la licencia en el equipo o teléfono del cliente (botón Activar licencia) o envíela por WhatsApp con el mensaje copiado. Quedó registrada en el historial.</p></div>`;
+}
+
+function renderCreator() {
+  content.innerHTML = `<div class="lic-page">
+    ${heading('Licencias', 'Creador de Licencias', 'Cree la clave de firma, active el sistema de licencias y emita licencias firmadas para sus clientes (PC y móvil) sin salir de la aplicación.', '<button class="secondary-btn" data-action="creator-refresh">↻ Actualizar</button>')}
+    <div id="creator-body"><div class="lic-status-card"><div class="lic-status-icon">🛠</div><div class="lic-status-copy"><h3>Consultando…</h3><p>Cargando el estado del sistema de licencias.</p></div></div></div>
+  </div>`;
+  loadCreatorInto($('#creator-body'));
+}
+
+async function loadCreatorInto(box) {
+  if (!box) return;
+  let st;
+  try { st = await api('/api/keygen/status'); }
+  catch (e) {
+    box.innerHTML = `<div class="lic-status-card bad"><div class="lic-status-icon">⚠</div><div class="lic-status-copy"><h3>No se pudo abrir el Creador de Licencias</h3><p>${esc(e.message)}</p></div><button class="secondary-btn" data-action="creator-refresh">Reintentar</button></div>`;
+    return;
+  }
+  state.creator = st;
+  const lic = st.license || {};
+  const planOpts = Object.entries(st.plans || {}).map(([k, p]) => `<option value="${k}" ${k === '1M' ? 'selected' : ''}>${esc(p.name)} (${k})</option>`).join('');
+  const rateInputs = Object.entries(st.rates || {}).map(([k, v]) =>
+    `<div class="form-field"><label>${k} → CUP</label><input id="rate-${k}" value="${esc(v)}" inputmode="decimal" autocomplete="off"></div>`).join('');
+
+  box.innerHTML = `
+    <div class="lic-status-card ${st.configured ? (lic.valid ? 'ok' : 'bad') : 'off'}"><div class="lic-status-icon">${st.configured ? (lic.valid ? '✅' : '🔒') : '🛡'}</div>
+      <div class="lic-status-copy"><h3>${st.configured ? `Licencias activadas — clave ${esc(st.fingerprint)}` : 'Licencias desactivadas (sin clave pública configurada)'}</h3>
+        <p>${st.configured
+          ? (lic.valid ? `Este equipo tiene licencia: ${esc(lic.plan_name || '')}, vence en ${lic.days_left ?? '—'} día(s).` : `Este equipo aún no tiene licencia: emítala abajo con su propio código de solicitud.`)
+          : 'Cree la clave de firma una sola vez: el sistema quedará activado al instante, sin reiniciar el servidor.'}</p></div></div>
+
+    ${st.configured && !lic.valid ? `<div class="panel">
+      <div class="panel-heading"><div><h2 class="panel-title">Licencia de este equipo</h2>
+        <p class="panel-subtitle">Emítala abajo pegando este código, para no bloquear la API (error 402)</p></div>
+        <button class="secondary-btn" data-action="creator-copy" data-target="#creator-self-code">📋 Copiar</button></div>
+      <code class="lic-code" id="creator-self-code">${esc(lic.request_code || '')}</code></div>` : ''}
+
+    <div class="panel">
+      <div class="panel-heading"><div><h2 class="panel-title">🔑 Emitir licencia</h2>
+        <p class="panel-subtitle">Pegue el código de solicitud del cliente (IPVW-… PC · IPVA-… móvil) y firme su licencia</p></div></div>
+      <div class="form-grid">
+        <div class="form-field"><label>Usuario / cliente</label><input id="creator-user" maxlength="80" placeholder="Nombre o empresa" autocomplete="off"></div>
+        <div class="form-field"><label>Plan</label><select id="creator-plan">${planOpts}</select></div>
+        <div class="form-field full"><label>Código de solicitud</label><input id="creator-code" style="letter-spacing:1px" placeholder="IPVW-XXXXX-XXXXX-XXXXX-XXXXX-XX" spellcheck="false" autocomplete="off"></div>
+        <div class="form-field full"><label>Contraseña de la clave de firma</label><input id="creator-pass" type="password" autocomplete="off" placeholder="La del archivo clave_privada.json"></div>
+      </div>
+      <p class="small-note" id="creator-price" style="margin:4px 0 12px"></p>
+      <button class="primary-btn" id="creator-emit-btn">⚙️ Crear licencia</button>
+      <p class="lic-msg" id="creator-emit-msg" role="alert" hidden></p>
+    </div>
+    <div id="creator-result-box"></div>
+
+    <div class="panel">
+      <div class="panel-heading"><div><h2 class="panel-title">🛠 Clave de firma</h2>
+        <p class="panel-subtitle">${st.has_key_file ? 'Existe keygen/clave_privada.json (cifrada con su contraseña); es intercambiable con el Keygen de escritorio.' : 'Aún no existe keygen/clave_privada.json'}</p></div></div>
+      ${st.configured ? `<details><summary class="small-note" style="cursor:pointer">⚠ Reemplazar la clave (invalida TODAS las licencias emitidas)</summary>
+        <div class="form-grid" style="margin-top:10px">
+          <div class="form-field"><label>Nueva contraseña (mín. 10)</label><input id="creator-pass2" type="password" autocomplete="new-password"></div>
+          <div class="form-field"><label>Repetir</label><input id="creator-pass2b" type="password" autocomplete="new-password"></div>
+          <div class="form-field full"><label>WhatsApp de solicitudes</label><input id="creator-wa2" value="${esc(st.whatsapp || '')}" placeholder="5355555555" inputmode="numeric"></div>
+        </div>
+        <button class="danger-btn" id="creator-init2-btn">♻ Reemplazar clave y activar licencias</button></details>`
+      : `<div class="form-grid">
+          <div class="form-field"><label>Contraseña de la clave (mín. 10)</label><input id="creator-pass2" type="password" autocomplete="new-password"></div>
+          <div class="form-field"><label>Repetir</label><input id="creator-pass2b" type="password" autocomplete="new-password"></div>
+          <div class="form-field full"><label>WhatsApp de solicitudes</label><input id="creator-wa2" value="${esc(st.whatsapp || '')}" placeholder="5355555555" inputmode="numeric"></div>
+        </div>
+        <button class="primary-btn" id="creator-init2-btn">🔐 Crear clave de firma y activar licencias</button>
+        <p class="small-note" style="margin-top:8px">Guarde la contraseña en un lugar seguro: sin ella no podrá emitir renovaciones.</p>`}
+      <p class="lic-msg" id="creator-init-msg" role="alert" hidden></p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-heading"><div><h2 class="panel-title">🔍 Verificar una licencia</h2>
+        <p class="panel-subtitle">Comprueba firma, usuario, dispositivo y vigencia</p></div></div>
+      <textarea class="lic-input lic-token" id="creator-verify-token" rows="3" placeholder="Pegue la licencia IPV1.…" spellcheck="false"></textarea>
+      <div class="lic-actions"><button class="secondary-btn" id="creator-verify-btn">Verificar</button></div>
+      <p class="lic-msg" id="creator-verify-msg" role="alert" hidden></p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-heading"><div><h2 class="panel-title">💱 Tasas de cambio</h2>
+        <p class="panel-subtitle">Se usan para calcular el precio en CUP de cada licencia</p></div></div>
+      <div class="form-grid">${rateInputs}</div>
+      <button class="secondary-btn" id="creator-rates-btn">Guardar tasas</button>
+      <p class="lic-msg" id="creator-rates-msg" role="alert" hidden></p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-heading"><div><h2 class="panel-title">📜 Historial (${st.ledger_count} emitidas)</h2>
+        <p class="panel-subtitle">keygen/registro_licencias.csv</p></div>
+        <button class="secondary-btn" data-action="creator-ledger">↻ Cargar</button></div>
+      <div class="table-wrap"><table id="creator-ledger"><thead><tr>${idTh()}<th>Fecha</th><th>Serie</th><th>Usuario</th><th>App</th><th>Plan</th><th>Vence</th><th style="text-align:right">USD</th><th style="text-align:right">CUP</th></tr></thead>
+      <tbody><tr><td colspan="9" class="small-note">Pulse «Cargar» para ver las últimas licencias emitidas.</td></tr></tbody></table></div>
+    </div>`;
+
+  creatorPriceHint();
+  $('#creator-code')?.addEventListener('input', creatorPriceHint);
+  $('#creator-plan')?.addEventListener('change', creatorPriceHint);
+
+  const showMsg = (sel, msg, ok = false) => { const m = $(sel); if (m) { m.textContent = msg; m.hidden = false; m.style.color = ok ? 'var(--green)' : 'var(--red)'; } };
+
+  $('#creator-emit-btn')?.addEventListener('click', async () => {
+    const btn = $('#creator-emit-btn'), msg = $('#creator-emit-msg');
+    btn.disabled = true; msg.hidden = true;
+    try {
+      const r = await api('/api/keygen/emit', { method: 'POST', body: JSON.stringify({
+        user: $('#creator-user').value.trim(), code: $('#creator-code').value.trim(),
+        plan: $('#creator-plan').value, passphrase: $('#creator-pass').value }) });
+      $('#creator-result-box').innerHTML = creatorResultPanel(r);
+      $('#creator-pass').value = '';
+    } catch (e) { showMsg('#creator-emit-msg', e.message); }
+    finally { btn.disabled = false; }
+  });
+
+  $('#creator-init2-btn')?.addEventListener('click', async () => {
+    const btn = $('#creator-init2-btn');
+    const force = st.configured || st.has_key_file;
+    if (force && !await confirm2('Reemplazar la clave de firma', 'Se invalidarán TODAS las licencias ya emitidas (habrá que emitirlas de nuevo). ¿Continuar?', 'danger')) return;
+    btn.disabled = true;
+    try {
+      const r = await api('/api/keygen/init', { method: 'POST', body: JSON.stringify({
+        passphrase: $('#creator-pass2').value, whatsapp: $('#creator-wa2').value.trim(), force }) });
+      toast(`🔑 Clave creada (${r.fingerprint}). Licencias activadas.`, 'success');
+      if (r.patched?.includes('License.kt')) toast('📱 License.kt actualizado: recompile el APK para distribuirlo.', 'info');
+      loadCreatorInto(box);
+    } catch (e) { showMsg('#creator-init-msg', e.message); }
+    finally { btn.disabled = false; }
+  });
+
+  $('#creator-verify-btn')?.addEventListener('click', async () => {
+    try {
+      const r = await api('/api/keygen/verify', { method: 'POST', body: JSON.stringify({ license: $('#creator-verify-token').value }) });
+      showMsg('#creator-verify-msg', `✅ Firma ${r.signature} · ${r.app_name} · ${r.user} · ${r.plan_name} · vence el ${fmtDate(r.expires_at)} · serie ${r.serial}`, true);
+    } catch (e) { showMsg('#creator-verify-msg', e.message); }
+  });
+
+  $('#creator-rates-btn')?.addEventListener('click', async () => {
+    const rates = {};
+    Object.keys(st.rates || {}).forEach(k => { const el = $(`#rate-${k}`); if (el) rates[k] = el.value.trim(); });
+    try {
+      const r = await api('/api/keygen/rates', { method: 'POST', body: JSON.stringify({ rates }) });
+      state.creator.rates = r.rates; toast('Tasas actualizadas.', 'success'); creatorPriceHint();
+    } catch (e) { showMsg('#creator-rates-msg', e.message); }
+  });
+}
+
+async function loadCreatorLedger() {
+  try {
+    const { items } = await api('/api/keygen/ledger?limit=100');
+    const tb = $('#creator-ledger tbody'); if (!tb) return;
+    tb.innerHTML = items.length ? items.map((r, i) => `<tr>${idTd(i, r.serie)}<td>${esc(r.fecha || '')}</td><td>${esc(r.serie || '')}</td><td>${esc(r.usuario || '')}</td>
+      <td>${r.app === 'A' ? '📱 Móvil' : '💻 Web'}</td><td>${esc(r.plan || '')}</td><td>${esc(r.vence || '')}</td>
+      <td class="amount">${r.precio_usd ?? ''}</td><td class="amount">${money(r.precio_cup || 0).replace(' CUP', '')}</td></tr>`).join('')
+      : '<tr><td colspan="9" class="small-note">Aún no se ha emitido ninguna licencia.</td></tr>';
+  } catch (e) { toast(e.message, 'error'); }
+}
+
 /* ── Controls ── */
 function renderControls() {
   const q = state.search.toLowerCase();
@@ -396,9 +610,9 @@ function renderControls() {
   const rows = state.controls.filter(c => `${c.product_name} ${c.code} ${c.product_code}`.toLowerCase().includes(q) && (!sf || c.status === sf));
   content.innerHTML = `
     ${heading('Verificación', 'Controles de IPV', 'Cada control es una instantánea vinculada a una versión específica de ficha. La validación compara totales y líneas.', '')}
-    <div class="toolbar">${searchBox()}<select class="filter-select" id="control-status"><option value="">Todos los estados</option><option value="Pendiente" ${sf === 'Pendiente' ? 'selected' : ''}>Pendiente</option><option value="Validado" ${sf === 'Validado' ? 'selected' : ''}>Validado</option><option value="Con diferencias" ${sf === 'Con diferencias' ? 'selected' : ''}>Con diferencias</option></select><button class="secondary-btn" data-action="export-controls">⤓ Exportar CSV</button></div>
+    <div class="toolbar">${searchBox()}<select class="filter-select" id="control-status"><option value="">Todos los estados</option><option value="Pendiente" ${sf === 'Pendiente' ? 'selected' : ''}>Pendiente</option><option value="Validado" ${sf === 'Validado' ? 'selected' : ''}>Validado</option><option value="Con diferencias" ${sf === 'Con diferencias' ? 'selected' : ''}>Con diferencias</option></select><button class="secondary-btn" data-action="export-controls">⤓ Exportar CSV</button>${countPill(rows.length, state.controls.length, 'controles')}</div>
     <section class="panel table-panel">${rows.length
-      ? `<div class="table-wrap"><table><thead><tr><th>Control</th><th>Producto</th><th>Período</th><th>Ficha</th><th>Total</th><th>Estado</th><th></th></tr></thead><tbody>${rows.map(c => `<tr><td><b style="color:var(--text);font-size:12px">${esc(c.code)}</b></td><td>${prodCell(c.product_name, c.product_code, c.category)}</td><td>${esc(c.period)}</td><td>v${c.ficha_version}</td><td class="amount">${money(c.snapshot_total)}</td><td>${stPill(c.status)}</td><td><button class="text-btn" data-action="view-control" data-id="${c.id}">Abrir ↗</button></td></tr>`).join('')}</tbody></table></div>`
+      ? `<div class="table-wrap"><table><thead><tr>${idTh()}<th>Control</th><th>Producto</th><th>Período</th><th>Ficha</th><th>Total</th><th>Estado</th><th></th></tr></thead><tbody>${rows.map((c, i) => `<tr>${idTd(i, c.id)}<td><b style="color:var(--text);font-size:12px">${esc(c.code)}</b></td><td>${prodCell(c.product_name, c.product_code, c.category)}</td><td>${esc(c.period)}</td><td>v${c.ficha_version}</td><td class="amount">${money(c.snapshot_total)}</td><td>${stPill(c.status)}</td><td><button class="text-btn" data-action="view-control" data-id="${c.id}">Abrir ↗</button></td></tr>`).join('')}</tbody></table></div>`
       : `<div class="empty-state"><div class="empty-icon">✓</div><b>${q || sf ? 'Sin resultados' : 'No hay controles'}</b><p>${q || sf ? 'Ajusta los filtros.' : 'Genera un control desde una ficha aprobada.'}</p></div>`}</section>`;
   $('#table-search')?.addEventListener('input', e => { state.search = e.target.value; renderControls(); });
   $('#control-status')?.addEventListener('change', () => renderControls());
@@ -526,8 +740,8 @@ async function openMaterialDetail(id) {
   try {
     const m = await api(`/api/materials/${id}`);
     const used = m.used_by.length
-      ? `<div class="table-wrap"><table><thead><tr><th>Se usa en</th><th>Por unidad</th><th>Con el inventario</th><th>Ficha</th></tr></thead><tbody>
-        ${m.used_by.map(u => `<tr><td>${prodCell(u.product_name, u.product_code, u.category)}</td><td>${esc(u.per_serving)} ${esc(m.unit)}</td><td>${u.servings === null ? '—' : `<span class="yield-badge green">≈ ${dec(u.servings)} ${esc(u.yield_unit || 'unidad')}</span>`}</td><td>${stPill(u.ficha_status)}</td></tr>`).join('')}
+      ? `<div class="table-wrap"><table><thead><tr>${idTh()}<th>Se usa en</th><th>Por unidad</th><th>Con el inventario</th><th>Ficha</th></tr></thead><tbody>
+        ${m.used_by.map((u, i) => `<tr>${idTd(i, u.ficha_id)}<td>${prodCell(u.product_name, u.product_code, u.category)}</td><td>${esc(u.per_serving)} ${esc(m.unit)}</td><td>${u.servings === null ? '—' : `<span class="yield-badge green">≈ ${dec(u.servings)} ${esc(u.yield_unit || 'unidad')}</span>`}</td><td>${stPill(u.ficha_status)}</td></tr>`).join('')}
         </tbody></table></div>`
       : '<div class="empty-state"><div class="empty-icon">▤</div><b>Sin recetas que lo usen</b><p>Este valor todavía no aparece en ninguna ficha de costo.</p></div>';
     showModal(`Valor del IPV · ${m.name}`, `${m.code} · ${m.category || 'Insumos'}`, `
@@ -551,8 +765,8 @@ async function openProductDetail(id) {
   try {
     const p = await api(`/api/products/${id}`);
     const fichas = p.fichas.length
-      ? `<div class="table-wrap"><table><thead><tr><th>Versión</th><th>Rinde</th><th>Costo lote</th><th>Por unidad</th><th>Estado</th><th></th></tr></thead><tbody>
-        ${p.fichas.map(f => `<tr><td>v${f.version}</td><td>${yieldBadge(f.yield_qty, f.yield_unit)}</td><td class="amount">${money(f.total_cost)}</td><td class="amount">${money(f.cost_per_serving || '0')}</td><td>${stPill(f.status)}</td><td><button class="text-btn" data-action="view-ficha" data-id="${f.id}">Abrir ↗</button></td></tr>`).join('')}
+      ? `<div class="table-wrap"><table><thead><tr>${idTh()}<th>Versión</th><th>Rinde</th><th>Costo lote</th><th>Por unidad</th><th>Estado</th><th></th></tr></thead><tbody>
+        ${p.fichas.map((f, i) => `<tr>${idTd(i, f.id)}<td>v${f.version}</td><td>${yieldBadge(f.yield_qty, f.yield_unit)}</td><td class="amount">${money(f.total_cost)}</td><td class="amount">${money(f.cost_per_serving || '0')}</td><td>${stPill(f.status)}</td><td><button class="text-btn" data-action="view-ficha" data-id="${f.id}">Abrir ↗</button></td></tr>`).join('')}
         </tbody></table></div>`
       : '<div class="empty-state"><div class="empty-icon">▤</div><b>Sin fichas de costo</b><p>Cree la primera ficha para este producto.</p></div>';
     showModal(`Producto · ${p.name}`, `${p.code} · ${p.category}`, `
@@ -589,7 +803,7 @@ function openFichaModal(ficha = null, presetProductId = null) {
       <div class="form-field full"><label>Observaciones</label><textarea id="f-notes">${esc(ficha?.observations || '')}</textarea></div>
     </div>
     <div class="line-builder">
-      <div class="line-builder-head"><b>Componentes del lote</b><span id="line-total" class="amount">Total: 0.00 CUP</span></div>
+      <div class="line-builder-head"><b>Componentes del lote</b><span id="line-total" class="amount">Total: $ 0.00 CUP</span></div>
       <div class="line-entry">
         <div class="form-field"><label>Valor del IPV</label><select id="f-mat">${state.materials.map(m => `<option value="${m.id}" data-price="${m.unit_price}" data-unit="${esc(m.unit)}" data-name="${esc(m.name)}">${esc(m.name)} (${esc(m.code)}) — ${money(m.unit_price)}/${esc(m.unit)}</option>`).join('')}</select></div>
         <div class="form-field"><label>Cantidad del lote</label><input id="f-qty" type="number" step="0.001" min="0.001" placeholder="0"></div>
@@ -606,7 +820,7 @@ function openFichaModal(ficha = null, presetProductId = null) {
     $('#line-list').innerHTML = lines.map((l, i) => {
       const s = (parseFloat(l.quantity) || 0) * (parseFloat(l.unitCost) || 0);
       t += s;
-      return `<div class="line-chip"><span>${esc(l.description)} · ${dec(l.quantity)} ${esc(l.unit)}</span><b>${money(s)}</b><button type="button" class="remove-line" data-idx="${i}" aria-label="Quitar">×</button></div>`;
+      return `<div class="line-chip"><span class="line-num" title="Número de orden del componente">${i + 1}</span><span class="line-text">${esc(l.description)} · ${dec(l.quantity)} ${esc(l.unit)}</span><b>${money(s)}</b><button type="button" class="remove-line" data-idx="${i}" aria-label="Quitar">×</button></div>`;
     }).join('');
     $('#line-total').textContent = `Total del lote: ${money(t.toFixed(2))}`;
     $$('.remove-line', $('#line-list')).forEach(b => b.addEventListener('click', () => { lines.splice(+b.dataset.idx, 1); renderLines(); }));
@@ -662,7 +876,7 @@ function openFichaModal(ficha = null, presetProductId = null) {
 async function openFichaDetail(id) {
   try {
     const f = await api(`/api/fichas/${id}`);
-    const lines = f.items.map(i => `<tr><td>${esc(i.description)}${i.material_code ? `<br><small style="color:var(--text-4)">${esc(i.material_code)}</small>` : ''}</td><td>${dec(i.quantity)} ${esc(i.unit)}</td><td>${i.per_serving ? `<span class="used-chip">${esc(i.per_serving)} ${esc(i.unit)} / ${esc(f.yield_unit)}</span>` : '—'}</td><td class="amount">${money(i.unit_cost)}</td><td class="amount">${money(i.subtotal)}</td></tr>`).join('');
+    const lines = f.items.map((i, n) => `<tr>${idTd(n, i.material_id)}<td>${esc(i.description)}${i.material_code ? `<br><small style="color:var(--text-4)">${esc(i.material_code)}</small>` : ''}</td><td>${dec(i.quantity)} ${esc(i.unit)}</td><td>${i.per_serving ? `<span class="used-chip">${esc(i.per_serving)} ${esc(i.unit)} / ${esc(f.yield_unit)}</span>` : '—'}</td><td class="amount">${money(i.unit_cost)}</td><td class="amount">${money(i.subtotal)}</td></tr>`).join('');
     const srv = f.servings_from_stock;
     const srvBox = `<div class="detail-box"><span>Con el inventario actual</span><b style="color:${srv === 0 ? 'var(--red)' : 'var(--green)'}">${srv === null || srv === undefined ? '—' : `≈ ${dec(srv)} ${esc(f.yield_unit || '')}`}</b>${f.limited_by ? `<small style="color:var(--text-4)">limitado por ${esc(f.limited_by)}</small>` : ''}</div>`;
     const shortages = (f.shortages || []).length
@@ -678,7 +892,7 @@ async function openFichaDetail(id) {
         <div class="detail-box"><span>Costo por ${esc((f.yield_unit || 'unidad').replace(/s$/, ''))}</span><b>${money(f.cost_per_serving)}</b></div>
         ${srvBox}
       </div>${shortages}
-      <div class="table-wrap"><table style="min-width:640px"><thead><tr><th>Componente</th><th>Lote</th><th>Por ${esc((f.yield_unit || 'unidad').replace(/s$/, ''))}</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${lines}</tbody></table></div>
+      <div class="table-wrap"><table style="min-width:700px"><thead><tr>${idTh()}<th>Componente</th><th>Lote</th><th>Por ${esc((f.yield_unit || 'unidad').replace(/s$/, ''))}</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${lines}</tbody></table></div>
       ${f.observations ? `<div class="small-note">${esc(f.observations)}</div>` : ''}
       <div class="modal-actions">
         <button class="secondary-btn" data-action="close-modal">Cerrar</button>
@@ -696,9 +910,9 @@ async function openGenerateControl(id) {
 async function openControlDetail(id) {
   try {
     const c = await api(`/api/controls/${id}`);
-    const lines = c.items.map(i => `<tr><td>${esc(i.description)}</td><td>${dec(i.quantity)} ${esc(i.unit)}</td><td class="amount">${money(i.unit_cost)}</td><td class="amount">${money(i.subtotal)}</td></tr>`).join('');
+    const lines = c.items.map((i, n) => `<tr>${idTd(n)}<td>${esc(i.description)}</td><td>${dec(i.quantity)} ${esc(i.unit)}</td><td class="amount">${money(i.unit_cost)}</td><td class="amount">${money(i.subtotal)}</td></tr>`).join('');
     const msgs = (c.validation_messages || []).map(m => `<div class="small-note" style="margin-top:8px;color:${m.type === 'error' ? 'var(--red)' : m.type === 'success' ? 'var(--green)' : 'var(--text-3)'}">${m.type === 'error' ? '⚠ ' : m.type === 'success' ? '✓ ' : '• '}${esc(m.text)}</div>`).join('');
-    showModal(`Control IPV · ${c.code}`, `${c.product_code} · ${c.product_name}`, `<div class="detail-grid"><div class="detail-box"><span>Producto / ficha</span><b>${esc(c.product_name)} · v${c.ficha_version}</b></div><div class="detail-box"><span>Período / estado</span><b>${esc(c.period)} · ${esc(c.status)}</b></div><div class="detail-box"><span>Total del lote</span><b>${money(c.snapshot_total)}</b></div><div class="detail-box"><span>Costo por ${esc((c.yield_unit || 'unidad').replace(/s$/, ''))}</span><b>${money(c.cost_per_serving)}</b></div><div class="detail-box"><span>Verificado</span><b>${c.checked_at ? money(c.checked_total) : 'Sin validar'}</b></div></div><div class="table-wrap"><table><thead><tr><th>Componente</th><th>Cantidad</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${lines}</tbody></table></div>${msgs}<div class="modal-actions"><button class="secondary-btn" data-action="close-modal">Cerrar</button><button class="danger-btn" data-action="trash-control" data-id="${c.id}">Mover a la papelera</button>${c.status !== 'Validado' ? `<button class="primary-btn" data-action="validate-control" data-id="${c.id}">Ejecutar validación</button>` : ''}</div>`);
+    showModal(`Control IPV · ${c.code}`, `${c.product_code} · ${c.product_name}`, `<div class="detail-grid"><div class="detail-box"><span>Producto / ficha</span><b>${esc(c.product_name)} · v${c.ficha_version}</b></div><div class="detail-box"><span>Período / estado</span><b>${esc(c.period)} · ${esc(c.status)}</b></div><div class="detail-box"><span>Total del lote</span><b>${money(c.snapshot_total)}</b></div><div class="detail-box"><span>Costo por ${esc((c.yield_unit || 'unidad').replace(/s$/, ''))}</span><b>${money(c.cost_per_serving)}</b></div><div class="detail-box"><span>Verificado</span><b>${c.checked_at ? money(c.checked_total) : 'Sin validar'}</b></div></div><div class="table-wrap"><table><thead><tr>${idTh()}<th>Componente</th><th>Cantidad</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${lines}</tbody></table></div>${msgs}<div class="modal-actions"><button class="secondary-btn" data-action="close-modal">Cerrar</button><button class="danger-btn" data-action="trash-control" data-id="${c.id}">Mover a la papelera</button>${c.status !== 'Validado' ? `<button class="primary-btn" data-action="validate-control" data-id="${c.id}">Ejecutar validación</button>` : ''}</div>`);
   } catch (e) { toast(e.message, 'error'); }
 }
 async function validateControl(id) { try { const c = await api(`/api/controls/${id}/validate`, { method: 'POST', body: '{}' }); await refreshData(true); openControlDetail(c.id); toast(c.status === 'Validado' ? 'Control validado.' : 'Se encontraron observaciones.', c.status === 'Validado' ? 'success' : 'error'); } catch (e) { toast(e.message, 'error'); } }
@@ -706,11 +920,11 @@ async function validateControl(id) { try { const c = await api(`/api/controls/${
 /* ── CSV Export ── */
 function exportCsv(type) {
   let rows = [], fn = 'export.csv';
-  if (type === 'products') { fn = 'productos.csv'; rows = [['Código', 'Nombre', 'Categoría', 'Unidad', 'Rinde', 'Unidad rinde', 'Fichas', 'Estado'], ...state.products.map(p => [p.code, p.name, p.category, p.unit, p.last_yield_qty || p.yield_qty, p.last_yield_unit || p.yield_unit, p.ficha_count, p.active ? 'Activo' : 'Inactivo'])]; }
-  else if (type === 'materials') { fn = 'valores-ipv.csv'; rows = [['Código', 'Nombre', 'Categoría', 'Unidad', 'Precio', 'Moneda', 'Existencias', 'Mínimo', 'Proveedor', 'Fuente', 'Vigencia', 'Estado'], ...state.materials.map(m => [m.code, m.name, m.category, m.unit, m.unit_price, m.currency, m.stock, m.min_stock, m.supplier, m.source, m.effective_from, m.status])]; }
-  else if (type === 'inventory') { const inv = state.inventory || { items: [] }; fn = 'inventario.csv'; rows = [['Código', 'Nombre', 'Categoría', 'Unidad', 'Existencias', 'Mínimo', 'Precio', 'Valor total', 'Recetas'], ...inv.items.map(m => [m.code, m.name, m.category, m.unit, m.stock, m.min_stock, m.unit_price, m.stock_value, m.used_by.map(u => `${u.product_name} (${u.per_serving} ${m.unit}/${u.yield_unit})`).join(' | ')])]; }
-  else if (type === 'fichas') { fn = 'fichas.csv'; rows = [['Producto', 'Código', 'Categoría', 'Versión', 'Vigente', 'Rinde', 'Unidad rinde', 'Total lote', 'Costo por unidad', 'Con inventario', 'Estado'], ...state.fichas.map(f => [f.product_name, f.product_code, f.category, f.version, f.valid_from, f.yield_qty, f.yield_unit, f.total_cost, f.cost_per_serving, f.servings_from_stock ?? '', f.status])]; }
-  else { fn = 'controles.csv'; rows = [['Control', 'Producto', 'Código', 'Período', 'Ficha', 'Total', 'Estado'], ...state.controls.map(c => [c.code, c.product_name, c.product_code, c.period, c.ficha_version, c.snapshot_total, c.status])]; }
+  if (type === 'products') { fn = 'productos.csv'; rows = [['Id', 'Código', 'Nombre', 'Categoría', 'Unidad', 'Rinde', 'Unidad rinde', 'Fichas', 'Estado'], ...state.products.map((p, i) => [i + 1, p.code, p.name, p.category, p.unit, p.last_yield_qty || p.yield_qty, p.last_yield_unit || p.yield_unit, p.ficha_count, p.active ? 'Activo' : 'Inactivo'])]; }
+  else if (type === 'materials') { fn = 'valores-ipv.csv'; rows = [['Id', 'Código', 'Nombre', 'Categoría', 'Unidad', 'Precio', 'Moneda', 'Existencias', 'Mínimo', 'Proveedor', 'Fuente', 'Vigencia', 'Estado'], ...state.materials.map((m, i) => [i + 1, m.code, m.name, m.category, m.unit, m.unit_price, m.currency, m.stock, m.min_stock, m.supplier, m.source, m.effective_from, m.status])]; }
+  else if (type === 'inventory') { const inv = state.inventory || { items: [] }; fn = 'inventario.csv'; rows = [['Id', 'Código', 'Nombre', 'Categoría', 'Unidad', 'Existencias', 'Mínimo', 'Precio', 'Valor total', 'Recetas'], ...inv.items.map((m, i) => [i + 1, m.code, m.name, m.category, m.unit, m.stock, m.min_stock, m.unit_price, m.stock_value, m.used_by.map(u => `${u.product_name} (${u.per_serving} ${m.unit}/${u.yield_unit})`).join(' | ')])]; }
+  else if (type === 'fichas') { fn = 'fichas.csv'; rows = [['Id', 'Producto', 'Código', 'Categoría', 'Versión', 'Vigente', 'Rinde', 'Unidad rinde', 'Total lote', 'Costo por unidad', 'Con inventario', 'Estado'], ...state.fichas.map((f, i) => [i + 1, f.product_name, f.product_code, f.category, f.version, f.valid_from, f.yield_qty, f.yield_unit, f.total_cost, f.cost_per_serving, f.servings_from_stock ?? '', f.status])]; }
+  else { fn = 'controles.csv'; rows = [['Id', 'Control', 'Producto', 'Código', 'Período', 'Ficha', 'Total', 'Estado'], ...state.controls.map((c, i) => [i + 1, c.code, c.product_name, c.product_code, c.period, c.ficha_version, c.snapshot_total, c.status])]; }
   const csv = '\ufeff' + rows.map(r => r.map(c => `"${String(c ?? '').replaceAll('"', '""')}"`).join(';')).join('\r\n');
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })); const a = document.createElement('a'); a.href = url; a.download = fn; a.click(); URL.revokeObjectURL(url); toast('CSV exportado.', 'success');
 }
@@ -849,6 +1063,25 @@ async function runAction(action, id, el, extra = {}) {
     case 'empty-trash': return emptyTrash();
     case 'open-license': return window.IPVLicense?.renew();
     case 'reload-license': return loadLicenseInto($('#lic-body'));
+    case 'open-creator': return setView('creator');
+    case 'creator-refresh': return loadCreatorInto($('#creator-body'));
+    case 'creator-ledger': return loadCreatorLedger();
+    case 'creator-copy': {
+      const src = $(el.dataset.target);
+      await navigator.clipboard.writeText(src?.value || src?.textContent || '').catch(() => {});
+      return toast('Copiado al portapapeles.', 'success');
+    }
+    case 'creator-activate-here': {
+      const token = $('#creator-token')?.value || '';
+      if (!token) return;
+      const auth = window.IPVAuth ? window.IPVAuth.headers() : {};
+      const r = await fetch('/api/license', { method: 'POST', headers: { 'Content-Type': 'application/json', ...auth }, body: JSON.stringify({ license: token }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || `Error ${r.status}`);
+      toast('🔓 Licencia de este equipo activada.', 'success');
+      setTimeout(() => location.reload(), 900);
+      return;
+    }
     case 'copy-device': {
       await navigator.clipboard.writeText(state.license?.request_code || '').catch(() => {});
       return toast('ID del equipo copiado.', 'success');
@@ -924,12 +1157,21 @@ document.addEventListener('keydown', e => {
   if (e.key === 'F5') { e.preventDefault(); refreshData(); }
   if (!e.ctrlKey && !e.metaKey && !e.altKey && modalLayer.hidden && $('#search-overlay').hidden) {
     const byKey = { '1': 'dashboard', '2': 'products', '3': 'materials', '4': 'inventory',
-      '5': 'fichas', '6': 'controls', '7': 'trash', '8': 'license' };
+      '5': 'fichas', '6': 'controls', '7': 'trash', '8': 'license', '9': 'creator' };
     if (byKey[e.key]) setView(byKey[e.key]);
   }
 });
 
+/* El Creador de Licencias solo se muestra a administradores (o en modo abierto) */
+function updateCreatorNav() {
+  const u = window.IPVAuth ? window.IPVAuth.user : null;
+  const btn = $('#nav-creator');
+  if (btn) btn.style.display = (!u || u.role === 'admin') ? '' : 'none';
+}
+document.addEventListener('ipv:auth', updateCreatorNav);
+
 /* ── Init ── */
+updateCreatorNav();
 refreshData();
 
 /* ==========================================================================
@@ -1269,6 +1511,7 @@ async function renderStatisticsPanel() {
         <table>
           <thead>
             <tr>
+              ${idTh()}
               <th>Producto</th>
               <th>Código</th>
               <th>Versión</th>
@@ -1276,8 +1519,9 @@ async function renderStatisticsPanel() {
             </tr>
           </thead>
           <tbody>
-            ${(stats.top_expensive || []).map(p => `
+            ${(stats.top_expensive || []).map((p, i) => `
               <tr>
+                ${idTd(i, p.id)}
                 <td>${esc(p.name)}</td>
                 <td><code style="background:var(--surface-3);padding:2px 6px;border-radius:4px;font-size:10px">${esc(p.code)}</code></td>
                 <td>v${p.version}</td>

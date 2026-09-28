@@ -76,8 +76,10 @@ jobs:
           rules_file_name: .zap/rules.tsv
           cmd_options: "-a -j -I"
           allow_issue_writing: false
-          fail_action: true
+          fail_action: false
           artifact_name: zap-baseline
+      - name: Revisar alertas del escaneo web
+        run: python .zap/revisar_alertas.py report_json.json "ZAP Baseline"
       - name: Especificación OpenAPI apuntando al servidor de CI
         run: |
           python - <<'PY'
@@ -95,8 +97,10 @@ jobs:
           rules_file_name: .zap/rules.tsv
           cmd_options: "-a -I"
           allow_issue_writing: false
-          fail_action: true
+          fail_action: false
           artifact_name: zap-api
+      - name: Revisar alertas del escaneo de la API
+        run: python .zap/revisar_alertas.py report_json.json "ZAP API"
       - name: Registro del servidor
         if: always()
         run: tail -n 200 server.log

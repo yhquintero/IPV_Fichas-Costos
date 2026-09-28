@@ -26,8 +26,8 @@ import secrets
 import sqlite3
 
 import dbcrypt
-import ssl
 import threading
+import tls_seguro
 import time
 from collections import defaultdict
 from contextlib import contextmanager
@@ -48,13 +48,17 @@ HOST = os.environ.get("IPV_HOST", "0.0.0.0")  # nosec B104
 PORT = int(os.environ.get("PORT", os.environ.get("IPV_PORT", "8000")))
 TLS_CERT = os.environ.get("IPV_TLS_CERT", "").strip()
 TLS_KEY = os.environ.get("IPV_TLS_KEY", "").strip()
+TLS_MIN = os.environ.get("IPV_TLS_MIN", "1.2").strip()          # «1.2» (compatible) o «1.3» (máximo)
+REQUIRE_TLS = os.environ.get("IPV_REQUIRE_TLS", "0").strip() == "1"   # se niega a arrancar en claro
+HTTP_REDIRECT_PORT = int(os.environ.get("IPV_HTTP_REDIRECT_PORT", "0") or 0)  # 0 = desactivado
+HSTS_MAX_AGE = int(os.environ.get("IPV_HSTS_MAX_AGE", "31536000"))
 
 # Seguridad
 API_TOKEN = os.environ.get("IPV_API_TOKEN", "").strip()
 RATE_LIMIT_MAX = int(os.environ.get("IPV_RATE_LIMIT", "120"))  # requests por ventana
 RATE_LIMIT_WINDOW = int(os.environ.get("IPV_RATE_WINDOW", "60"))  # segundos
 MAX_BODY_SIZE = int(os.environ.get("IPV_MAX_BODY", "512000"))  # 500 KB
-ALLOWED_ORIGINS = os.environ.get("IPV_ALLOWED_ORIGINS", "*").strip()
+ALLOWED_ORIGINS = os.environ.get("IPV_ALLOWED_ORIGINS", "").strip()  # vacío = sin CORS (mismo origen)
 
 CENT = Decimal("0.01")
 WRITE_LOCK = threading.RLock()
@@ -446,15 +450,15 @@ def get_product(conn, product_id):
 
 
 def list_products(conn, include_inactive=True):
-    where = "" if include_inactive else " AND p.active=1"
-    return [dict(r) for r in conn.execute(f"""SELECT p.*,
+    # El filtro «solo activos» va parametrizado: no se construye SQL concatenando texto.
+    return [dict(r) for r in conn.execute("""SELECT p.*,
         (SELECT COUNT(*) FROM fichas f WHERE f.product_id=p.id AND f.deleted_at='') AS ficha_count,
         (SELECT f.status FROM fichas f WHERE f.product_id=p.id AND f.deleted_at='' ORDER BY f.id DESC LIMIT 1) AS last_status,
         (SELECT f.id FROM fichas f WHERE f.product_id=p.id AND f.deleted_at='' ORDER BY f.id DESC LIMIT 1) AS last_ficha_id,
         (SELECT f.yield_qty FROM fichas f WHERE f.product_id=p.id AND f.deleted_at='' ORDER BY f.id DESC LIMIT 1) AS last_yield_qty,
         (SELECT f.yield_unit FROM fichas f WHERE f.product_id=p.id AND f.deleted_at='' ORDER BY f.id DESC LIMIT 1) AS last_yield_unit
-        FROM products p WHERE p.deleted_at=''{where}
-        ORDER BY p.active DESC, p.category, p.name""").fetchall()]
+        FROM products p WHERE p.deleted_at='' AND (? = 1 OR p.active = 1)
+        ORDER BY p.active DESC, p.category, p.name""", (1 if include_inactive else 0,)).fetchall()]
 
 
 def list_materials(conn, include_inactive=True, category="", q=""):
@@ -777,8 +781,20 @@ SECURITY_HEADERS = {
 }
 
 
+def _mensaje_datos(exc: Exception) -> str:
+    """Mensaje claro para el usuario, sin exponer el error interno de Python."""
+    texto = str(exc)
+    if isinstance(exc, KeyError):
+        return f"Falta el campo {texto}." if texto else "Faltan datos obligatorios."
+    if "int()" in texto or "float()" in texto or "Decimal" in texto:
+        return "Hay un número no válido: revise las cantidades e identificadores."
+    if "NoneType" in texto:
+        return "Faltan datos obligatorios."
+    return "Datos no válidos: revise el formulario."
+
+
 class Handler(BaseHTTPRequestHandler):
-    server_version = "IPV-FichasCostos/1.0"
+    server_version = "IPV-FichasCostos"  # sin número de versión: no se revela información
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
@@ -791,13 +807,14 @@ class Handler(BaseHTTPRequestHandler):
         return self.client_address[0]
 
     def _cors_origin(self) -> str:
+        """Origen permitido para esta petición («» = no se envían cabeceras CORS)."""
+        if not ALLOWED_ORIGINS:
+            return ""
         origin = self.headers.get("Origin", "")
         if ALLOWED_ORIGINS == "*":
             return "*"
         allowed = [o.strip() for o in ALLOWED_ORIGINS.split(",") if o.strip()]
-        if origin in allowed:
-            return origin
-        return allowed[0] if allowed else ""
+        return origin if origin in allowed else ""
 
     def _apply_security_headers(self):
         for key, value in SECURITY_HEADERS.items():
@@ -805,11 +822,12 @@ class Handler(BaseHTTPRequestHandler):
         cors = self._cors_origin()
         if cors:
             self.send_header("Access-Control-Allow-Origin", cors)
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Token")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-        self.send_header("Access-Control-Max-Age", "3600")
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Token")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+            self.send_header("Access-Control-Max-Age", "3600")
         if TLS_CERT:
-            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+            self.send_header("Strict-Transport-Security", f"max-age={HSTS_MAX_AGE}; includeSubDomains")
 
     def send_json(self, payload, status=200):
         raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -819,6 +837,23 @@ class Handler(BaseHTTPRequestHandler):
         self._apply_security_headers()
         self.end_headers()
         self.wfile.write(raw)
+
+    def send_error(self, code, message=None, explain=None):
+        """Errores del servidor base en JSON y con cabeceras de seguridad.
+
+        La página HTML que genera `BaseHTTPRequestHandler` no lleva CSP,
+        X-Frame-Options ni nosniff, y el escáner la detecta como fallo.
+        """
+        code = int(code)
+        try:
+            short = message or self.responses[code][0]
+        except (KeyError, IndexError, TypeError):
+            short = message or "Error"
+        self.close_connection = True
+        try:
+            self.send_json({"error": str(short), "status": code}, code)
+        except (BrokenPipeError, ConnectionResetError, OSError, ValueError):
+            pass
 
     def body_json(self):
         try:
@@ -886,6 +921,12 @@ class Handler(BaseHTTPRequestHandler):
                         "tls": bool(TLS_CERT),
                         "auth_required": bool(API_TOKEN),
                     }
+                    if TLS_CERT:
+                        cert = tls_seguro.certificate_info(TLS_CERT)
+                        result["tls_min_version"] = TLS_MIN
+                        result["tls_expires_at"] = cert.get("expires_at", "")
+                        result["tls_days_left"] = cert.get("days_left")
+                        result["tls_hostnames"] = cert.get("hostnames", [])
                 elif path == "/api/dashboard":
                     result = dashboard(conn)
                 elif path == "/api/search":
@@ -1014,7 +1055,7 @@ class Handler(BaseHTTPRequestHandler):
                 message = "Ya existe un Control IPV para esa ficha y período."
             self.send_json({"error": message}, 409)
         except (ValueError, TypeError, KeyError) as exc:
-            self.send_json({"error": str(exc) or "Datos no válidos."}, 400)
+            self.send_json({"error": _mensaje_datos(exc)}, 400)
         except Exception as exc:
             print("POST error:", repr(exc))
             self.send_json({"error": "Error interno del servidor."}, 500)
@@ -1047,7 +1088,7 @@ class Handler(BaseHTTPRequestHandler):
         except APIError as exc:
             self.send_json({"error": exc.message}, exc.status)
         except (ValueError, TypeError, KeyError) as exc:
-            self.send_json({"error": str(exc) or "Datos no válidos."}, 400)
+            self.send_json({"error": _mensaje_datos(exc)}, 400)
         except sqlite3.IntegrityError:
             self.send_json({"error": "No se pudo guardar: código duplicado o datos relacionados."}, 409)
         except Exception as exc:
@@ -1107,7 +1148,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Ruta no permitida."}, 403)
                 return
         if not file_path.is_file():
-            self.send_error(404, "Archivo no encontrado")
+            self.send_json({"error": "Archivo no encontrado."}, 404)
             return
         content_type = {
             ".html": "text/html; charset=utf-8",
@@ -1267,7 +1308,8 @@ class Handler(BaseHTTPRequestHandler):
         table = kind if kind in TRASH_TABLES else None
         if not table:
             raise APIError("Tipo de registro no válido.", 400)
-        row = conn.execute(f"SELECT id FROM {table} WHERE id=?", (ident,)).fetchone()
+        # `table` procede de la lista blanca TRASH_TABLES; los valores van parametrizados.
+        row = conn.execute(f"SELECT id FROM {table} WHERE id=?", (ident,)).fetchone()  # nosec B608
         if not row:
             raise APIError(f"{TRASH_TABLES[table]['label']} no encontrado.", 404)
         extra = ""
@@ -1275,7 +1317,7 @@ class Handler(BaseHTTPRequestHandler):
             extra = ", active=0"
         elif table == "materials":
             extra = ", status='Inactivo'"
-        cur = conn.execute(f"UPDATE {table} SET deleted_at=?{extra} WHERE id=?", (now_iso(), ident))
+        cur = conn.execute(f"UPDATE {table} SET deleted_at=?{extra} WHERE id=?", (now_iso(), ident))  # nosec B608
         if cur.rowcount == 0:
             raise APIError("No se pudo mover a la papelera.", 409)
         return {"ok": True, "trashed": True, "kind": kind, "id": ident}
@@ -1303,18 +1345,18 @@ class Handler(BaseHTTPRequestHandler):
             if ficha_ids:
                 marks = ",".join("?" * len(ficha_ids))
                 control_ids = [r[0] for r in conn.execute(
-                    f"SELECT id FROM controls WHERE ficha_id IN ({marks})", ficha_ids)]
+                    f"SELECT id FROM controls WHERE ficha_id IN ({marks})", ficha_ids)]  # nosec B608
                 if control_ids:
-                    conn.execute(f"DELETE FROM control_items WHERE control_id IN ({','.join('?' * len(control_ids))})", control_ids)
-                    conn.execute(f"DELETE FROM controls WHERE id IN ({','.join('?' * len(control_ids))})", control_ids)
-                conn.execute(f"DELETE FROM ficha_items WHERE ficha_id IN ({marks})", ficha_ids)
-                conn.execute(f"DELETE FROM fichas WHERE id IN ({marks})", ficha_ids)
+                    conn.execute(f"DELETE FROM control_items WHERE control_id IN ({','.join('?' * len(control_ids))})", control_ids)  # nosec B608
+                    conn.execute(f"DELETE FROM controls WHERE id IN ({','.join('?' * len(control_ids))})", control_ids)  # nosec B608
+                conn.execute(f"DELETE FROM ficha_items WHERE ficha_id IN ({marks})", ficha_ids)  # nosec B608
+                conn.execute(f"DELETE FROM fichas WHERE id IN ({marks})", ficha_ids)  # nosec B608
         elif kind == "fichas":
             control_ids = [r[0] for r in conn.execute("SELECT id FROM controls WHERE ficha_id=?", (ident,))]
             if control_ids:
                 marks = ",".join("?" * len(control_ids))
-                conn.execute(f"DELETE FROM control_items WHERE control_id IN ({marks})", control_ids)
-                conn.execute(f"DELETE FROM controls WHERE id IN ({marks})", control_ids)
+                conn.execute(f"DELETE FROM control_items WHERE control_id IN ({marks})", control_ids)  # nosec B608
+                conn.execute(f"DELETE FROM controls WHERE id IN ({marks})", control_ids)  # nosec B608
             conn.execute("DELETE FROM ficha_items WHERE ficha_id=?", (ident,))
         elif kind == "controls":
             conn.execute("DELETE FROM control_items WHERE control_id=?", (ident,))
@@ -1323,19 +1365,20 @@ class Handler(BaseHTTPRequestHandler):
         """Borrado definitivo desde la papelera (elimina también sus documentos derivados)."""
         if kind not in TRASH_TABLES:
             raise APIError("Tipo de registro no válido.", 400)
-        row = conn.execute(f"SELECT id FROM {kind} WHERE id=? AND deleted_at<>''", (ident,)).fetchone()
+        # `kind` se valida contra TRASH_TABLES antes de llegar aquí.
+        row = conn.execute(f"SELECT id FROM {kind} WHERE id=? AND deleted_at<>''", (ident,)).fetchone()  # nosec B608
         if not row:
             raise APIError("El elemento no está en la papelera.", 404)
         self._purge_dependents(conn, kind, ident)
-        conn.execute(f"DELETE FROM {kind} WHERE id=?", (ident,))
+        conn.execute(f"DELETE FROM {kind} WHERE id=?", (ident,))  # nosec B608
         return {"ok": True, "purged": True, "kind": kind, "id": ident}
 
     def _empty_trash(self, conn):
         removed = {"products": 0, "materials": 0, "fichas": 0, "controls": 0}
         for kind in ("products", "fichas", "controls", "materials"):
-            for row in conn.execute(f"SELECT id FROM {kind} WHERE deleted_at<>''").fetchall():
+            for row in conn.execute(f"SELECT id FROM {kind} WHERE deleted_at<>''").fetchall():  # nosec B608
                 self._purge_dependents(conn, kind, row[0])
-                removed[kind] += conn.execute(f"DELETE FROM {kind} WHERE id=?", (row[0],)).rowcount
+                removed[kind] += conn.execute(f"DELETE FROM {kind} WHERE id=?", (row[0],)).rowcount  # nosec B608
         return {"ok": True, "removed": sum(removed.values()), "by_kind": removed}
 
 
@@ -1504,31 +1547,44 @@ def auto_backup():
 
 def main():
     init_db()
-    if bool(TLS_CERT) != bool(TLS_KEY):
-        raise RuntimeError("Configura IPV_TLS_CERT e IPV_TLS_KEY juntos para habilitar HTTPS.")
+    tls_seguro.validate_config(TLS_CERT, TLS_KEY, REQUIRE_TLS)
     # Auto-backup on startup
     auto_backup()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     scheme = "http"
+    redirector = None
+    cert_line = ""
     if TLS_CERT and TLS_KEY:
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
-        # Strong cipher suites only
-        context.set_ciphers("ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS")
-        context.load_cert_chain(certfile=TLS_CERT, keyfile=TLS_KEY)
+        context = tls_seguro.build_context(TLS_CERT, TLS_KEY, minimum=TLS_MIN)
         httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
         scheme = "https"
-    print(f"═══════════════════════════════════════════════════")
-    print(f"  IPV · Fichas y Costos v1.0")
+        info = tls_seguro.certificate_info(TLS_CERT)
+        if info.get("days_left") is not None:
+            cert_line = f"  Certificado: {info.get('subject') or '—'} · caduca en {info['days_left']} día(s)"
+        redirector = tls_seguro.start_redirector(HTTP_REDIRECT_PORT, PORT, HOST)
+    print("═══════════════════════════════════════════════════")
+    print("  IPV · Fichas y Costos v1.0")
     print(f"  {scheme}://{HOST}:{PORT}")
     print(f"  SQLite: {DB_PATH}")
-    print(f"  TLS: {'✓' if TLS_CERT else '✗'}  Auth: {'✓' if API_TOKEN else '✗'}  Rate limit: {RATE_LIMIT_MAX}/{RATE_LIMIT_WINDOW}s")
-    print(f"═══════════════════════════════════════════════════")
+    print(f"  TLS: {'✓ ' + TLS_MIN if TLS_CERT else '✗'}  Auth: {'✓' if API_TOKEN else '✗'}  Rate limit: {RATE_LIMIT_MAX}/{RATE_LIMIT_WINDOW}s")
+    if cert_line:
+        print(cert_line)
+    if redirector:
+        print(f"  Redirección: http://{HOST}:{HTTP_REDIRECT_PORT} → https://…:{PORT}")
+    if not TLS_CERT:
+        print("  ⚠ Sin TLS: use .\\iniciar-https.ps1 para servir cifrado (no exponga este puerto a Internet).")
+    aviso = tls_seguro.certificate_warning(TLS_CERT) if TLS_CERT else ""
+    if aviso:
+        print(f"  ⚠ {aviso}")
+    print("═══════════════════════════════════════════════════")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nCerrando servidor…")
     finally:
+        if redirector:
+            redirector.shutdown()
+            redirector.server_close()
         httpd.server_close()
 
 
@@ -1750,6 +1806,10 @@ enterprise.install(sys.modules[__name__])
 import licencia  # noqa: E402  — licencias por período (keygen/keygen.py)
 
 licencia.install(sys.modules[__name__])
+
+import creador_licencias  # noqa: E402  — Creador de Licencias (web, solo administradores)
+
+creador_licencias.install(sys.modules[__name__])
 
 if __name__ == "__main__":
     main()

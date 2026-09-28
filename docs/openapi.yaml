@@ -118,6 +118,145 @@ paths:
         '403': {description: Renovación sin rol admin}
         '409': {description: Licencias desactivadas en este servidor}
 
+  /api/keygen/status:
+    get:
+      tags: [License]
+      summary: Creador de Licencias — estado del sistema de licencias
+      description: Solo administradores. Exenta del bloqueo por licencia para poder emitir la licencia del propio servidor.
+      operationId: keygenStatus
+      responses:
+        '200':
+          description: Estado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured: {type: boolean, description: true si hay clave pública de licencias}
+                  fingerprint: {type: string, description: Huella SHA-256 de la clave pública}
+                  has_key_file: {type: boolean, description: Existe keygen/clave_privada.json}
+                  whatsapp: {type: string}
+                  plans: {type: object, additionalProperties: {type: object}}
+                  rates: {type: object, additionalProperties: {type: number}}
+                  ledger_count: {type: integer}
+                  license: {type: object}
+        '401': {description: Sin sesión}
+        '403': {description: Solo administradores}
+
+  /api/keygen/init:
+    post:
+      tags: [License]
+      summary: Creador de Licencias — crear (o reemplazar) la clave de firma
+      description: Genera la pareja ECDSA P-256, guarda la clave privada cifrada en keygen/clave_privada.json, escribe la clave pública en licencia.py y License.kt, y activa las licencias sin reiniciar.
+      operationId: keygenInit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [passphrase]
+              properties:
+                passphrase: {type: string, minLength: 10, description: Contraseña que cifra la clave privada (no se guarda en el servidor)}
+                whatsapp: {type: string, example: "5355555555"}
+                force: {type: boolean, description: Requerido si ya existe una clave; invalida TODAS las licencias emitidas}
+      responses:
+        '200': {description: Clave creada y licencias activadas}
+        '400': {description: Contraseña corta o clave existente sin force}
+        '401': {description: Sin sesión}
+        '403': {description: Solo administradores}
+
+  /api/keygen/emit:
+    post:
+      tags: [License]
+      summary: Creador de Licencias — emitir una licencia firmada
+      operationId: keygenEmit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user, code, plan, passphrase]
+              properties:
+                user: {type: string}
+                code: {type: string, example: IPVW-ABCDE-FGHIJ-KLMNO-PQRST-XY}
+                plan: {type: string, enum: [1S, 1M, 3M, 6M, 1A, 2A]}
+                passphrase: {type: string}
+      responses:
+        '200':
+          description: Licencia emitida (queda registrada en keygen/registro_licencias.csv)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  license: {type: string, example: IPV1.…}
+                  reply: {type: string, description: Mensaje listo para WhatsApp}
+                  app: {type: string, enum: [W, A]}
+                  serial: {type: string}
+                  price_usd: {type: number}
+                  price_cup: {type: number}
+        '400': {description: Código, plan o contraseña no válidos}
+        '401': {description: Sin sesión}
+        '403': {description: Solo administradores}
+
+  /api/keygen/verify:
+    post:
+      tags: [License]
+      summary: Creador de Licencias — verificar una licencia
+      operationId: keygenVerify
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [license]
+              properties:
+                license: {type: string}
+      responses:
+        '200': {description: Firma y contenido válidos}
+        '400': {description: Licencia no válida}
+
+  /api/keygen/ledger:
+    get:
+      tags: [License]
+      summary: Creador de Licencias — licencias emitidas
+      operationId: keygenLedger
+      parameters:
+        - {name: limit, in: query, schema: {type: integer, default: 100, maximum: 500}}
+      responses:
+        '200':
+          description: Historial reciente (más reciente primero)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: {type: array, items: {type: object}}
+
+  /api/keygen/rates:
+    post:
+      tags: [License]
+      summary: Creador de Licencias — actualizar tasas de cambio (CUP)
+      operationId: keygenRates
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rates:
+                  type: object
+                  additionalProperties: {type: number, description: "CUP por unidad (USD, EUR, MLC, CAD, MXN, ZELLE, CLA)"}
+      responses:
+        '200': {description: Tasas guardadas en keygen/tasas.json}
+        '400': {description: Tasa no válida}
+        '401': {description: Sin sesión}
+        '403': {description: Solo administradores}
+
   /api/auth/login:
     post:
       tags: [Authentication]

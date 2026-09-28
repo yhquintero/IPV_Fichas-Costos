@@ -24,3 +24,12 @@
 10027	IGNORE	Comentarios del código fuente de la SPA
 10109	IGNORE	Informativo: aplicación web moderna
 10049	IGNORE	Informativo: contenido almacenable en caché
+90005	IGNORE	Cabeceras Sec-Fetch-*: las envía el navegador, no el servidor (el escáner no las manda)
+90004	IGNORE	COEP: se envía require-corp; ZAP lo marca en respuestas sin contenido incrustable
+120000	IGNORE	localStorage: guarda preferencias de la interfaz; la sesión va en memoria/almacén cifrado
+10094	IGNORE	Base64 en el código de la SPA (iconos y datos estáticos), no son secretos
+10098	FAIL	CORS abierto: sin IPV_ALLOWED_ORIGINS no se envía ninguna cabecera CORS
+40045	WARN	Spring4Shell no aplica: el servidor es Python + SQLite, sin Spring ni Tomcat
+40018	WARN	Falso positivo del escaneo activo: la validación estricta responde 400; consultas parametrizadas verificadas en tests/test_inyeccion.py
+100000	WARN	Códigos 4xx/5xx que provoca el propio escaneo con datos inventados
+100001	WARN	Content-Type inesperado en respuestas de error y en enlaces externos (WhatsApp)

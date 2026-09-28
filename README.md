@@ -14,7 +14,9 @@ Autor: **Ing. Yosvany Hernández Quintero**
 - **Inventario**: existencias, mínimo, valor en almacén y recetas que usa cada insumo; se ve cuántos comensales o copas se pueden preparar
 - **Rendimiento de fichas**: cada plato indica comensales (o copas/vasos) y el costo por unidad; el inventario calcula cuántas raciones salen
 - **Papelera de reciclaje** en todos los módulos: restaurar o borrar definitivamente
+- **Columna «Id»** al principio de cada tabla y lista (1, 2, 3 …) con el contador de ítems en la barra de herramientas: se sabe al instante cuántos productos, valores, fichas o controles hay
 - **Licencia**: pantalla propia con ID del equipo, planes, WhatsApp y activación/renovación
+- **Creador de Licencias** (web, administradores): crea la clave de firma, activa las licencias al instante y emite, verifica y registra licencias para PC y móvil
 - **Datos de prueba**: catálogo amplio de comidas, licores, bebidas e inventario para aprender
 - **La app Android replica la web** y comparte la misma base de datos SQLite del servidor
 - **Diseño moderno** con glassmorphism, neumorphism y efectos 3D
@@ -37,6 +39,7 @@ Autor: **Ing. Yosvany Hernández Quintero**
 
 ### 📱 App Android
 - **Material Design 3** con colores vibrantes
+- **Listas numeradas** igual que la web: cada tarjeta lleva su Id delante y la lista muestra «▤ 33 ítems»
 - **Gradientes animados** y efectos visuales
 - **Estadísticas avanzadas** con gráficos nativos
 - **Haptic feedback** en interacciones
@@ -66,7 +69,10 @@ Autor: **Ing. Yosvany Hernández Quintero**
 - **Rate limiting granular**: login 5/min, exportaciones 10/5 min, masivas 10/min, escritura 60/min, lectura 300/min, con cabeceras `X-RateLimit-*`
 - **Auditoría persistente** en SQLite (usuario, IP, acción, detalle) con visor web para administradores
 - **Cabeceras**: CSP, HSTS, COOP, CORP, X-Frame-Options, nosniff, Referrer-Policy, Permissions-Policy
-- **TLS 1.2+** con cifrados ECDHE/AES-GCM/ChaCha20
+- **TLS 1.2+** (o **1.3 exclusivo**) con cifrados ECDHE/AES-GCM/ChaCha20, sin compresión ni renegociación y con las curvas modernas seleccionadas por el servidor
+- **Redirección HTTP → HTTPS** opcional (308) para que nadie entre por error en claro, y **modo estricto** (`IPV_REQUIRE_TLS=1`) que impide arrancar sin certificado válido
+- **Vigilancia del certificado**: aviso al arrancar y en `/api/health` (`tls_expires_at`, `tls_days_left`) cuando faltan menos de 30 días, con reemisión automática desde `iniciar-https.ps1`
+- **Diagnóstico `-Check`**: comprueba requisitos, CA instalada, handshake TLS real, HSTS, `.env`, cifrado de la BD y copias de seguridad
 - **Android**: sesión cifrada con AES-256-GCM en Android Keystore, **fijación de certificado** (huella de la CA, verificada en el handshake TLS), login con 2FA, cambio obligatorio de contraseña caducada, lista de dispositivos con cierre remoto de sesiones, avisos de IP nueva e intentos fallidos, bloqueo biométrico, `FLAG_SECURE`, sin copias en la nube
 
 ### ⚙️ Backend
@@ -77,6 +83,17 @@ Autor: **Ing. Yosvany Hernández Quintero**
 - **Notificaciones por correo** al aprobar fichas y validar controles (SMTP opcional)
 - Estadísticas, reportes, operaciones masivas y búsqueda global
 - **Sin dependencias externas** en producción: solo Python estándar + SQLite
+
+---
+
+## 📚 Documentación
+
+| Guía | Para qué |
+|---|---|
+| [Acceso seguro por HTTPS](docs/acceso-seguro-https.md) | **Todos los pasos desde el principio**: CA, certificado, primer inicio, otro equipo de la red, móvil Android, uso diario y solución de problemas |
+| [Plan de mejora continua](docs/plan-mejora-continua.md) | Cómo evolucionan la web y el móvil: ciclo de trabajo, criterios de calidad, métricas, hoja de ruta y cómo pedir una mejora |
+| [Precios y licencias](docs/precios-y-licencias.md) | Planes, precios y uso del Creador de Licencias |
+| [OpenAPI](docs/openapi.yaml) | Contrato de la API REST |
 
 ---
 
@@ -95,21 +112,35 @@ Autor: **Ing. Yosvany Hernández Quintero**
 git clone <repo-url>
 cd IPV_Fichas-Costos
 
-# 2. Iniciar servidor HTTPS
-.\iniciar-https.ps1
+# 2. Preparar la seguridad (una sola vez): .env, secreto JWT y administrador
+.\iniciar-https.ps1 -InitSecurity
 
-# 3. Abrir en navegador
+# 3. Iniciar el servidor HTTPS (crea la CA y el certificado si faltan)
+.\iniciar-https.ps1 -Open
+
+# 4. Abrir en navegador
 # https://sqlserver:8443
 ```
 
-### Seguridad (recomendado antes del primer inicio)
-
-```powershell
-.\iniciar-https.ps1 -InitSecurity   # crea .env con secreto JWT y administrador
-.\iniciar-https.ps1                 # inicia el servidor HTTPS (lee .env)
-```
+> 📘 **¿Primera vez?** La guía [docs/acceso-seguro-https.md](docs/acceso-seguro-https.md) explica **todos los pasos desde cero**: instalar la CA, entrar desde la propia PC, desde otro equipo de la red y desde el móvil Android, cifrar la base de datos y resolver los errores más comunes.
 
 Sin `IPV_JWT_SECRET` el servidor funciona en **modo abierto** (solo para redes de confianza y pruebas).
+
+### Acceso seguro (HTTPS)
+
+```powershell
+.\iniciar-https.ps1 -Check             # diagnóstico completo del acceso seguro
+.\iniciar-https.ps1 -Port 8443         # cambiar el puerto HTTPS
+.\iniciar-https.ps1 -RedirectPort 8080 # redirigir http://…:8080 → https://…:8443 (308)
+.\iniciar-https.ps1 -NoRedirect        # no levantar el redirector HTTP
+.\iniciar-https.ps1 -Tls13Only         # exigir TLS 1.3 (clientes modernos)
+.\iniciar-https.ps1 -Renew             # reemitir la CA y el certificado
+.\iniciar-https.ps1 -ExportCa D:\CA    # copiar la CA para instalarla en otros equipos
+.\iniciar-https.ps1 -Help              # ayuda con todos los comandos
+```
+
+- El certificado se **reemite solo** cuando hace falta: si caduca en menos de 30 días, si cambian las IP del equipo o si lo emitió otra CA.
+- `-Check` verifica requisitos, certificados, red, **handshake TLS real**, `/api/health`, HSTS, `.env`, cifrado de la BD y copias de seguridad, y resume los problemas y avisos encontrados.
 
 ### Cifrar la base de datos (SQLCipher, AES-256)
 
@@ -138,15 +169,32 @@ IPV_BACKUP_S3_SECRET_KEY=...
 - Si la BD está cifrada, las copias remotas **también lo están** (nunca se sube nada en claro).
 - Un destino caído no interrumpe el backup local: queda registrado en la auditoría (`BACKUP_OFFSITE_FAILED`).
 
-### Licencias por período (1 semana … 2 años)
+### Licencias por período (1 semana … 2 años) y Creador de Licencias
 
 El servidor y la app Android se activan con una **licencia firmada (ECDSA P-256)** atada al dispositivo:
 
-1. La app muestra **Activar licencia** con el *ID Dispositivo* cifrado (`IPVW-…` en PC, `IPVA-…` en móvil) y un botón **Solicitar por WhatsApp**.
-2. El proveedor genera la licencia con el **Keygen** (`python keygen\keygen.py`, interfaz gráfica o CLI) indicando *Usuario*, *ID Dispositivo* y *Plan* (`1S`, `1M`, `3M`, `6M`, `1A`, `2A`).
+1. La app muestra **Activar licencia** con el *ID Dispositivo* cifrado (`IPVW-…` en PC, `IPVA-…` en móvil) y un botón **Solicitar por WhatsApp**. La web y el móvil lo hacen **al arrancar, antes del inicio de sesión**.
+2. El proveedor crea la licencia con el **Creador de Licencias** integrado (menú lateral, solo administradores): pega el código de solicitud, elige el plan y pulsa *Crear licencia*. También puede usar el **Keygen** de escritorio (`python keygen\keygen.py`, GUI o CLI); ambos comparten clave y registro.
 3. El cliente pega la licencia y pulsa **Activar**. Sin licencia vigente la API responde `402` y la app queda bloqueada; 7 días antes del vencimiento se avisa.
 
-Configuración inicial del proveedor: `python keygen\keygen.py init --whatsapp 53XXXXXXXX` (escribe la clave pública en `licencia.py` y `License.kt`). Precios, estudio de mercado y guía completa: **[docs/precios-y-licencias.md](docs/precios-y-licencias.md)**.
+**Primera vez (activar el sistema de licencias):** abra **Creador de Licencias** en la web, escriba una contraseña (mín. 10) y su WhatsApp, y pulse *Crear clave de firma y activar licencias*. Las licencias quedan **activadas al instante**, sin reiniciar: la clave pública se escribe en `licencia.py` y `License.kt` (recompile el APK para el móvil). El equivalente en consola es `python keygen\keygen.py init --whatsapp 53XXXXXXXX`. La clave privada se guarda cifrada en `keygen/clave_privada.json`; la contraseña **no** se guarda en el servidor. Si el propio servidor se queda sin licencia, las rutas `/api/keygen` siguen accesibles para que el administrador se la emita a sí mismo. Precios, estudio de mercado y guía completa: **[docs/precios-y-licencias.md](docs/precios-y-licencias.md)**.
+
+### Formato monetario
+
+Todos los importes se muestran como **$ 3,163,138.00 CUP**: símbolo `$` delante, miles separados con coma y decimales con punto (igual en la web y en la app Android).
+
+### Numeración de ítems (columna «Id»)
+
+Todas las tablas empiezan por la columna **Id**, que numera las filas de 1 a N delante del resto de los encabezados
+(*Valor · Categoría · Existencias · Mínimo · Precio · Valor total · Entradas / salidas · Se usa en · Acciones*).
+El último número dice cuántos ítems hay y la barra de herramientas lo repite en un contador —
+**▤ 33 ítems** o **▤ 5 de 33 ítems** cuando hay un filtro o una búsqueda activa.
+
+- Alcance: productos, valores del IPV, inventario, fichas, controles, papelera, fichas recientes del resumen,
+  componentes de una ficha, historial del Creador de Licencias, auditoría, usuarios y vista previa de importación CSV.
+- El `Id` de la fila es su número de orden; al pasar el ratón por encima se muestra el **Id interno** (el de la base de datos).
+- Las **exportaciones CSV** incluyen la columna `Id` como primera columna.
+- La **app Android** numera igual sus tarjetas y muestra el total de cada listado.
 
 ### Comandos de administración
 
@@ -157,6 +205,8 @@ Configuración inicial del proveedor: `python keygen\keygen.py init --whatsapp 5
 .\iniciar-https.ps1 -AuditLog      # últimos 40 eventos de auditoría
 .\iniciar-https.ps1 -ShowPin       # huella de la CA para fijarla en Android
 .\iniciar-https.ps1 -EncryptDb     # cifra la base de datos (SQLCipher AES-256)
+.\iniciar-https.ps1 -Check         # diagnóstico del acceso seguro (certificado, TLS, red, .env)
+.\iniciar-https.ps1 -Stop          # detiene el servidor
 ```
 
 ### Docker
@@ -235,7 +285,7 @@ docker compose up -d    # contenedor de solo lectura, sin privilegios, usuario n
 
 | Tecla | Acción |
 |-------|--------|
-| `1-8` | Navegar entre vistas (Resumen, Productos, Valores, Inventario, Fichas, Controles, Papelera, Licencia) |
+| `1-9` | Navegar entre vistas (Resumen, Productos, Valores, Inventario, Fichas, Controles, Papelera, Licencia, Creador de Licencias) |
 | `Ctrl+K` | Búsqueda global |
 | `F5` | Actualizar datos |
 | `Esc` | Cerrar modal |
@@ -269,6 +319,18 @@ docker compose up -d    # contenedor de solo lectura, sin privilegios, usuario n
 
 Consulte `.env.example`. Las principales: `IPV_JWT_SECRET`, `IPV_ADMIN_EMAIL`, `IPV_ADMIN_PASSWORD`, `IPV_API_TOKEN` (integraciones), `IPV_ALLOWED_ORIGINS`, `IPV_ACCESS_TTL`, `IPV_REFRESH_TTL`, `IPV_BACKUP_INTERVAL_HOURS`, `IPV_BACKUP_KEEP`, `IPV_NOTIFY_EMAIL` y `SMTP_*`.
 
+**Acceso seguro (HTTPS):**
+
+| Variable | Por defecto | Para qué sirve |
+|---|---|---|
+| `IPV_TLS_CERT` / `IPV_TLS_KEY` | `certs\ipv-server.crt` / `.key` | Certificado y clave privada del servidor |
+| `IPV_TLS_MIN` | `1.2` | Versión mínima de TLS (`1.2` o `1.3`); nunca baja de 1.2 |
+| `IPV_REQUIRE_TLS` | `0` | `1` = el servidor **se niega a arrancar** sin certificado válido |
+| `IPV_HTTP_REDIRECT_PORT` | `0` | Puerto HTTP que redirige a HTTPS con 308 (`0` = desactivado) |
+| `IPV_HSTS_MAX_AGE` | `31536000` | Duración de HSTS en segundos (`0` = sin cabecera) |
+
+`iniciar-https.ps1` fija estas variables automáticamente según los parámetros que se le pasen.
+
 ---
 
 ## 📱 App Android
@@ -285,8 +347,11 @@ cd android
 2. Configurar URL: `https://10.0.2.2:8443`
 
 ### Instalación en Dispositivo Físico
-1. Instalar CA root en el dispositivo
+1. Instalar CA root en el dispositivo (`.\iniciar-https.ps1 -ExportCa` para copiarla)
 2. Configurar URL: `https://IP_DEL_SERVIDOR:8443`
+3. Comprobar la huella con `.\iniciar-https.ps1 -ShowPin`: la app la fija en la primera conexión y avisa si cambia
+
+Pasos detallados con capturas de cada pantalla: [docs/acceso-seguro-https.md](docs/acceso-seguro-https.md#4-entrar-desde-el-móvil-android).
 
 ---
 
@@ -306,7 +371,7 @@ La integración continua (`.github/workflows/ci-cd.yml`) ejecuta Ruff, Bandit y 
 
 ## 📈 Próximos pasos
 
-Ver la sección de mejoras sugeridas en el historial del proyecto: paquetes **Seguridad Máxima**, **UX/UI Premium**, **IA/ML** y **Multi-Tenancy**.
+La evolución de las dos aplicaciones se gestiona con el **[Plan de mejora continua](docs/plan-mejora-continua.md)**: ciclo de trabajo de dos semanas, criterios de «terminado», métricas trimestrales, tabla de paridad **Web ↔ Móvil** y hoja de ruta (informes y comparador de fichas, trabajo sin conexión con cola de cambios, multi-almacén y roles finos por módulo).
 
 ---
 
