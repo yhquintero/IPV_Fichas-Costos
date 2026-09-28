@@ -149,6 +149,22 @@ function rowActions(kind, item) {
   </div>`;
 }
 
+/* ── Columna «Id»: numera las filas de 1 a N ──
+   Va siempre delante de las demás columnas, así el último número de la lista
+   dice de un vistazo cuántos ítems hay. El atributo title muestra el Id interno
+   (el de la base de datos) por si hace falta para soporte. */
+function idTh() { return '<th class="row-id-h" title="Número de orden del ítem">Id</th>'; }
+function idTd(i, realId) {
+  const t = realId === undefined || realId === null || realId === '' ? '' : ` title="Id interno: ${esc(realId)}"`;
+  return `<td class="row-id"${t}>${i + 1}</td>`;
+}
+/* Contador de ítems para las barras de herramientas: «33 ítems» o «5 de 33 ítems». */
+function countPill(shown, total, label = 'ítems') {
+  const t = Number(total === undefined || total === null ? shown : total);
+  const s = Number(shown);
+  return `<span class="count-pill" title="Cantidad de ${label} en la lista">▤ ${s === t ? `${t} ${label}` : `${s} de ${t} ${label}`}</span>`;
+}
+
 /* ── Dashboard ── */
 function renderDashboard() {
   const d = state.dashboard;
@@ -177,7 +193,7 @@ function renderDashboard() {
       <section class="panel">
         <div class="panel-heading"><div><h2 class="panel-title">Fichas recientes</h2><p class="panel-subtitle">Últimos documentos modificados</p></div><button class="text-btn" data-view="fichas">Ver todas →</button></div>
         ${d.recent_fichas?.length
-          ? `<div class="table-wrap"><table><thead><tr><th>Producto</th><th>Rendimiento</th><th>Estado</th><th>Costo total</th><th>Actualización</th><th></th></tr></thead><tbody>${d.recent_fichas.map(f => `<tr><td>${prodCell(f.product_name, f.product_code, f.category)}</td><td>${yieldBadge(f.yield_qty, f.yield_unit)}</td><td>${stPill(f.status)}</td><td class="amount">${money(f.total_cost)}</td><td>${dateLabel(f.updated_at)}</td><td><button class="text-btn" data-action="view-ficha" data-id="${f.id}">Abrir ↗</button></td></tr>`).join('')}</tbody></table></div>`
+          ? `<div class="table-wrap"><table><thead><tr>${idTh()}<th>Producto</th><th>Rendimiento</th><th>Estado</th><th>Costo total</th><th>Actualización</th><th></th></tr></thead><tbody>${d.recent_fichas.map((f, i) => `<tr>${idTd(i, f.id)}<td>${prodCell(f.product_name, f.product_code, f.category)}</td><td>${yieldBadge(f.yield_qty, f.yield_unit)}</td><td>${stPill(f.status)}</td><td class="amount">${money(f.total_cost)}</td><td>${dateLabel(f.updated_at)}</td><td><button class="text-btn" data-action="view-ficha" data-id="${f.id}">Abrir ↗</button></td></tr>`).join('')}</tbody></table></div>`
           : '<div class="empty-state"><div class="empty-icon">▤</div><b>Empieza con una ficha</b><p>Crea la primera ficha de costo.</p><button class="primary-btn" data-action="create-ficha">Crear ficha</button></div>'}
       </section>
       <section class="panel category-panel">
@@ -202,11 +218,11 @@ function renderProducts() {
   const rows = state.products.filter(p => `${p.name} ${p.code} ${p.category}`.toLowerCase().includes(q) && (!cf || p.category === cf));
   content.innerHTML = `
     ${heading('Catálogo', 'Productos y servicios', 'Organiza los elementos que tendrán una Ficha de Costo asociada. El rendimiento indica cuántos comensales, copas o vasos salen de cada lote.', '<button class="primary-btn" data-action="create-product"><span class="plus">＋</span> Nuevo producto</button>')}
-    <div class="toolbar">${searchBox()}<select class="filter-select" id="product-category"><option value="">Todas las categorías</option>${cats.map(c => `<option value="${esc(c)}" ${c === cf ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select><button class="secondary-btn" data-action="export-products">⤓ Exportar CSV</button></div>
+    <div class="toolbar">${searchBox()}<select class="filter-select" id="product-category"><option value="">Todas las categorías</option>${cats.map(c => `<option value="${esc(c)}" ${c === cf ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select><button class="secondary-btn" data-action="export-products">⤓ Exportar CSV</button>${countPill(rows.length, state.products.length, 'productos')}</div>
     <section class="panel table-panel">${rows.length
-      ? `<div class="table-wrap"><table style="min-width:920px"><thead><tr><th>Producto</th><th>Categoría</th><th>Unidad</th><th>Rendimiento</th><th>Fichas</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map(p => {
+      ? `<div class="table-wrap"><table style="min-width:980px"><thead><tr>${idTh()}<th>Producto</th><th>Categoría</th><th>Unidad</th><th>Rendimiento</th><th>Fichas</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map((p, i) => {
         const yq = p.last_yield_qty || p.yield_qty || 1, yu = p.last_yield_unit || p.yield_unit || 'unidad';
-        return `<tr><td>${prodCell(p.name, p.code, p.category)}</td><td><span class="cat-pill">${esc(p.category)}</span></td><td>${esc(p.unit)}</td><td>${yieldBadge(yq, yu, p.category === 'Comidas' ? 'orange' : p.category === 'Bebidas' ? 'blue' : '')}</td><td>${p.ficha_count || 0}</td><td>${p.active ? (p.last_status ? stPill(p.last_status) : '<span class="status approved">Activo</span>') : '<span class="status">Inactivo</span>'}</td><td>${rowActions('product', p)}</td></tr>`;
+        return `<tr>${idTd(i, p.id)}<td>${prodCell(p.name, p.code, p.category)}</td><td><span class="cat-pill">${esc(p.category)}</span></td><td>${esc(p.unit)}</td><td>${yieldBadge(yq, yu, p.category === 'Comidas' ? 'orange' : p.category === 'Bebidas' ? 'blue' : '')}</td><td>${p.ficha_count || 0}</td><td>${p.active ? (p.last_status ? stPill(p.last_status) : '<span class="status approved">Activo</span>') : '<span class="status">Inactivo</span>'}</td><td>${rowActions('product', p)}</td></tr>`;
       }).join('')}</tbody></table></div>`
       : `<div class="empty-state"><div class="empty-icon">▦</div><b>${q || cf ? 'Sin resultados' : 'No hay productos'}</b><p>${q || cf ? 'Ajusta los filtros.' : 'Registra el primer producto del catálogo.'}</p></div>`}</section>`;
   $('#table-search')?.addEventListener('input', e => { state.search = e.target.value; renderProducts(); });
@@ -239,9 +255,9 @@ function renderMaterials() {
     <div class="toolbar">${searchBox()}
       <select class="filter-select" id="material-category"><option value="">Todas las categorías</option>${cats.map(c => `<option value="${esc(c)}" ${c === category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
       <select class="filter-select" id="material-status"><option value="">Todos los estados</option><option value="Vigente" ${status === 'Vigente' ? 'selected' : ''}>Vigente</option><option value="Inactivo" ${status === 'Inactivo' ? 'selected' : ''}>Inactivo</option></select>
-      <button class="secondary-btn" data-action="export-materials">⤓ Exportar CSV</button></div>
+      <button class="secondary-btn" data-action="export-materials">⤓ Exportar CSV</button>${countPill(rows.length, state.materials.length, 'valores')}</div>
     <section class="panel table-panel">${rows.length
-      ? `<div class="table-wrap"><table style="min-width:1080px"><thead><tr><th>Valor del IPV</th><th>Categoría</th><th>Unidad</th><th>Precio</th><th>Existencias</th><th>Mínimo</th><th>Fuente</th><th>Vigencia</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map(m => `<tr><td><div class="product-cell"><div class="product-avatar" style="background:var(--orange-glow);color:var(--orange)">◈</div><div><span class="product-title">${esc(m.name)}</span><span class="product-code">${esc(m.code)}</span></div></div></td><td><span class="cat-pill">${esc(m.category || 'Insumos')}</span></td><td>${esc(m.unit)}</td><td class="amount">${money(m.unit_price)}</td><td>${stockPill(m)}</td><td>${dec(m.min_stock)}</td><td class="category-tag">${esc(m.source || m.supplier || '—')}</td><td>${dateLabel(m.effective_from)}</td><td>${stPill(m.status)}</td><td>${rowActions('material', m)}</td></tr>`).join('')}</tbody></table></div>`
+      ? `<div class="table-wrap"><table style="min-width:1140px"><thead><tr>${idTh()}<th>Valor del IPV</th><th>Categoría</th><th>Unidad</th><th>Precio</th><th>Existencias</th><th>Mínimo</th><th>Fuente</th><th>Vigencia</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map((m, i) => `<tr>${idTd(i, m.id)}<td><div class="product-cell"><div class="product-avatar" style="background:var(--orange-glow);color:var(--orange)">◈</div><div><span class="product-title">${esc(m.name)}</span><span class="product-code">${esc(m.code)}</span></div></div></td><td><span class="cat-pill">${esc(m.category || 'Insumos')}</span></td><td>${esc(m.unit)}</td><td class="amount">${money(m.unit_price)}</td><td>${stockPill(m)}</td><td>${dec(m.min_stock)}</td><td class="category-tag">${esc(m.source || m.supplier || '—')}</td><td>${dateLabel(m.effective_from)}</td><td>${stPill(m.status)}</td><td>${rowActions('material', m)}</td></tr>`).join('')}</tbody></table></div>`
       : `<div class="empty-state"><div class="empty-icon">◈</div><b>${q || category || status ? 'Sin resultados' : 'No hay valores'}</b><p>${q || category || status ? 'Ajusta los filtros.' : 'Registra los insumos de referencia.'}</p><button class="primary-btn" data-action="create-material">Crear el primero</button></div>`}</section>`;
   $('#table-search')?.addEventListener('input', e => { state.search = e.target.value; renderMaterials(); });
   $('#material-category')?.addEventListener('change', e => { state.filters.materials.category = e.target.value; renderMaterials(); });
@@ -267,9 +283,9 @@ function renderInventory() {
     <div class="toolbar">${searchBox('Buscar en el inventario…')}
       <select class="filter-select" id="inv-category"><option value="">Todas las categorías</option>${cats.map(c => `<option value="${esc(c)}" ${c === category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
       <label class="check-inline"><input type="checkbox" id="inv-low" ${low ? 'checked' : ''}> Solo bajo mínimo</label>
-      <button class="secondary-btn" data-action="export-inventory">⤓ Exportar CSV</button></div>
+      <button class="secondary-btn" data-action="export-inventory">⤓ Exportar CSV</button>${countPill(rows.length, inv.items.length, 'ítems')}</div>
     <section class="panel table-panel">${rows.length
-      ? `<div class="table-wrap"><table style="min-width:1120px"><thead><tr><th>Valor</th><th>Categoría</th><th>Existencias</th><th>Mínimo</th><th>Precio</th><th>Valor total</th><th>Entradas / salidas</th><th>Se usa en</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map(m => `<tr>
+      ? `<div class="table-wrap"><table style="min-width:1180px"><thead><tr>${idTh()}<th>Valor</th><th>Categoría</th><th>Existencias</th><th>Mínimo</th><th>Precio</th><th>Valor total</th><th>Entradas / salidas</th><th>Se usa en</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map((m, i) => `<tr>${idTd(i, m.id)}
         <td><div class="product-cell"><div class="product-avatar" style="background:var(--orange-glow);color:var(--orange)">◈</div><div><span class="product-title">${esc(m.name)}</span><span class="product-code">${esc(m.code)}</span></div></div></td>
         <td><span class="cat-pill">${esc(m.category || 'Insumos')}</span></td>
         <td>${stockPill(m)}</td><td>${dec(m.min_stock)} ${esc(m.unit)}</td>
@@ -299,9 +315,10 @@ function renderTrash() {
   content.innerHTML = `
     ${heading('Recuperación', 'Papelera de reciclaje', 'Todo lo que elimina pasa aquí: puede restaurarlo o borrarlo definitivamente. Nada se pierde por accidente.', rows.length
       ? `<button class="danger-btn" data-action="empty-trash">Vaciar papelera</button>` : '')}
-    <div class="toolbar">${searchBox('Buscar en la papelera…')}</div>
+    <div class="toolbar">${searchBox('Buscar en la papelera…')}${countPill(rows.length, state.trash.length, 'elementos')}</div>
     <section class="panel">
-      ${rows.length ? rows.map(t => `<div class="trash-item">
+      ${rows.length ? rows.map((t, i) => `<div class="trash-item">
+        <div class="trash-index" title="Número de orden del ítem">${i + 1}</div>
         <div class="trash-icon">${TRASH_ICON[t.kind] || '•'}</div>
         <div class="trash-body">
           <b>${esc(t.name)}</b>
@@ -323,12 +340,12 @@ function renderFichas() {
   const rows = state.fichas.filter(f => `${f.product_name} ${f.product_code} ${f.category}`.toLowerCase().includes(q) && (!sf || f.status === sf));
   content.innerHTML = `
     ${heading('Documentos', 'Fichas de costo', 'Cada ficha registra los componentes, el costo del lote, cuántos comensales o copas salen de él y cuánto queda en inventario.', '<button class="primary-btn" data-action="create-ficha"><span class="plus">＋</span> Nueva ficha</button>')}
-    <div class="toolbar">${searchBox()}<select class="filter-select" id="ficha-status"><option value="">Todos los estados</option><option value="Borrador" ${sf === 'Borrador' ? 'selected' : ''}>Borrador</option><option value="Aprobada" ${sf === 'Aprobada' ? 'selected' : ''}>Aprobada</option></select><button class="secondary-btn" data-action="export-fichas">⤓ Exportar CSV</button></div>
+    <div class="toolbar">${searchBox()}<select class="filter-select" id="ficha-status"><option value="">Todos los estados</option><option value="Borrador" ${sf === 'Borrador' ? 'selected' : ''}>Borrador</option><option value="Aprobada" ${sf === 'Aprobada' ? 'selected' : ''}>Aprobada</option></select><button class="secondary-btn" data-action="export-fichas">⤓ Exportar CSV</button>${countPill(rows.length, state.fichas.length, 'fichas')}</div>
     <section class="panel table-panel">${rows.length
-      ? `<div class="table-wrap"><table style="min-width:1000px"><thead><tr><th>Producto</th><th>Versión</th><th>Vigente</th><th>Rinde</th><th>Componentes</th><th>Costo lote</th><th>Costo por unidad</th><th>Con el inventario</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map(f => {
+      ? `<div class="table-wrap"><table style="min-width:1060px"><thead><tr>${idTh()}<th>Producto</th><th>Versión</th><th>Vigente</th><th>Rinde</th><th>Componentes</th><th>Costo lote</th><th>Costo por unidad</th><th>Con el inventario</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map((f, i) => {
         const short = Number(f.servings_from_stock);
         const tone = f.servings_from_stock === null || f.servings_from_stock === undefined ? '' : short <= 0 ? 'red' : short < Number(f.yield_qty || 1) ? 'orange' : 'green';
-        return `<tr><td>${prodCell(f.product_name, f.product_code, f.category)}</td><td>v${f.version}</td><td>${dateLabel(f.valid_from)}</td>
+        return `<tr>${idTd(i, f.id)}<td>${prodCell(f.product_name, f.product_code, f.category)}</td><td>v${f.version}</td><td>${dateLabel(f.valid_from)}</td>
         <td>${yieldBadge(f.yield_qty, f.yield_unit, f.category === 'Comidas' ? 'orange' : 'blue')}</td>
         <td>${f.item_count || 0}</td><td class="amount">${money(f.total_cost)}</td>
         <td class="amount">${money(f.cost_per_serving)} <small style="color:var(--text-4)">/ ${esc(f.yield_unit || '')}</small></td>
@@ -520,8 +537,8 @@ async function loadCreatorInto(box) {
       <div class="panel-heading"><div><h2 class="panel-title">📜 Historial (${st.ledger_count} emitidas)</h2>
         <p class="panel-subtitle">keygen/registro_licencias.csv</p></div>
         <button class="secondary-btn" data-action="creator-ledger">↻ Cargar</button></div>
-      <div class="table-wrap"><table id="creator-ledger"><thead><tr><th>Fecha</th><th>Serie</th><th>Usuario</th><th>App</th><th>Plan</th><th>Vence</th><th style="text-align:right">USD</th><th style="text-align:right">CUP</th></tr></thead>
-      <tbody><tr><td colspan="8" class="small-note">Pulse «Cargar» para ver las últimas licencias emitidas.</td></tr></tbody></table></div>
+      <div class="table-wrap"><table id="creator-ledger"><thead><tr>${idTh()}<th>Fecha</th><th>Serie</th><th>Usuario</th><th>App</th><th>Plan</th><th>Vence</th><th style="text-align:right">USD</th><th style="text-align:right">CUP</th></tr></thead>
+      <tbody><tr><td colspan="9" class="small-note">Pulse «Cargar» para ver las últimas licencias emitidas.</td></tr></tbody></table></div>
     </div>`;
 
   creatorPriceHint();
@@ -579,10 +596,10 @@ async function loadCreatorLedger() {
   try {
     const { items } = await api('/api/keygen/ledger?limit=100');
     const tb = $('#creator-ledger tbody'); if (!tb) return;
-    tb.innerHTML = items.length ? items.map(r => `<tr><td>${esc(r.fecha || '')}</td><td>${esc(r.serie || '')}</td><td>${esc(r.usuario || '')}</td>
+    tb.innerHTML = items.length ? items.map((r, i) => `<tr>${idTd(i, r.serie)}<td>${esc(r.fecha || '')}</td><td>${esc(r.serie || '')}</td><td>${esc(r.usuario || '')}</td>
       <td>${r.app === 'A' ? '📱 Móvil' : '💻 Web'}</td><td>${esc(r.plan || '')}</td><td>${esc(r.vence || '')}</td>
       <td class="amount">${r.precio_usd ?? ''}</td><td class="amount">${money(r.precio_cup || 0).replace(' CUP', '')}</td></tr>`).join('')
-      : '<tr><td colspan="8" class="small-note">Aún no se ha emitido ninguna licencia.</td></tr>';
+      : '<tr><td colspan="9" class="small-note">Aún no se ha emitido ninguna licencia.</td></tr>';
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -593,9 +610,9 @@ function renderControls() {
   const rows = state.controls.filter(c => `${c.product_name} ${c.code} ${c.product_code}`.toLowerCase().includes(q) && (!sf || c.status === sf));
   content.innerHTML = `
     ${heading('Verificación', 'Controles de IPV', 'Cada control es una instantánea vinculada a una versión específica de ficha. La validación compara totales y líneas.', '')}
-    <div class="toolbar">${searchBox()}<select class="filter-select" id="control-status"><option value="">Todos los estados</option><option value="Pendiente" ${sf === 'Pendiente' ? 'selected' : ''}>Pendiente</option><option value="Validado" ${sf === 'Validado' ? 'selected' : ''}>Validado</option><option value="Con diferencias" ${sf === 'Con diferencias' ? 'selected' : ''}>Con diferencias</option></select><button class="secondary-btn" data-action="export-controls">⤓ Exportar CSV</button></div>
+    <div class="toolbar">${searchBox()}<select class="filter-select" id="control-status"><option value="">Todos los estados</option><option value="Pendiente" ${sf === 'Pendiente' ? 'selected' : ''}>Pendiente</option><option value="Validado" ${sf === 'Validado' ? 'selected' : ''}>Validado</option><option value="Con diferencias" ${sf === 'Con diferencias' ? 'selected' : ''}>Con diferencias</option></select><button class="secondary-btn" data-action="export-controls">⤓ Exportar CSV</button>${countPill(rows.length, state.controls.length, 'controles')}</div>
     <section class="panel table-panel">${rows.length
-      ? `<div class="table-wrap"><table><thead><tr><th>Control</th><th>Producto</th><th>Período</th><th>Ficha</th><th>Total</th><th>Estado</th><th></th></tr></thead><tbody>${rows.map(c => `<tr><td><b style="color:var(--text);font-size:12px">${esc(c.code)}</b></td><td>${prodCell(c.product_name, c.product_code, c.category)}</td><td>${esc(c.period)}</td><td>v${c.ficha_version}</td><td class="amount">${money(c.snapshot_total)}</td><td>${stPill(c.status)}</td><td><button class="text-btn" data-action="view-control" data-id="${c.id}">Abrir ↗</button></td></tr>`).join('')}</tbody></table></div>`
+      ? `<div class="table-wrap"><table><thead><tr>${idTh()}<th>Control</th><th>Producto</th><th>Período</th><th>Ficha</th><th>Total</th><th>Estado</th><th></th></tr></thead><tbody>${rows.map((c, i) => `<tr>${idTd(i, c.id)}<td><b style="color:var(--text);font-size:12px">${esc(c.code)}</b></td><td>${prodCell(c.product_name, c.product_code, c.category)}</td><td>${esc(c.period)}</td><td>v${c.ficha_version}</td><td class="amount">${money(c.snapshot_total)}</td><td>${stPill(c.status)}</td><td><button class="text-btn" data-action="view-control" data-id="${c.id}">Abrir ↗</button></td></tr>`).join('')}</tbody></table></div>`
       : `<div class="empty-state"><div class="empty-icon">✓</div><b>${q || sf ? 'Sin resultados' : 'No hay controles'}</b><p>${q || sf ? 'Ajusta los filtros.' : 'Genera un control desde una ficha aprobada.'}</p></div>`}</section>`;
   $('#table-search')?.addEventListener('input', e => { state.search = e.target.value; renderControls(); });
   $('#control-status')?.addEventListener('change', () => renderControls());
@@ -723,8 +740,8 @@ async function openMaterialDetail(id) {
   try {
     const m = await api(`/api/materials/${id}`);
     const used = m.used_by.length
-      ? `<div class="table-wrap"><table><thead><tr><th>Se usa en</th><th>Por unidad</th><th>Con el inventario</th><th>Ficha</th></tr></thead><tbody>
-        ${m.used_by.map(u => `<tr><td>${prodCell(u.product_name, u.product_code, u.category)}</td><td>${esc(u.per_serving)} ${esc(m.unit)}</td><td>${u.servings === null ? '—' : `<span class="yield-badge green">≈ ${dec(u.servings)} ${esc(u.yield_unit || 'unidad')}</span>`}</td><td>${stPill(u.ficha_status)}</td></tr>`).join('')}
+      ? `<div class="table-wrap"><table><thead><tr>${idTh()}<th>Se usa en</th><th>Por unidad</th><th>Con el inventario</th><th>Ficha</th></tr></thead><tbody>
+        ${m.used_by.map((u, i) => `<tr>${idTd(i, u.ficha_id)}<td>${prodCell(u.product_name, u.product_code, u.category)}</td><td>${esc(u.per_serving)} ${esc(m.unit)}</td><td>${u.servings === null ? '—' : `<span class="yield-badge green">≈ ${dec(u.servings)} ${esc(u.yield_unit || 'unidad')}</span>`}</td><td>${stPill(u.ficha_status)}</td></tr>`).join('')}
         </tbody></table></div>`
       : '<div class="empty-state"><div class="empty-icon">▤</div><b>Sin recetas que lo usen</b><p>Este valor todavía no aparece en ninguna ficha de costo.</p></div>';
     showModal(`Valor del IPV · ${m.name}`, `${m.code} · ${m.category || 'Insumos'}`, `
@@ -748,8 +765,8 @@ async function openProductDetail(id) {
   try {
     const p = await api(`/api/products/${id}`);
     const fichas = p.fichas.length
-      ? `<div class="table-wrap"><table><thead><tr><th>Versión</th><th>Rinde</th><th>Costo lote</th><th>Por unidad</th><th>Estado</th><th></th></tr></thead><tbody>
-        ${p.fichas.map(f => `<tr><td>v${f.version}</td><td>${yieldBadge(f.yield_qty, f.yield_unit)}</td><td class="amount">${money(f.total_cost)}</td><td class="amount">${money(f.cost_per_serving || '0')}</td><td>${stPill(f.status)}</td><td><button class="text-btn" data-action="view-ficha" data-id="${f.id}">Abrir ↗</button></td></tr>`).join('')}
+      ? `<div class="table-wrap"><table><thead><tr>${idTh()}<th>Versión</th><th>Rinde</th><th>Costo lote</th><th>Por unidad</th><th>Estado</th><th></th></tr></thead><tbody>
+        ${p.fichas.map((f, i) => `<tr>${idTd(i, f.id)}<td>v${f.version}</td><td>${yieldBadge(f.yield_qty, f.yield_unit)}</td><td class="amount">${money(f.total_cost)}</td><td class="amount">${money(f.cost_per_serving || '0')}</td><td>${stPill(f.status)}</td><td><button class="text-btn" data-action="view-ficha" data-id="${f.id}">Abrir ↗</button></td></tr>`).join('')}
         </tbody></table></div>`
       : '<div class="empty-state"><div class="empty-icon">▤</div><b>Sin fichas de costo</b><p>Cree la primera ficha para este producto.</p></div>';
     showModal(`Producto · ${p.name}`, `${p.code} · ${p.category}`, `
@@ -803,7 +820,7 @@ function openFichaModal(ficha = null, presetProductId = null) {
     $('#line-list').innerHTML = lines.map((l, i) => {
       const s = (parseFloat(l.quantity) || 0) * (parseFloat(l.unitCost) || 0);
       t += s;
-      return `<div class="line-chip"><span>${esc(l.description)} · ${dec(l.quantity)} ${esc(l.unit)}</span><b>${money(s)}</b><button type="button" class="remove-line" data-idx="${i}" aria-label="Quitar">×</button></div>`;
+      return `<div class="line-chip"><span class="line-num" title="Número de orden del componente">${i + 1}</span><span class="line-text">${esc(l.description)} · ${dec(l.quantity)} ${esc(l.unit)}</span><b>${money(s)}</b><button type="button" class="remove-line" data-idx="${i}" aria-label="Quitar">×</button></div>`;
     }).join('');
     $('#line-total').textContent = `Total del lote: ${money(t.toFixed(2))}`;
     $$('.remove-line', $('#line-list')).forEach(b => b.addEventListener('click', () => { lines.splice(+b.dataset.idx, 1); renderLines(); }));
@@ -859,7 +876,7 @@ function openFichaModal(ficha = null, presetProductId = null) {
 async function openFichaDetail(id) {
   try {
     const f = await api(`/api/fichas/${id}`);
-    const lines = f.items.map(i => `<tr><td>${esc(i.description)}${i.material_code ? `<br><small style="color:var(--text-4)">${esc(i.material_code)}</small>` : ''}</td><td>${dec(i.quantity)} ${esc(i.unit)}</td><td>${i.per_serving ? `<span class="used-chip">${esc(i.per_serving)} ${esc(i.unit)} / ${esc(f.yield_unit)}</span>` : '—'}</td><td class="amount">${money(i.unit_cost)}</td><td class="amount">${money(i.subtotal)}</td></tr>`).join('');
+    const lines = f.items.map((i, n) => `<tr>${idTd(n, i.material_id)}<td>${esc(i.description)}${i.material_code ? `<br><small style="color:var(--text-4)">${esc(i.material_code)}</small>` : ''}</td><td>${dec(i.quantity)} ${esc(i.unit)}</td><td>${i.per_serving ? `<span class="used-chip">${esc(i.per_serving)} ${esc(i.unit)} / ${esc(f.yield_unit)}</span>` : '—'}</td><td class="amount">${money(i.unit_cost)}</td><td class="amount">${money(i.subtotal)}</td></tr>`).join('');
     const srv = f.servings_from_stock;
     const srvBox = `<div class="detail-box"><span>Con el inventario actual</span><b style="color:${srv === 0 ? 'var(--red)' : 'var(--green)'}">${srv === null || srv === undefined ? '—' : `≈ ${dec(srv)} ${esc(f.yield_unit || '')}`}</b>${f.limited_by ? `<small style="color:var(--text-4)">limitado por ${esc(f.limited_by)}</small>` : ''}</div>`;
     const shortages = (f.shortages || []).length
@@ -875,7 +892,7 @@ async function openFichaDetail(id) {
         <div class="detail-box"><span>Costo por ${esc((f.yield_unit || 'unidad').replace(/s$/, ''))}</span><b>${money(f.cost_per_serving)}</b></div>
         ${srvBox}
       </div>${shortages}
-      <div class="table-wrap"><table style="min-width:640px"><thead><tr><th>Componente</th><th>Lote</th><th>Por ${esc((f.yield_unit || 'unidad').replace(/s$/, ''))}</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${lines}</tbody></table></div>
+      <div class="table-wrap"><table style="min-width:700px"><thead><tr>${idTh()}<th>Componente</th><th>Lote</th><th>Por ${esc((f.yield_unit || 'unidad').replace(/s$/, ''))}</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${lines}</tbody></table></div>
       ${f.observations ? `<div class="small-note">${esc(f.observations)}</div>` : ''}
       <div class="modal-actions">
         <button class="secondary-btn" data-action="close-modal">Cerrar</button>
@@ -893,9 +910,9 @@ async function openGenerateControl(id) {
 async function openControlDetail(id) {
   try {
     const c = await api(`/api/controls/${id}`);
-    const lines = c.items.map(i => `<tr><td>${esc(i.description)}</td><td>${dec(i.quantity)} ${esc(i.unit)}</td><td class="amount">${money(i.unit_cost)}</td><td class="amount">${money(i.subtotal)}</td></tr>`).join('');
+    const lines = c.items.map((i, n) => `<tr>${idTd(n)}<td>${esc(i.description)}</td><td>${dec(i.quantity)} ${esc(i.unit)}</td><td class="amount">${money(i.unit_cost)}</td><td class="amount">${money(i.subtotal)}</td></tr>`).join('');
     const msgs = (c.validation_messages || []).map(m => `<div class="small-note" style="margin-top:8px;color:${m.type === 'error' ? 'var(--red)' : m.type === 'success' ? 'var(--green)' : 'var(--text-3)'}">${m.type === 'error' ? '⚠ ' : m.type === 'success' ? '✓ ' : '• '}${esc(m.text)}</div>`).join('');
-    showModal(`Control IPV · ${c.code}`, `${c.product_code} · ${c.product_name}`, `<div class="detail-grid"><div class="detail-box"><span>Producto / ficha</span><b>${esc(c.product_name)} · v${c.ficha_version}</b></div><div class="detail-box"><span>Período / estado</span><b>${esc(c.period)} · ${esc(c.status)}</b></div><div class="detail-box"><span>Total del lote</span><b>${money(c.snapshot_total)}</b></div><div class="detail-box"><span>Costo por ${esc((c.yield_unit || 'unidad').replace(/s$/, ''))}</span><b>${money(c.cost_per_serving)}</b></div><div class="detail-box"><span>Verificado</span><b>${c.checked_at ? money(c.checked_total) : 'Sin validar'}</b></div></div><div class="table-wrap"><table><thead><tr><th>Componente</th><th>Cantidad</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${lines}</tbody></table></div>${msgs}<div class="modal-actions"><button class="secondary-btn" data-action="close-modal">Cerrar</button><button class="danger-btn" data-action="trash-control" data-id="${c.id}">Mover a la papelera</button>${c.status !== 'Validado' ? `<button class="primary-btn" data-action="validate-control" data-id="${c.id}">Ejecutar validación</button>` : ''}</div>`);
+    showModal(`Control IPV · ${c.code}`, `${c.product_code} · ${c.product_name}`, `<div class="detail-grid"><div class="detail-box"><span>Producto / ficha</span><b>${esc(c.product_name)} · v${c.ficha_version}</b></div><div class="detail-box"><span>Período / estado</span><b>${esc(c.period)} · ${esc(c.status)}</b></div><div class="detail-box"><span>Total del lote</span><b>${money(c.snapshot_total)}</b></div><div class="detail-box"><span>Costo por ${esc((c.yield_unit || 'unidad').replace(/s$/, ''))}</span><b>${money(c.cost_per_serving)}</b></div><div class="detail-box"><span>Verificado</span><b>${c.checked_at ? money(c.checked_total) : 'Sin validar'}</b></div></div><div class="table-wrap"><table><thead><tr>${idTh()}<th>Componente</th><th>Cantidad</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${lines}</tbody></table></div>${msgs}<div class="modal-actions"><button class="secondary-btn" data-action="close-modal">Cerrar</button><button class="danger-btn" data-action="trash-control" data-id="${c.id}">Mover a la papelera</button>${c.status !== 'Validado' ? `<button class="primary-btn" data-action="validate-control" data-id="${c.id}">Ejecutar validación</button>` : ''}</div>`);
   } catch (e) { toast(e.message, 'error'); }
 }
 async function validateControl(id) { try { const c = await api(`/api/controls/${id}/validate`, { method: 'POST', body: '{}' }); await refreshData(true); openControlDetail(c.id); toast(c.status === 'Validado' ? 'Control validado.' : 'Se encontraron observaciones.', c.status === 'Validado' ? 'success' : 'error'); } catch (e) { toast(e.message, 'error'); } }
@@ -903,11 +920,11 @@ async function validateControl(id) { try { const c = await api(`/api/controls/${
 /* ── CSV Export ── */
 function exportCsv(type) {
   let rows = [], fn = 'export.csv';
-  if (type === 'products') { fn = 'productos.csv'; rows = [['Código', 'Nombre', 'Categoría', 'Unidad', 'Rinde', 'Unidad rinde', 'Fichas', 'Estado'], ...state.products.map(p => [p.code, p.name, p.category, p.unit, p.last_yield_qty || p.yield_qty, p.last_yield_unit || p.yield_unit, p.ficha_count, p.active ? 'Activo' : 'Inactivo'])]; }
-  else if (type === 'materials') { fn = 'valores-ipv.csv'; rows = [['Código', 'Nombre', 'Categoría', 'Unidad', 'Precio', 'Moneda', 'Existencias', 'Mínimo', 'Proveedor', 'Fuente', 'Vigencia', 'Estado'], ...state.materials.map(m => [m.code, m.name, m.category, m.unit, m.unit_price, m.currency, m.stock, m.min_stock, m.supplier, m.source, m.effective_from, m.status])]; }
-  else if (type === 'inventory') { const inv = state.inventory || { items: [] }; fn = 'inventario.csv'; rows = [['Código', 'Nombre', 'Categoría', 'Unidad', 'Existencias', 'Mínimo', 'Precio', 'Valor total', 'Recetas'], ...inv.items.map(m => [m.code, m.name, m.category, m.unit, m.stock, m.min_stock, m.unit_price, m.stock_value, m.used_by.map(u => `${u.product_name} (${u.per_serving} ${m.unit}/${u.yield_unit})`).join(' | ')])]; }
-  else if (type === 'fichas') { fn = 'fichas.csv'; rows = [['Producto', 'Código', 'Categoría', 'Versión', 'Vigente', 'Rinde', 'Unidad rinde', 'Total lote', 'Costo por unidad', 'Con inventario', 'Estado'], ...state.fichas.map(f => [f.product_name, f.product_code, f.category, f.version, f.valid_from, f.yield_qty, f.yield_unit, f.total_cost, f.cost_per_serving, f.servings_from_stock ?? '', f.status])]; }
-  else { fn = 'controles.csv'; rows = [['Control', 'Producto', 'Código', 'Período', 'Ficha', 'Total', 'Estado'], ...state.controls.map(c => [c.code, c.product_name, c.product_code, c.period, c.ficha_version, c.snapshot_total, c.status])]; }
+  if (type === 'products') { fn = 'productos.csv'; rows = [['Id', 'Código', 'Nombre', 'Categoría', 'Unidad', 'Rinde', 'Unidad rinde', 'Fichas', 'Estado'], ...state.products.map((p, i) => [i + 1, p.code, p.name, p.category, p.unit, p.last_yield_qty || p.yield_qty, p.last_yield_unit || p.yield_unit, p.ficha_count, p.active ? 'Activo' : 'Inactivo'])]; }
+  else if (type === 'materials') { fn = 'valores-ipv.csv'; rows = [['Id', 'Código', 'Nombre', 'Categoría', 'Unidad', 'Precio', 'Moneda', 'Existencias', 'Mínimo', 'Proveedor', 'Fuente', 'Vigencia', 'Estado'], ...state.materials.map((m, i) => [i + 1, m.code, m.name, m.category, m.unit, m.unit_price, m.currency, m.stock, m.min_stock, m.supplier, m.source, m.effective_from, m.status])]; }
+  else if (type === 'inventory') { const inv = state.inventory || { items: [] }; fn = 'inventario.csv'; rows = [['Id', 'Código', 'Nombre', 'Categoría', 'Unidad', 'Existencias', 'Mínimo', 'Precio', 'Valor total', 'Recetas'], ...inv.items.map((m, i) => [i + 1, m.code, m.name, m.category, m.unit, m.stock, m.min_stock, m.unit_price, m.stock_value, m.used_by.map(u => `${u.product_name} (${u.per_serving} ${m.unit}/${u.yield_unit})`).join(' | ')])]; }
+  else if (type === 'fichas') { fn = 'fichas.csv'; rows = [['Id', 'Producto', 'Código', 'Categoría', 'Versión', 'Vigente', 'Rinde', 'Unidad rinde', 'Total lote', 'Costo por unidad', 'Con inventario', 'Estado'], ...state.fichas.map((f, i) => [i + 1, f.product_name, f.product_code, f.category, f.version, f.valid_from, f.yield_qty, f.yield_unit, f.total_cost, f.cost_per_serving, f.servings_from_stock ?? '', f.status])]; }
+  else { fn = 'controles.csv'; rows = [['Id', 'Control', 'Producto', 'Código', 'Período', 'Ficha', 'Total', 'Estado'], ...state.controls.map((c, i) => [i + 1, c.code, c.product_name, c.product_code, c.period, c.ficha_version, c.snapshot_total, c.status])]; }
   const csv = '\ufeff' + rows.map(r => r.map(c => `"${String(c ?? '').replaceAll('"', '""')}"`).join(';')).join('\r\n');
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })); const a = document.createElement('a'); a.href = url; a.download = fn; a.click(); URL.revokeObjectURL(url); toast('CSV exportado.', 'success');
 }
@@ -1494,6 +1511,7 @@ async function renderStatisticsPanel() {
         <table>
           <thead>
             <tr>
+              ${idTh()}
               <th>Producto</th>
               <th>Código</th>
               <th>Versión</th>
@@ -1501,8 +1519,9 @@ async function renderStatisticsPanel() {
             </tr>
           </thead>
           <tbody>
-            ${(stats.top_expensive || []).map(p => `
+            ${(stats.top_expensive || []).map((p, i) => `
               <tr>
+                ${idTd(i, p.id)}
                 <td>${esc(p.name)}</td>
                 <td><code style="background:var(--surface-3);padding:2px 6px;border-radius:4px;font-size:10px">${esc(p.code)}</code></td>
                 <td>v${p.version}</td>

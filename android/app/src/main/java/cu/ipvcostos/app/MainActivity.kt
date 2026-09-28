@@ -576,9 +576,10 @@ class MainActivity : Activity() {
         if (recentFichas.length() == 0) {
             addText(content, "Aún no hay fichas registradas.", 11f, MUTED, bottom = 8)
         } else {
+            addCount(content, recentFichas.length(), "fichas")
             for (i in 0 until recentFichas.length()) {
                 val f = recentFichas.getJSONObject(i)
-                val row = card(f.optString("product_name", ""), "${f.optString("status", "")} · ${formatAmount(f.optString("total_cost", "0"))} CUP")
+                val row = card(f.optString("product_name", ""), "${f.optString("status", "")} · ${formatAmount(f.optString("total_cost", "0"))} CUP", i + 1)
                 row.setOnClickListener { openFichaDetail(f.optInt("id")) }
             }
         }
@@ -594,10 +595,11 @@ class MainActivity : Activity() {
         if (active.isEmpty()) {
             addText(content, "No hay productos activos en el catálogo.", 11f, MUTED)
         } else {
-            active.forEach { p ->
+            addCount(content, active.size, "productos")
+            active.forEachIndexed { i, p ->
                 val yq = p.optString("last_yield_qty", p.optString("yield_qty", "1"))
                 val yu = p.optString("last_yield_unit", p.optString("yield_unit", "unidad"))
-                val row = card(p.optString("name", ""), "${p.optString("category", "")} · ${p.optString("code", "")} · rinde $yq $yu")
+                val row = card(p.optString("name", ""), "${p.optString("category", "")} · ${p.optString("code", "")} · rinde $yq $yu", i + 1)
                 row.setOnClickListener { openProductDetail(p.optInt("id")) }
             }
         }
@@ -613,13 +615,14 @@ class MainActivity : Activity() {
         if (list.isEmpty()) {
             addText(content, "No hay valores de referencia registrados.", 11f, MUTED)
         } else {
-            list.forEach { m ->
+            addCount(content, list.size, "valores")
+            list.forEachIndexed { i, m ->
                 val low = m.optString("min_stock", "0").toDoubleOrNull() ?: 0.0
                 val stock = m.optString("stock", "0").toDoubleOrNull() ?: 0.0
                 val stockNote = if (low > 0 && stock <= low) "⚠ ${m.optString("stock")} ${m.optString("unit")} (mín. ${m.optString("min_stock")})"
                 else "${m.optString("stock", "0")} ${m.optString("unit")} en almacén"
                 val row = card(m.optString("name", ""),
-                    "${formatAmount(m.optString("unit_price", "0"))} CUP / ${m.optString("unit", "")} · ${m.optString("category", "Insumos")} · $stockNote")
+                    "${formatAmount(m.optString("unit_price", "0"))} CUP / ${m.optString("unit", "")} · ${m.optString("category", "Insumos")} · $stockNote", i + 1)
                 row.setOnClickListener { openMaterialDetail(m.optInt("id")) }
             }
         }
@@ -635,14 +638,15 @@ class MainActivity : Activity() {
         if (list.isEmpty()) {
             addText(content, "No hay fichas de costo registradas.", 11f, MUTED)
         } else {
-            list.forEach { f ->
+            addCount(content, list.size, "fichas")
+            list.forEachIndexed { i, f ->
                 val yq = f.optString("yield_qty", "1")
                 val yu = f.optString("yield_unit", "unidad")
                 val fromStock = f.opt("servings_from_stock")
                 val stockNote = if (fromStock == null || fromStock.toString() == "null") ""
                 else " · inventario ≈ ${f.opt("servings_from_stock")} $yu"
                 val row = card("${f.optString("product_name", "")} · v${f.optInt("version", 0)}",
-                    "${f.optString("status", "")} · rinde $yq $yu · ${formatAmount(f.optString("total_cost", "0"))} CUP$stockNote")
+                    "${f.optString("status", "")} · rinde $yq $yu · ${formatAmount(f.optString("total_cost", "0"))} CUP$stockNote", i + 1)
                 row.setOnClickListener { openFichaDetail(f.optInt("id")) }
             }
         }
@@ -665,14 +669,15 @@ class MainActivity : Activity() {
         if (items.length() == 0) {
             addText(content, "Inventario vacío. Cargue datos de prueba desde la web o registre valores.", 11f, MUTED)
         } else {
-            items.toObjectList().forEach { m ->
+            addCount(content, items.length(), "ítems")
+            items.toObjectList().forEachIndexed { i, m ->
                 val used = m.optJSONArray("used_by") ?: JSONArray()
                 val first = if (used.length() > 0) {
                     val u = used.getJSONObject(0)
                     " · ${u.optString("product_name")} ≈ ${u.opt("servings")} ${u.optString("yield_unit")}"
                 } else ""
                 val row = card(m.optString("name", ""),
-                    "${m.optString("stock")} ${m.optString("unit")} · mín. ${m.optString("min_stock")} · ${formatAmount(m.optString("stock_value", "0"))} CUP$first")
+                    "${m.optString("stock")} ${m.optString("unit")} · mín. ${m.optString("min_stock")} · ${formatAmount(m.optString("stock_value", "0"))} CUP$first", i + 1)
                 row.setOnClickListener { openMaterialDetail(m.optInt("id")) }
             }
         }
@@ -685,10 +690,10 @@ class MainActivity : Activity() {
             addText(content, "La papelera está vacía.", 11f, MUTED)
         } else {
             addButton(content, "Vaciar papelera", false) { emptyTrash() }
-            addSpacer(content, 6)
-            list.forEach { t ->
+            addCount(content, list.size, "elementos")
+            list.forEachIndexed { i, t ->
                 val row = card("${t.optString("kind_label")}: ${t.optString("name")}",
-                    listOf(t.optString("code"), t.optString("detail"), t.optString("deleted_at")).filter { it.isNotBlank() }.joinToString(" · "))
+                    listOf(t.optString("code"), t.optString("detail"), t.optString("deleted_at")).filter { it.isNotBlank() }.joinToString(" · "), i + 1)
                 row.setOnClickListener {
                     AlertDialog.Builder(this)
                         .setTitle(t.optString("name"))
@@ -708,8 +713,9 @@ class MainActivity : Activity() {
         if (list.isEmpty()) {
             addText(content, "No hay controles registrados. Genera uno desde una ficha aprobada.", 11f, MUTED)
         } else {
-            list.forEach { c ->
-                val row = card(c.optString("code", ""), "${c.optString("product_name", "")} · ${c.optString("period", "")} · ${c.optString("status", "")}")
+            addCount(content, list.size, "controles")
+            list.forEachIndexed { i, c ->
+                val row = card(c.optString("code", ""), "${c.optString("product_name", "")} · ${c.optString("period", "")} · ${c.optString("status", "")}", i + 1)
                 row.setOnClickListener { openControlDetail(c.optInt("id")) }
             }
         }
@@ -728,6 +734,11 @@ class MainActivity : Activity() {
         addText(parent, subtitle, 11f, MUTED, false, bottom = 12)
     }
 
+    /** Contador de la lista: «▤ 33 ítems». Así se sabe cuántos hay sin contar a mano. */
+    private fun addCount(parent: LinearLayout, total: Int, label: String) {
+        addText(parent, "▤  $total $label", 10f, MUTED, true, bottom = 8)
+    }
+
     private fun addSpacer(parent: LinearLayout, height: Int) {
         parent.addView(View(this).apply { minimumHeight = dp(height) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(height)))
     }
@@ -737,7 +748,8 @@ class MainActivity : Activity() {
         parent.addView(btn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
     }
 
-    private fun card(title: String, subtitle: String): LinearLayout {
+    /** Tarjeta de un listado. [index] > 0 pinta el Id de orden delante del título (1, 2, 3…). */
+    private fun card(title: String, subtitle: String, index: Int = 0): LinearLayout {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(14), dp(16), dp(14))
@@ -752,7 +764,7 @@ class MainActivity : Activity() {
             background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(LIME_VIVID.toInt(), GREEN_LIGHT))
         }
         row.addView(stripe, LinearLayout.LayoutParams(dp(40), dp(3)).apply { bottomMargin = dp(8) })
-        row.addView(label(title, 14f, INK, true))
+        row.addView(label(if (index > 0) "$index.  $title" else title, 14f, INK, true))
         row.addView(label(subtitle, 10f, MUTED).apply { setPadding(0, dp(4), 0, 0) })
         content.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
         return row
@@ -952,7 +964,7 @@ class MainActivity : Activity() {
         lines.forEachIndexed { index, line ->
             val material = materialsList.find { it.optInt("id") == line.materialId }
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(3), 0, dp(3)) }
-            val info = label("${material?.optString("name") ?: "Insumo"} · ${line.quantity} ${material?.optString("unit") ?: ""}", 10f, MUTED)
+            val info = label("${index + 1}.  ${material?.optString("name") ?: "Insumo"} · ${line.quantity} ${material?.optString("unit") ?: ""}", 10f, MUTED)
             row.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             val remove = TextView(this).apply {
                 text = "Quitar"
@@ -981,9 +993,10 @@ class MainActivity : Activity() {
                         if (srv != null && srv.toString() != "null") append("Con el inventario: ≈ $srv ${ficha.optString("yield_unit")}\n")
                         append("\n")
                         val lines = ficha.optJSONArray("items") ?: JSONArray()
+                        append("Componentes: ${lines.length()}\n")
                         for (i in 0 until lines.length()) {
                             val line = lines.getJSONObject(i)
-                            append("• ${line.optString("description")} — ${line.optString("quantity")} ${line.optString("unit")} = ${formatAmount(line.optString("subtotal"))} CUP\n")
+                            append("${i + 1}. ${line.optString("description")} — ${line.optString("quantity")} ${line.optString("unit")} = ${formatAmount(line.optString("subtotal"))} CUP\n")
                         }
                         if (ficha.optString("observations").isNotBlank()) append("\n${ficha.optString("observations")}")
                     }
@@ -1084,9 +1097,9 @@ class MainActivity : Activity() {
                 runOnUiThread {
                     val used = m.optJSONArray("used_by") ?: JSONArray()
                     val usage = if (used.length() == 0) "Sin recetas que lo usen."
-                    else (0 until used.length()).joinToString("\n") {
+                    else "Se usa en ${used.length()} ficha(s):\n" + (0 until used.length()).joinToString("\n") {
                         val u = used.getJSONObject(it)
-                        "• ${u.optString("product_name")}: ${u.optString("per_serving")} ${m.optString("unit")} por ${u.optString("yield_unit")} · inventario ≈ ${u.opt("servings")} ${u.optString("yield_unit")}"
+                        "${it + 1}. ${u.optString("product_name")}: ${u.optString("per_serving")} ${m.optString("unit")} por ${u.optString("yield_unit")} · inventario ≈ ${u.opt("servings")} ${u.optString("yield_unit")}"
                     }
                     val msg = buildString {
                         append("${m.optString("code")} · ${m.optString("category")}\n")

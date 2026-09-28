@@ -14,6 +14,7 @@ Autor: **Ing. Yosvany Hernández Quintero**
 - **Inventario**: existencias, mínimo, valor en almacén y recetas que usa cada insumo; se ve cuántos comensales o copas se pueden preparar
 - **Rendimiento de fichas**: cada plato indica comensales (o copas/vasos) y el costo por unidad; el inventario calcula cuántas raciones salen
 - **Papelera de reciclaje** en todos los módulos: restaurar o borrar definitivamente
+- **Columna «Id»** al principio de cada tabla y lista (1, 2, 3 …) con el contador de ítems en la barra de herramientas: se sabe al instante cuántos productos, valores, fichas o controles hay
 - **Licencia**: pantalla propia con ID del equipo, planes, WhatsApp y activación/renovación
 - **Creador de Licencias** (web, administradores): crea la clave de firma, activa las licencias al instante y emite, verifica y registra licencias para PC y móvil
 - **Datos de prueba**: catálogo amplio de comidas, licores, bebidas e inventario para aprender
@@ -38,6 +39,7 @@ Autor: **Ing. Yosvany Hernández Quintero**
 
 ### 📱 App Android
 - **Material Design 3** con colores vibrantes
+- **Listas numeradas** igual que la web: cada tarjeta lleva su Id delante y la lista muestra «▤ 33 ítems»
 - **Gradientes animados** y efectos visuales
 - **Estadísticas avanzadas** con gráficos nativos
 - **Haptic feedback** en interacciones
@@ -152,6 +154,19 @@ El servidor y la app Android se activan con una **licencia firmada (ECDSA P-256)
 ### Formato monetario
 
 Todos los importes se muestran como **$ 3,163,138.00 CUP**: símbolo `$` delante, miles separados con coma y decimales con punto (igual en la web y en la app Android).
+
+### Numeración de ítems (columna «Id»)
+
+Todas las tablas empiezan por la columna **Id**, que numera las filas de 1 a N delante del resto de los encabezados
+(*Valor · Categoría · Existencias · Mínimo · Precio · Valor total · Entradas / salidas · Se usa en · Acciones*).
+El último número dice cuántos ítems hay y la barra de herramientas lo repite en un contador —
+**▤ 33 ítems** o **▤ 5 de 33 ítems** cuando hay un filtro o una búsqueda activa.
+
+- Alcance: productos, valores del IPV, inventario, fichas, controles, papelera, fichas recientes del resumen,
+  componentes de una ficha, historial del Creador de Licencias, auditoría, usuarios y vista previa de importación CSV.
+- El `Id` de la fila es su número de orden; al pasar el ratón por encima se muestra el **Id interno** (el de la base de datos).
+- Las **exportaciones CSV** incluyen la columna `Id` como primera columna.
+- La **app Android** numera igual sus tarjetas y muestra el total de cada listado.
 
 ### Comandos de administración
 

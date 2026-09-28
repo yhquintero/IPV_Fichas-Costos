@@ -526,6 +526,59 @@ tbody tr:hover .product-avatar { transform: scale(1.1); }
 .amount { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
 .table-actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
 
+/* ---- Columna «Id»: numeración de filas (1…N) ---- */
+.row-id-h, .row-id { width: 46px; text-align: right; padding-right: 10px; white-space: nowrap; }
+.row-id {
+  color: var(--text-4);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+tbody tr:hover .row-id { color: var(--primary); }
+
+/* Contador de ítems de la barra de herramientas: «33 ítems» / «5 de 33 ítems» */
+.count-pill {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 13px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Id de los listados que no son tablas */
+.trash-index {
+  min-width: 24px;
+  text-align: right;
+  flex: none;
+  color: var(--text-4);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.line-num {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 6px;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  background: var(--surface-3);
+  color: var(--text-3);
+  font-size: 9px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ============ CATEGORIES ============ */
 .category-panel { display: flex; flex-direction: column; }
 .category-list { display: grid; gap: 16px; }
@@ -732,7 +785,7 @@ tbody tr:hover .product-avatar { transform: scale(1.1); }
   transition: all var(--transition);
 }
 .line-chip:hover { border-color: var(--primary-light); }
-.line-chip span:first-child { flex: 1; }
+.line-chip .line-text { flex: 1; }
 .line-chip b { color: var(--primary); }
 .remove-line { border: 0; background: transparent; color: var(--red); font-size: 16px; padding: 0 4px; transition: all var(--transition); }
 .remove-line:hover { transform: scale(1.2); }
