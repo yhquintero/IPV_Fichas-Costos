@@ -824,6 +824,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def send_error(self, code, message=None, explain=None):
+        """Errores del servidor base en JSON y con cabeceras de seguridad.
+
+        La página HTML que genera `BaseHTTPRequestHandler` no lleva CSP,
+        X-Frame-Options ni nosniff, y el escáner la detecta como fallo.
+        """
+        code = int(code)
+        try:
+            short = message or self.responses[code][0]
+        except (KeyError, IndexError, TypeError):
+            short = message or "Error"
+        self.close_connection = True
+        try:
+            self.send_json({"error": str(short), "status": code}, code)
+        except (BrokenPipeError, ConnectionResetError, OSError, ValueError):
+            pass
+
     def body_json(self):
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -1117,7 +1134,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Ruta no permitida."}, 403)
                 return
         if not file_path.is_file():
-            self.send_error(404, "Archivo no encontrado")
+            self.send_json({"error": "Archivo no encontrado."}, 404)
             return
         content_type = {
             ".html": "text/html; charset=utf-8",
