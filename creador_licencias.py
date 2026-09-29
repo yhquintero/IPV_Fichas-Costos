@@ -246,11 +246,12 @@ def install(srv) -> None:
                 return self.send_json(status())
             if path == "/api/keygen/ledger":
                 qs = parse_qs(urlparse(self.path).query)
-                try:
-                    limit = int(qs.get("limit", ["100"])[0])
-                except ValueError:
-                    limit = 100
-                return self.send_json({"items": ledger_rows(limit)})
+                raw_limits = qs.get("limit", ["100"])
+                raw_limit = raw_limits[0]
+                if (len(raw_limits) != 1 or len(raw_limit) > 4 or
+                        not raw_limit.isascii() or not raw_limit.isdigit()):
+                    return _deny(self, "El límite del historial debe ser un entero decimal positivo.", 400)
+                return self.send_json({"items": ledger_rows(int(raw_limit))})
             return _deny(self, "Ruta del Creador de Licencias no encontrada.", 404)
         except srv.APIError as exc:
             return self.send_json({"error": exc.message}, exc.status)

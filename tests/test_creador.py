@@ -189,6 +189,9 @@ class CreadorLicenciasTest(unittest.TestCase):
         self.assertEqual(items["items"][0]["usuario"], "Luis Pérez")
         self.assertEqual((items["items"][0]["plan"], items["items"][0]["desde"], items["items"][0]["hasta"]),
                          ("PX", start.isoformat(), end.isoformat()))
+        bad_limit_status, bad_limit = self.req("GET", "/api/keygen/ledger?limit=..%2F..%2Fetc%2Fpasswd", token=self.token)
+        self.assertEqual(bad_limit_status, 400, bad_limit)
+        self.assertIn("entero decimal", bad_limit["error"])
         # La licencia emitida activa este mismo servidor si el código es el suyo
         self_lic = self.req("POST", "/api/keygen/emit", {"user": "Empresa Propia", "code": self.store.code,
                                                          "plan": "1A", "passphrase": PASS}, token=self.token)[1]
