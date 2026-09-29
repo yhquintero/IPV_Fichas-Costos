@@ -9,6 +9,8 @@ import java.security.MessageDigest
 import java.security.Signature
 import java.security.spec.X509EncodedKeySpec
 import java.text.SimpleDateFormat
+import java.time.LocalDate
+import java.time.ZoneOffset
 import java.util.Base64
 import java.util.Date
 import java.util.Locale
@@ -34,12 +36,16 @@ object LicenseCore {
     val PLANS = linkedMapOf(
         "1S" to Triple("1 Semana", 7, 3), "1M" to Triple("1 Mes", 30, 8), "3M" to Triple("3 Meses", 90, 21),
         "6M" to Triple("6 Meses", 180, 39), "1A" to Triple("1 Año", 365, 70), "2A" to Triple("2 Años", 730, 120),
+        "PX" to Triple("Personalizado (desde–hasta)", 0, 0),
     )
 
-    data class Info(val user: String, val plan: String, val serial: String, val issuedAt: Long, val expiresAt: Long) {
+    data class Info(
+        val user: String, val plan: String, val serial: String, val issuedAt: Long, val expiresAt: Long,
+        val validFrom: Long, val validFromDate: String? = null, val validUntilDate: String? = null
+    ) {
         val planName: String get() = PLANS[plan]?.first ?: plan
         fun daysLeft(nowSec: Long): Long = maxOf(0L, (expiresAt - nowSec) / DAY)
-        fun expiryText(): String = SimpleDateFormat("dd/MM/yyyy", Locale("es")).format(Date(expiresAt * 1000))
+        fun expiryText(): String = validUntilDate ?: SimpleDateFormat("dd/MM/yyyy", Locale("es")).format(Date(expiresAt * 1000))
     }
 
     class LicenseException(message: String) : Exception(message)
@@ -74,7 +80,8 @@ object LicenseCore {
     }
 
     /** Verifica firma, app, dispositivo, fechas y retroceso del reloj. */
-    fun verify(token: String, pubB64: String, body: String, nowSec: Long, lastSeen: Long): Info {
+    fun verify(token: String, pubB64: String, body: String, nowSec: Long, lastSeen: Long,
+               allowNotYetValid: Boolean = false): Info {
         val parts = token.filterNot { it.isWhitespace() }.split(".")
         if (parts.size != 3 || parts[0] != "IPV1") throw LicenseException("La licencia no tiene un formato válido.")
         val raw: ByteArray
@@ -97,11 +104,42 @@ object LicenseCore {
         if (json.optInt("v") != 1 || plan !in PLANS) throw LicenseException("Versión de licencia no admitida.")
         if (json.optString("app") != APP) throw LicenseException("Esta licencia es para IPV Web (PC), no para el móvil.")
         if (json.optString("dev") != body) throw LicenseException("Esta licencia pertenece a otro dispositivo.")
-        val info = Info(json.optString("usr"), plan, json.optString("sn"), json.getLong("iat"), json.getLong("exp"))
+        val issuedAt = json.getLong("iat")
+        val expiresAt = json.getLong("exp")
+        var validFrom = issuedAt
+        var validFromDate: String? = null
+        var validUntilDate: String? = null
+        if (plan == "PX") {
+            try {
+                validFromDate = json.getString("start_date")
+                validUntilDate = json.getString("end_date")
+                val start = LocalDate.parse(validFromDate)
+                val end = LocalDate.parse(validUntilDate)
+                val startEpoch = start.atStartOfDay().toEpochSecond(ZoneOffset.UTC)
+                val endExclusiveEpoch = end.plusDays(1).atStartOfDay().toEpochSecond(ZoneOffset.UTC)
+                val issuedDate = java.time.Instant.ofEpochSecond(issuedAt).atZone(ZoneOffset.UTC).toLocalDate()
+                if (end.isBefore(start) || end.isBefore(issuedDate) || json.getLong("nbf") != startEpoch || expiresAt != endExclusiveEpoch) {
+                    throw LicenseException("El período personalizado firmado no es válido.")
+                }
+                validFrom = startEpoch
+            } catch (e: LicenseException) {
+                throw e
+            } catch (_: Exception) {
+                throw LicenseException("El período personalizado firmado no es válido.")
+            }
+        } else if (json.has("start_date") || json.has("end_date") || json.has("nbf")) {
+            throw LicenseException("Una licencia de plan fijo no puede incluir fechas personalizadas.")
+        }
+        val info = Info(json.optString("usr"), plan, json.optString("sn"), issuedAt, expiresAt,
+            validFrom, validFromDate, validUntilDate)
         if (nowSec + DAY < maxOf(info.issuedAt, lastSeen)) {
             throw LicenseException("La fecha del teléfono es anterior a la última registrada. Corrija la fecha y la hora.")
         }
         if (nowSec >= info.expiresAt) throw LicenseException("La licencia venció el ${info.expiryText()}.")
+        if (nowSec < info.validFrom && !allowNotYetValid) {
+            val startText = info.validFromDate ?: SimpleDateFormat("dd/MM/yyyy", Locale("es")).format(Date(info.validFrom * 1000))
+            throw LicenseException("La licencia todavía no está vigente; comienza el $startText.")
+        }
         return info
     }
 }
@@ -128,9 +166,18 @@ class LicenseManager(context: Context) {
 
     fun isValid(): Boolean = !LicenseCore.enforced || runCatching { current() }.isSuccess
 
+    /** Acepta firmas válidas programadas para una fecha futura, sin conceder acceso antes de su inicio. */
+    fun pending(): LicenseCore.Info? {
+        val token = prefs.getString("token", null) ?: return null
+        val info = runCatching {
+            LicenseCore.verify(token, LicenseCore.PUBLIC_KEY_B64, body, now(), prefs.getLong("last_seen", 0), allowNotYetValid = true)
+        }.getOrNull() ?: return null
+        return info.takeIf { now() < it.validFrom }
+    }
+
     fun activate(token: String): LicenseCore.Info {
         val clean = token.filterNot { it.isWhitespace() }
-        val info = LicenseCore.verify(clean, LicenseCore.PUBLIC_KEY_B64, body, now(), prefs.getLong("last_seen", 0))
+        val info = LicenseCore.verify(clean, LicenseCore.PUBLIC_KEY_B64, body, now(), prefs.getLong("last_seen", 0), allowNotYetValid = true)
         prefs.edit().putString("token", clean).putLong("last_seen", maxOf(now(), prefs.getLong("last_seen", 0))).apply()
         return info
     }

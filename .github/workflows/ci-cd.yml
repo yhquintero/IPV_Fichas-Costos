@@ -19,9 +19,15 @@ jobs:
         python: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - name: Verificar sintaxis JavaScript de la interfaz web
+        run: node --check web/app.js
       - uses: actions/setup-python@v5
         with: { python-version: "${{ matrix.python }}" }
       - run: pip install -r requirements-dev.txt
+      - name: Auditoría de dependencias de desarrollo
+        run: pip-audit -r requirements-dev.txt
       - name: Ruff (errores reales)
         run: ruff check --select E9,F63,F7,F82 .
       - name: Bandit (severidad media/alta)
@@ -36,6 +42,23 @@ jobs:
         run: |
           pip install sqlcipher3-binary
           python -m unittest discover -s tests
+
+  powershell:
+    name: Sintaxis de inicio HTTPS en Windows PowerShell
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Analizar el script sin ejecutarlo
+        shell: powershell
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $PWD 'iniciar-https.ps1'), [ref]$tokens, [ref]$parseErrors
+          )
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | Format-List * | Out-String | Write-Error
+          }
 
   zap:
     name: OWASP ZAP (escaneo dinámico de seguridad)
@@ -113,6 +136,56 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker build --target production -t ipv-fichas-costos:ci .
 
+  browser-e2e:
+    name: Prueba E2E del Creador de Licencias (Chromium)
+    runs-on: ubuntu-latest
+    needs: quality
+    env:
+      IPV_PORT: "8011"
+      IPV_DB_PATH: ${{ github.workspace }}/e2e-data/e2e.db
+      IPV_ADMIN_EMAIL: admin-e2e@ipv.local
+      IPV_ADMIN_PASSWORD: E2E-solo-CI-password-2026
+      IPV_JWT_SECRET: e2e-only-jwt-secret-not-for-production-2026-abcdef0123456789
+      IPV_BACKUP_INTERVAL_HOURS: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Instalar dependencias de servidor y navegador
+        run: |
+          python -m pip install -r requirements.txt
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Crear código sintético para cliente de prueba
+        run: |
+          echo "IPV_E2E_REQUEST_CODE=$(python -c 'import licencia; print(licencia.request_code(licencia.APP_WEB, "browser-e2e-client"))')" >> "$GITHUB_ENV"
+      - name: Arrancar servidor con base temporal y JWT de prueba
+        run: |
+          mkdir -p e2e-data
+          nohup python server.py > e2e-server.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8011/api/health > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat e2e-server.log
+          exit 1
+      - name: Preparar licencia efímera del servidor para pasar el bloqueo inicial
+        run: python tests/e2e/bootstrap.py
+      - name: Ejecutar el flujo completo PX en Chromium
+        run: npm run test:e2e
+      - name: Guardar trazas y capturas si falla
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-e2e-debug-${{ github.sha }}
+          path: |
+            test-results/playwright/
+            e2e-server.log
+          if-no-files-found: ignore
+          retention-days: 7
+
   android:
     name: Compilación Android
     runs-on: ubuntu-latest
@@ -123,4 +196,12 @@ jobs:
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "17" }
       - uses: gradle/actions/setup-gradle@v4
-      - run: gradle assembleDebug --no-daemon
+      - name: Compilar variantes debug y release sin firmar
+        run: gradle assembleDebug assembleRelease --no-daemon
+      - name: Guardar APKs de validación (sin firmar para distribución)
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apks-${{ github.sha }}
+          path: android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 7

@@ -144,24 +144,33 @@ def init_key(passphrase: str, whatsapp: str, force: bool = False) -> dict:
             "patched": changed, **{k: v for k, v in status().items() if k != "rates"}}
 
 
-def emit_license(user: str, code: str, plan: str, passphrase: str) -> dict:
-    """Emite una licencia firmada y la registra en el historial."""
-    app, _body = L.parse_request_code(str(code or ""))          # ValueError si el código no vale
+def emit_license(user: str, code: str, plan: str, passphrase: str,
+                 start_date: str | None = None, end_date: str | None = None,
+                 custom_price_usd: str | int | float | None = None) -> dict:
+    """Emite una licencia firmada; PX usa fechas inclusivas UTC y precio manual."""
+    app, _body = L.parse_request_code(str(code or ""))
     plan = str(plan or "").upper()
     if plan not in L.PLANS:
         raise ValueError(f"Plan desconocido: {plan}. Opciones: {', '.join(L.PLANS)}")
+    if plan == "PX":
+        if not start_date or not end_date or custom_price_usd is None or str(custom_price_usd).strip() == "":
+            raise ValueError("El plan PX requiere Desde, Hasta y precio acordado en USD.")
+    elif start_date is not None or end_date is not None or custom_price_usd is not None:
+        raise ValueError("Las fechas y el precio manual solo se admiten con el plan PX.")
     with _LOCK:
         try:
             d = kg.load_private_key(str(passphrase or ""), kg.KEY_FILE)
         except SystemExit as exc:
             raise ValueError("Aún no existe la clave de firma: cree primero la clave en este panel.") from exc
-        token, reply = kg.emit(d, str(user or ""), str(code or ""), plan)
+        token, reply = kg.emit(d, str(user or ""), str(code or ""), plan,
+                               start_date, end_date, custom_price_usd)
     data = L.decode(token, L.public_from_private(d))
-    usd = kg.price_usd(app, plan)
+    usd = kg.price_usd(app, plan, custom_price_usd)
     cup = round(usd * kg.rates()["USD"], 2)
     return {"ok": True, "license": token, "reply": reply, "user": data["usr"], "plan": plan,
             "plan_name": L.PLANS[plan][0], "app": app, "app_name": L.APP_NAMES[app],
             "serial": data["sn"], "issued_at": data["iat"], "expires_at": data["exp"],
+            "valid_from": data.get("start_date"), "valid_until": data.get("end_date"),
             "price_usd": usd, "price_cup": cup}
 
 
@@ -237,11 +246,12 @@ def install(srv) -> None:
                 return self.send_json(status())
             if path == "/api/keygen/ledger":
                 qs = parse_qs(urlparse(self.path).query)
-                try:
-                    limit = int(qs.get("limit", ["100"])[0])
-                except ValueError:
-                    limit = 100
-                return self.send_json({"items": ledger_rows(limit)})
+                raw_limits = qs.get("limit", ["100"])
+                raw_limit = raw_limits[0]
+                if (len(raw_limits) != 1 or len(raw_limit) > 4 or
+                        not raw_limit.isascii() or not raw_limit.isdigit()):
+                    return _deny(self, "El límite del historial debe ser un entero decimal positivo.", 400)
+                return self.send_json({"items": ledger_rows(int(raw_limit))})
             return _deny(self, "Ruta del Creador de Licencias no encontrada.", 404)
         except srv.APIError as exc:
             return self.send_json({"error": exc.message}, exc.status)
@@ -267,7 +277,9 @@ def install(srv) -> None:
                 return self.send_json(result)
             if path == "/api/keygen/emit":
                 result = emit_license(data.get("user", ""), data.get("code", ""),
-                                      data.get("plan", ""), data.get("passphrase", ""))
+                                      data.get("plan", ""), data.get("passphrase", ""),
+                                      data.get("start_date"), data.get("end_date"),
+                                      data.get("custom_price_usd"))
                 srv.audit_log("LICENSE_ISSUED", f"usuario={result['user']} app={result['app']} "
                               f"plan={result['plan']} serie={result['serial']}", self.client_ip())
                 return self.send_json(result)

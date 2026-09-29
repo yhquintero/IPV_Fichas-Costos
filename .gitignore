@@ -32,3 +32,10 @@ keygen/clave_privada.json
 keygen/registro_licencias.csv
 keygen/tasas.json
 data/licencia.*
+
+# Local Python virtual environments
+.venv/
+venv/
+node_modules/
+test-results/
+playwright-report/

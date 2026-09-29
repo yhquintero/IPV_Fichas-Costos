@@ -38,8 +38,8 @@
   --border-strong: #d4dbd4;
   --text: #1a2723;
   --text-2: #495950;
-  --text-3: #7d8983;
-  --text-4: #9aa49e;
+  --text-3: #626e68; /* contraste >= 4.5:1 sobre superficies claras */
+  --text-4: #66726c; /* texto secundario y etiquetas pequeñas */
 
   /* Sombras y efectos */
   --shadow-sm: 0 2px 8px rgba(24, 59, 52, 0.06);
@@ -73,7 +73,7 @@
   --text: #e8f2ec;
   --text-2: #c3d2c8;
   --text-3: #91a89f;
-  --text-4: #6a7f76;
+  --text-4: #9aaea4; /* contraste >= 4.5:1 sobre superficies oscuras */
   --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.5);
@@ -650,6 +650,19 @@ tbody tr:hover .row-id { color: var(--primary); }
 
 /* ============ EMPTY STATE ============ */
 .empty-state { padding: 48px 20px; text-align: center; color: var(--text-3); font-size: 12px; }
+.setup-checklist { margin: 12px; padding: 20px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface-2, var(--surface)); }
+.setup-checklist-heading { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 16px; }
+.setup-icon { display: grid; place-items: center; flex: 0 0 34px; height: 34px; border-radius: 10px; color: var(--green); background: rgba(16, 185, 129, .12); background: color-mix(in srgb, var(--green) 12%, transparent); }
+.setup-checklist-heading h3 { display: block; margin: 0; color: var(--text); font: 700 15px Manrope,sans-serif; }
+.setup-checklist-heading p { margin: 4px 0 0; color: var(--text-3); font-size: 12px; line-height: 1.5; }
+.setup-checklist ol { display: grid; gap: 10px; margin: 0 0 16px; padding: 0; list-style: none; }
+.setup-step { display: flex; gap: 10px; align-items: center; min-height: 42px; }
+.setup-step-number { display: grid; place-items: center; flex: 0 0 26px; width: 26px; height: 26px; border: 1px solid var(--line); border-radius: 50%; color: var(--text-2); font-size: 12px; }
+.setup-step.is-done .setup-step-number { border-color: var(--green); color: var(--green); }
+.setup-step-copy b { display: block; color: var(--text); font-size: 12px; }
+.setup-step-copy small,.setup-access-note { display: block; margin-top: 3px; color: var(--text-3); font-size: 11px; }
+.setup-checklist > .primary-btn { width: 100%; justify-content: center; }
+.setup-checklist .setup-access-note { margin: 0; text-align: center; }
 .empty-icon {
   width: 52px;
   height: 52px;
@@ -735,6 +748,7 @@ tbody tr:hover .row-id { color: var(--primary); }
 
 /* ============ FORMS ============ */
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+#creator-custom-fields[hidden] { display: none; }
 .form-field { display: flex; flex-direction: column; gap: 7px; margin-bottom: 14px; }
 .form-field.full { grid-column: 1 / -1; }
 .form-field label { color: var(--text-3); font-size: 10px; font-weight: 700; letter-spacing: .2px; text-transform: uppercase; }

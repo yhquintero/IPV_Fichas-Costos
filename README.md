@@ -94,6 +94,10 @@ Autor: **Ing. Yosvany Hernández Quintero**
 |---|---|
 | [Acceso seguro por HTTPS](docs/acceso-seguro-https.md) | **Todos los pasos desde el principio**: CA, certificado, primer inicio, otro equipo de la red, móvil Android, uso diario y solución de problemas |
 | [Plan de mejora continua](docs/plan-mejora-continua.md) | Cómo evolucionan la web y el móvil: ciclo de trabajo, criterios de calidad, métricas, hoja de ruta y cómo pedir una mejora |
+| [Estudio estratégico para competir por el liderazgo](docs/estudio-estrategico-top1.md) | Diagnóstico técnico y de producto, riesgos, prioridades, hoja de ruta de 12 meses y cuadro de mando |
+| [Guía paso a paso para aplicar mejoras](docs/guia-aplicacion-mejoras-paso-a-paso.md) | Secuencia ejecutable, criterios de aceptación y registro para avanzar una mejora por vez |
+| [Validación de producto y piloto](docs/validacion-producto-y-piloto.md) | Hipótesis provisionales, entrevistas, usabilidad, accesibilidad y protocolo de piloto sin inventar resultados |
+| [Decisión sobre multi-sucursal y modo offline](docs/decision-sin-multisucursal-offline.md) | Riesgos, supuestos y condiciones para diseñar esas funciones con seguridad |
 | [Precios y licencias](docs/precios-y-licencias.md) | Planes, precios y uso del Creador de Licencias |
 | [OpenAPI](docs/openapi.yaml) | Contrato de la API REST |
 
@@ -421,7 +425,26 @@ pip install sqlcipher3-binary            # (Windows: sqlcipher3-wheels)
 IPV_DB_KEY="una-clave-de-pruebas-larga" python -m unittest discover -s tests
 ```
 
-La integración continua (`.github/workflows/ci-cd.yml`) ejecuta Ruff, Bandit y las pruebas en Python 3.10–3.12 (también con la BD cifrada), un escaneo **OWASP ZAP** (baseline de la web + API autenticada a partir de OpenAPI), construye la imagen Docker y compila la app Android.
+### Prueba E2E del Creador de Licencias (Chromium)
+
+La CI inicia un servidor aislado con JWT y administrador sintéticos, crea una clave de firma descartable y recorre en Chromium el flujo `PX`: validación de rango invertido, emisión, verificación e historial. Para ejecutarla localmente, inicia primero el servidor en otra terminal con una base temporal y credenciales de prueba; no uses datos reales:
+
+```bash
+npm ci
+npx playwright install chromium
+IPV_PORT=8011 IPV_DB_PATH=/tmp/ipv-e2e.db IPV_ADMIN_EMAIL=admin-e2e@ipv.local IPV_ADMIN_PASSWORD='E2E-solo-CI-password-2026' IPV_JWT_SECRET='e2e-only-jwt-secret-not-for-production-2026-abcdef0123456789' python server.py
+```
+
+En otra terminal, dentro del repositorio (el bootstrap activa una licencia efímera propia para que el modal de licencia no tape el inicio de sesión):
+
+```bash
+export IPV_ADMIN_EMAIL=admin-e2e@ipv.local IPV_ADMIN_PASSWORD='E2E-solo-CI-password-2026'
+export IPV_E2E_REQUEST_CODE="$(python -c 'import licencia; print(licencia.request_code(licencia.APP_WEB, "browser-e2e-client"))')"
+python tests/e2e/bootstrap.py
+npm run test:e2e
+```
+
+La integración continua (`.github/workflows/ci-cd.yml`) ejecuta Ruff, Bandit y las pruebas en Python 3.10–3.12 (también con la BD cifrada), un escaneo **OWASP ZAP** (baseline de la web + API autenticada a partir de OpenAPI), la prueba E2E de Chromium, construye la imagen Docker y compila variantes debug/release de Android. Las claves, la base de datos y las cuentas del E2E son efímeras y solo para pruebas.
 
 ---
 

@@ -134,13 +134,34 @@ class AutoBackupIntegrationTest(unittest.TestCase):
             server.DB_PATH = Path(tmp) / "ipv.db"
             try:
                 server.init_db()
+                with server.connect() as conn:
+                    conn.execute("CREATE TABLE backup_probe (value TEXT NOT NULL)")
+                    conn.execute("INSERT INTO backup_probe(value) VALUES('restauracion-verificada')")
                 with mock.patch.object(offsite, "MIRROR_DIRS", [str(mirror)]), \
                         mock.patch.object(server, "ROOT", Path(tmp)):
                     info = server.auto_backup()
             finally:
                 server.DB_PATH = old_db
             self.assertTrue(info["offsite"][0]["ok"])
-            self.assertTrue((mirror / info["filename"]).exists())
+            backup_path = Path(tmp) / "data" / "backups" / info["filename"]
+            mirrored_path = mirror / info["filename"]
+            self.assertTrue(backup_path.exists())
+            self.assertTrue(mirrored_path.exists())
+            self.assertFalse(backup_path.with_suffix(backup_path.suffix + ".partial").exists())
+            self.assertEqual(backup_path.read_bytes(), mirrored_path.read_bytes())
+            if server.dbcrypt.ENABLED:
+                self.assertFalse(server.dbcrypt.is_plaintext(backup_path), "El backup cifrado quedó en claro")
+            # A backup must be restorable, contain committed data and pass SQLite's integrity check.
+            restored = server.dbcrypt.connect(backup_path)
+            try:
+                self.assertEqual(restored.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+                self.assertEqual(restored.execute("SELECT value FROM backup_probe").fetchone()[0],
+                                 "restauracion-verificada")
+                self.assertIsNotNone(restored.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='products'"
+                ).fetchone())
+            finally:
+                restored.close()
 
 
 if __name__ == "__main__":

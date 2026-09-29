@@ -106,16 +106,30 @@ bus = EventBus()
 # ---------------------------------------------------------------------------
 def sqlite_backup(db_path: Path, target_dir: Path, prefix: str, keep: int) -> dict:
     target_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     target = target_dir / f"{prefix}_{stamp}.db"
-    # Con IPV_DB_KEY la copia queda cifrada con la misma clave
-    src = dbcrypt.connect(db_path)
-    dst = dbcrypt.connect(target)
+    partial = target.with_suffix(target.suffix + ".partial")
+    # Con IPV_DB_KEY la copia queda cifrada con la misma clave. El backup API
+    # captura también las páginas confirmadas que sigan en WAL.
+    src = dst = None
     try:
-        src.backup(dst)  # copia consistente aun con WAL y escrituras concurrentes
-    finally:
+        src = dbcrypt.connect(db_path)
+        dst = dbcrypt.connect(partial)
+        src.backup(dst)
+        integrity = dst.execute("PRAGMA integrity_check").fetchone()
+        if not integrity or str(integrity[0]).lower() != "ok":
+            raise sqlite3.DatabaseError("La verificación de integridad del backup falló.")
         dst.close()
+        dst = None
         src.close()
+        src = None
+        os.replace(partial, target)  # el nombre final solo aparece tras validarse
+    finally:
+        if dst is not None:
+            dst.close()
+        if src is not None:
+            src.close()
+        partial.unlink(missing_ok=True)
     files = sorted(target_dir.glob(f"{prefix}_*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
     for old in files[keep:]:
         old.unlink(missing_ok=True)
