@@ -15,7 +15,7 @@
    ========================================================================== */
 (() => {
   const S = sessionStorage;
-  const K = { access: 'ipv.access', refresh: 'ipv.refresh', user: 'ipv.user' };
+  const K = { access: 'ipv.access', refresh: 'ipv.refresh', user: 'ipv.user', perms: 'ipv.perms' };
   const NOTIF_KEY = 'ipv.notifications';
   const THEME_KEY = 'ipv.theme.custom';
 
@@ -23,9 +23,34 @@
   let pendingLogin = null;
   const Auth = {
     get user() { try { return JSON.parse(S.getItem(K.user) || 'null'); } catch { return null; } },
+    /* Sistema de Seguridad por Usuarios: permisos por módulo (view / edit / costs)
+       recibidos del servidor al iniciar sesión. Sin ellos (servidor en modo abierto)
+       se permite todo, igual que en el API. */
+    permissions() { try { return JSON.parse(S.getItem(K.perms) || 'null'); } catch { return null; } },
+    can(module, perm) {
+      const p = Auth.permissions();
+      if (!p) return true;
+      return !!(p[module] && p[module][perm]);
+    },
     headers() { const t = S.getItem(K.access); return t ? { Authorization: `Bearer ${t}` } : {}; },
-    save(d) { S.setItem(K.access, d.access_token); S.setItem(K.refresh, d.refresh_token); S.setItem(K.user, JSON.stringify(d.user)); renderUserBadge(); connectEvents(); try { document.dispatchEvent(new CustomEvent('ipv:auth')); } catch {} },
+    save(d) {
+      S.setItem(K.access, d.access_token); S.setItem(K.refresh, d.refresh_token); S.setItem(K.user, JSON.stringify(d.user));
+      const permisos = d.permissions || d.user?.permissions;
+      if (permisos) S.setItem(K.perms, JSON.stringify(permisos)); else S.removeItem(K.perms);
+      renderUserBadge(); connectEvents(); try { document.dispatchEvent(new CustomEvent('ipv:auth')); } catch {}
+    },
     clear() { Object.values(K).forEach(k => S.removeItem(k)); renderUserBadge(); try { document.dispatchEvent(new CustomEvent('ipv:auth')); } catch {} },
+    /** Refresca los permisos guardados (los cambia el administrador en caliente). */
+    async reloadPermissions() {
+      if (!Auth.user) { S.removeItem(K.perms); return null; }
+      try {
+        const r = await fetch('/api/auth/me', { headers: Auth.headers() });
+        if (!r.ok) return Auth.permissions();  // sesión caída o sin red: no se pierden los permisos conocidos
+        const me = await r.json();
+        if (me && me.permissions) S.setItem(K.perms, JSON.stringify(me.permissions));
+        return me.permissions || null;
+      } catch { return Auth.permissions(); }
+    },
     async tryRefresh() {
       const rt = S.getItem(K.refresh);
       if (!rt) return false;
@@ -306,6 +331,10 @@
     })).filter(m => m.code && m.name);
   }
   function openImporter(file) {
+    if (!ver('materials', 'edit')) {
+      toast('Su usuario no tiene permiso para importar valores del IPV.', 'error');
+      return;
+    }
     showModal('Importar valores del IPV', 'Arrastre un archivo CSV (separado por ; o ,) con columnas Código, Nombre, Unidad, Precio', `
       <div class="drop-zone" id="drop-zone" tabindex="0"><div class="drop-icon">⇪</div><b>Suelte aquí su archivo CSV</b><span>o haga clic para seleccionarlo · máximo 500 filas</span>
       <input type="file" id="csv-input" accept=".csv,text/csv" hidden></div><div id="csv-preview"></div>`);
@@ -348,7 +377,11 @@
   document.addEventListener('drop', e => {
     if (document.getElementById('drop-zone')) return;
     const f = e.dataTransfer?.files?.[0];
-    if (f && /\.csv$/i.test(f.name)) { e.preventDefault(); openImporter(f); }
+    if (f && /\.csv$/i.test(f.name)) {
+      e.preventDefault();
+      if (!ver('materials', 'edit')) { toast('Su usuario no puede importar valores del IPV (permiso de edición).', 'error'); return; }
+      openImporter(f);
+    }
   });
 
   /* ───────────── Exportar PDF ───────────── */
@@ -367,7 +400,7 @@
         <div class="audit-filters"><input type="search" id="audit-q" placeholder="Buscar en detalles, IP o usuario…" value="${esc(q)}">
         <select id="audit-action"><option value="">Todas las acciones</option>${d.actions.map(a => `<option ${a === action ? 'selected' : ''}>${esc(a)}</option>`).join('')}</select></div>
         <div class="table-wrap"><table><thead><tr>${idTh()}<th>Fecha</th><th>Acción</th><th>Usuario</th><th>IP</th><th>Detalles</th></tr></thead><tbody>
-        ${d.entries.map((e, i) => `<tr>${idTd(i, e.id)}<td>${esc(new Date(e.timestamp).toLocaleString('es'))}</td><td><span class="status ${/FAIL|FORBID|RATE/.test(e.action) ? 'difference' : 'approved'}">${esc(e.action)}</span></td><td>${esc(e.user_email || '—')}</td><td>${esc(e.client)}</td><td>${esc(e.details)}</td></tr>`).join('') || '<tr><td colspan="6">Sin eventos.</td></tr>'}
+        ${d.entries.map((e, i) => `<tr>${idTd(i, e.id)}<td>${esc(new Date(e.timestamp).toLocaleString('es'))}</td><td><span class="status ${/FAIL|FORBID|DENIED|RATE/.test(e.action) ? 'difference' : 'approved'}">${esc(e.action)}</span></td><td>${esc(e.user_email || '—')}</td><td>${esc(e.client)}</td><td>${esc(e.details)}</td></tr>`).join('') || '<tr><td colspan="6">Sin eventos.</td></tr>'}
         </tbody></table></div>`);
       let t;
       document.getElementById('audit-q').oninput = ev => { clearTimeout(t); t = setTimeout(() => openAudit(ev.target.value, document.getElementById('audit-action').value), 400); };
@@ -381,9 +414,24 @@
     let n = 0; if (p.length >= 10) n++; if (p.length >= 14) n++; if (/[a-z]/.test(p) && /[A-Z]/.test(p)) n++; if (/\d/.test(p)) n++; if (/[^\w]/.test(p)) n++;
     return n;
   }
+  /** Lo que este usuario puede hacer en cada apartado, según el administrador. */
+  function permSummary(perms) {
+    if (!perms) return '<p class="muted">El servidor no exige sesión: todos los apartados están disponibles en esta red.</p>';
+    return `<div class="table-wrap"><table class="perm-table"><thead><tr>${idTh()}<th>Módulo</th>
+      <th class="center">Ver</th><th class="center">Editar</th><th class="center">Ver costos</th></tr></thead><tbody>
+      ${Object.entries(MODULES).map(([m, label], i) => `<tr>${idTd(i, m)}<td>${label}</td>
+        ${['view', 'edit', 'costs'].map(k => `<td class="center">${perms[m] && perms[m][k]
+          ? '<span class="status approved">Sí</span>' : '<span class="status pending">No</span>'}</td>`).join('')}</tr>`).join('')}
+      </tbody></table></div>
+      <p class="muted">Los ajusta el administrador en Usuarios → 🔐 Permisos y se aplican al instante,
+      sin cerrar su sesión. Sin «Ver costos» los precios e importes no se descargan a su equipo.</p>`;
+  }
+
   async function openAccountSecurity() {
     if (!Auth.user) { toast('La gestión de cuenta requiere que el servidor tenga JWT activado.', 'error'); return; }
-    let me; try { me = (await api('/api/auth/me')).user; } catch (e) { toast(e.message, 'error'); return; }
+    let meData; try { meData = await api('/api/auth/me'); } catch (e) { toast(e.message, 'error'); return; }
+    const me = meData.user || {};
+    const misPermisos = meData.permissions || me.permissions || null;
     const mfa = Auth.user.mfa;
     showModal('Seguridad de mi cuenta', Auth.user.email, `
       <section class="sec-card ${mfa ? 'ok' : 'warn'}">
@@ -401,7 +449,9 @@
         <div class="pw-meter"><i></i><span>Mínimo 10 caracteres combinando mayúsculas, minúsculas, números y símbolos</span></div>
         <div class="form-actions"><button class="primary-btn" type="submit">Actualizar contraseña</button></div>
       </form>
-      <p class="muted">Al cambiar la contraseña se cierran automáticamente las sesiones abiertas en otros dispositivos. Rol: <b>${esc(me?.role || '')}</b></p>
+      <p class="muted">Al cambiar la contraseña se cierran automáticamente las sesiones abiertas en otros dispositivos. Rol: <b>${esc(ROLE_LABEL[me?.role] || me?.role || '')}</b></p>
+      <h3 class="sec-title">Mis permisos por módulo</h3>
+      ${permSummary(misPermisos)}
       <h3 class="sec-title">Dispositivos con sesión abierta</h3>
       <div id="devices" class="devices" aria-live="polite"><div class="typing-indicator"><span></span><span></span><span></span></div></div>`);
     loadDevices();
@@ -504,17 +554,109 @@
 
   /* ───────────── Gestión de usuarios (admin) ───────────── */
   const ROLE_LABEL = { admin: 'Administrador', editor: 'Editor', viewer: 'Consulta' };
+
+  /* ───────────── Sistema de Seguridad por Usuarios: permisos por módulo ─────────────
+     «Valores del IPV» es una sola entrada con dos pestañas (Valores e Inventario) y un
+     único permiso de módulo. Cada usuario puede ver, editar y/o ver costos por apartado;
+     los cambios se aplican al instante, sin cerrar sesiones. */
+  const MODULES = {
+    materials: 'Valores del IPV e Inventario', products: 'Productos y servicios',
+    fichas: 'Fichas de costo', controls: 'Controles de IPV', trash: 'Papelera de reciclaje',
+  };
+  const PERM_COLS = [['view', 'Ver'], ['edit', 'Editar'], ['costs', 'Ver costos']];
+  const PERM_PRESETS = [
+    ['completo', 'Acceso completo'], ['consulta', 'Solo consulta'],
+    ['almacen', 'Almacén (sin costos)'], ['costos', 'Todo menos costos'],
+  ];
+  function presetPerms(kind) {
+    const mods = Object.keys(MODULES);
+    const make = (view, edit, costs) => Object.fromEntries(mods.map(m => [m, { view, edit, costs }]));
+    if (kind === 'completo') return make(true, true, true);
+    if (kind === 'consulta') return { ...make(true, false, true), materials: { view: true, edit: false, costs: false } };
+    if (kind === 'almacen') return { ...make(false, false, false), materials: { view: true, edit: true, costs: false } };
+    if (kind === 'costos') return make(true, true, false);
+    return null;
+  }
+  function resumenPermisos(perms, role) {
+    if (role === 'admin') return 'acceso completo (administrador)';
+    if (!perms) return 'según su rol';
+    const notas = [];
+    Object.entries(perms).forEach(([m, q]) => {
+      if (!q.view) notas.push(`sin ${MODULES[m] || m}`);
+      else if (!q.edit && !q.costs) notas.push(`${MODULES[m] || m}: solo consulta`);
+      else if (!q.costs) notas.push(`${MODULES[m] || m}: sin costos`);
+      else if (!q.edit) notas.push(`${MODULES[m] || m}: sin edición`);
+    });
+    if (!notas.length) return 'acceso completo';
+    return notas.length > 2 ? `${notas.slice(0, 2).join(' · ')} · +${notas.length - 2}` : notas.join(' · ');
+  }
+
+  async function openPermissions(u) {
+    if (u.role === 'admin') {
+      showModal('Permisos por módulo', `${u.name} · ${u.email}`, `
+        <section class="sec-card ok"><div class="sec-icon">🛡</div>
+        <div><b>Los administradores siempre tienen acceso completo</b>
+        <p>Nadie puede limitar a un administrador: así nunca queda fuera del sistema ni de la
+        gestión de usuarios. Si necesita restringirle los costos o la edición, cámbiele el rol a
+        Editor o Consulta y ajuste ahí sus permisos.</p></div></section>
+        <div class="form-actions"><button class="primary-btn" data-action="close-modal">Entendido</button></div>`);
+      return;
+    }
+    let draft = JSON.parse(JSON.stringify(u.permissions || presetPerms('consulta')));
+    const paint = () => {
+      document.querySelectorAll('.perm-table tr[data-mod]').forEach(tr => {
+        const mod = tr.dataset.mod;
+        tr.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = !!(draft[mod] && draft[mod][cb.dataset.perm]); });
+      });
+    };
+    showModal('Permisos por módulo', `${u.name} · rol ${ROLE_LABEL[u.role] || u.role} — se aplican al instante, sin cerrar sus sesiones`, `
+      <div class="perm-presets">${PERM_PRESETS.map(([k, label]) => `<button class="ghost-btn" data-preset="${k}">${label}</button>`).join('')}
+        <button class="ghost-btn" data-preset="rol" title="Borra los ajustes y deja los permisos de su rol">Restablecer según rol</button></div>
+      <div class="table-wrap"><table class="perm-table"><thead><tr>${idTh()}<th>Módulo</th>${PERM_COLS.map(([, l]) => `<th class="center">${l}</th>`).join('')}</tr></thead>
+      <tbody>${Object.entries(MODULES).map(([mod, label], i) => `
+        <tr data-mod="${mod}">${idTd(i, mod)}<td><b>${label}</b><br><small>${mod === 'materials' ? 'incluye las pestañas Valores e Inventario' : mod}</small></td>
+        ${PERM_COLS.map(([perm]) => `<td class="center"><label class="check-inline"><input type="checkbox" data-perm="${perm}" aria-label="${label}: ${perm}"></label></td>`).join('')}</tr>`).join('')}
+      </tbody></table></div>
+      <p class="muted">«Ver costos» controla precios, importes y valores en dinero: sin ese permiso el
+      servidor no los envía (en la web aparecen como 🔒 y en el API como <code>null</code>). «Editar» y
+      «Ver costos» implican «Ver». Los cambios surten efecto en la siguiente petición del usuario.</p>
+      <div class="form-actions"><button class="primary-btn" id="perm-save">Guardar permisos</button></div>`);
+    paint();
+    document.querySelectorAll('.perm-presets [data-preset]').forEach(b => b.onclick = () => {
+      const preset = presetPerms(b.dataset.preset);
+      draft = preset || JSON.parse(JSON.stringify(u.permissions || presetPerms('consulta')));
+      if (!preset) { savePerms(true); return; }  // «según rol»: borra los ajustes guardados
+      paint();
+    });
+    document.querySelectorAll('.perm-table input[type="checkbox"]').forEach(cb => cb.onchange = () => {
+      const mod = cb.closest('tr').dataset.mod;
+      draft[mod] = draft[mod] || { view: true, edit: false, costs: true };
+      draft[mod][cb.dataset.perm] = cb.checked;
+      if (!draft[mod].view) { draft[mod].edit = false; draft[mod].costs = false; }  // sin acceso no hay nada que editar
+      paint();
+    });
+    async function savePerms(reset = false) {
+      try {
+        const body = reset ? { reset_permissions: true } : { permissions: draft };
+        await api(`/api/users/${u.id}`, { method: 'PUT', body: JSON.stringify(body) });
+        toast(reset ? `Permisos de ${u.name} restablecidos según su rol.` : `Permisos de ${u.name} actualizados.`, 'success');
+        closeModal(); openUsers();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+    document.getElementById('perm-save').onclick = () => savePerms(false);
+  }
   async function openUsers() {
     let users; try { users = await api('/api/users'); } catch (e) { toast(e.message, 'error'); return; }
     showModal('Usuarios y permisos', `${users.length} cuentas · los cambios de rol o estado cierran sus sesiones al instante`, `
       <div class="table-wrap"><table class="users-table"><thead><tr>${idTh()}<th>Usuario</th><th>Rol</th><th>2FA</th><th>Estado</th><th>Último acceso</th><th>Acciones</th></tr></thead><tbody>
       ${users.map((u, i) => `<tr data-id="${u.id}">${idTd(i, u.id)}
-        <td><b>${esc(u.name)}</b><br><small>${esc(u.email)}</small></td>
+        <td><b>${esc(u.name)}</b><br><small>${esc(u.email)}</small><br><small class="perm-resume" title="Permisos por módulo">🔐 ${esc(resumenPermisos(u.permissions, u.role))}</small></td>
         <td><select data-role>${Object.entries(ROLE_LABEL).map(([k, v]) => `<option value="${k}" ${k === u.role ? 'selected' : ''}>${v}</option>`).join('')}</select></td>
         <td>${u.mfa ? '<span class="status approved">Activa</span>' : '<span class="status pending">No</span>'}</td>
         <td>${u.locked ? '<span class="status difference">Bloqueado</span>' : u.active ? '<span class="status validated">Activo</span>' : '<span class="status">Inactivo</span>'}${u.must_change_password ? '<br><span class="status pending">Debe cambiar contraseña</span>' : ''}</td>
         <td><small>${u.last_login ? esc(new Date(u.last_login).toLocaleString('es')) : '—'}</small></td>
         <td class="user-actions">
+          <button class="ghost-btn" data-perm title="Permisos por módulo (ver, editar, ver costos)">🔐</button>
           <button class="ghost-btn" data-op="active" title="${u.active ? 'Desactivar' : 'Activar'}">${u.active ? '⏸' : '▶'}</button>
           ${u.locked ? '<button class="ghost-btn" data-op="unlock" title="Desbloquear">🔓</button>' : ''}
           ${u.mfa ? '<button class="ghost-btn" data-op="reset_mfa" title="Restablecer 2FA">♻</button>' : ''}
@@ -527,6 +669,7 @@
         <label>Nombre<input name="name" required maxlength="120"></label>
         <label>Correo<input name="email" type="email" required maxlength="200"></label>
         <label>Rol<select name="role">${Object.entries(ROLE_LABEL).map(([k, v]) => `<option value="${k}" ${k === 'viewer' ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+        <label>Permisos por módulo<select name="preset"><option value="">Según su rol (recomendado)</option>${PERM_PRESETS.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></label>
         <label>Contraseña inicial<input name="password" type="password" required minlength="10" autocomplete="new-password"></label>
         <label class="check-row"><input type="checkbox" name="must_change_password" checked> Debe cambiarla en su primer acceso (recomendado)</label>
         <div class="form-actions"><button class="ghost-btn" type="button" id="gen-pw">Generar segura</button><button class="primary-btn" type="submit">Crear usuario</button></div>
@@ -537,7 +680,8 @@
       const id = sel.closest('tr').dataset.id;
       if (confirm(`¿Cambiar el rol de ${byId(id).email} a ${ROLE_LABEL[sel.value]}?`)) update(id, { role: sel.value }, 'Rol actualizado.'); else openUsers();
     });
-    document.querySelectorAll('.user-actions button').forEach(b => b.onclick = () => {
+    document.querySelectorAll('.users-table button[data-perm]').forEach(b => b.onclick = () => openPermissions(byId(b.closest('tr').dataset.id)));
+    document.querySelectorAll('.user-actions button[data-op]').forEach(b => b.onclick = () => {
       const id = b.closest('tr').dataset.id, u = byId(id), op = b.dataset.op;
       const ops = {
         active: [{ active: !u.active }, `¿${u.active ? 'Desactivar' : 'Activar'} a ${u.email}?`, 'Estado actualizado.'],
@@ -559,6 +703,9 @@
     f.onsubmit = async e => {
       e.preventDefault();
       const body = { ...Object.fromEntries(new FormData(f)), must_change_password: f.elements.must_change_password.checked };
+      const preset = presetPerms(body.preset || '');
+      delete body.preset;
+      if (preset) body.permissions = preset;
       try { await post('/api/users', body); toast('Usuario creado.', 'success'); openUsers(); }
       catch (ex) { toast(ex.message, 'error'); }
     };
@@ -575,26 +722,29 @@
   }
 
   /* ───────────── Paleta de comandos ───────────── */
-  const go = v => () => { closePalette(); document.querySelector(`.nav-item[data-view="${v}"]`)?.click(); };
+  /* «Inventario» es ahora la segunda pestaña de «Valores del IPV»: setView lo resuelve */
+  const go = v => () => { closePalette(); setView(v); };
+  const ver = (m, q = 'view') => Auth.can(m, q);
   const commands = () => [
     { icon: '◈', label: 'Ir a Resumen', run: go('dashboard') },
-    { icon: '▦', label: 'Ir a Productos y servicios', run: go('products') },
-    { icon: '◇', label: 'Ir a Valores del IPV', run: go('materials') },
-    { icon: '▣', label: 'Ir a Inventario', run: go('inventory') },
-    { icon: '▤', label: 'Ir a Fichas de costo', run: go('fichas') },
-    { icon: '✓', label: 'Ir a Controles de IPV', run: go('controls') },
-    { icon: '🗑', label: 'Ir a Papelera de reciclaje', run: go('trash') },
+    { icon: '▦', label: 'Ir a Productos y servicios', run: go('products'), perm: ['products'] },
+    { icon: '◇', label: 'Ir a Valores del IPV (pestaña Valores)', run: go('materials'), perm: ['materials'] },
+    { icon: '▣', label: 'Ir a Inventario (pestaña de Valores del IPV)', run: go('inventory'), perm: ['materials'] },
+    { icon: '▤', label: 'Ir a Fichas de costo', run: go('fichas'), perm: ['fichas'] },
+    { icon: '✓', label: 'Ir a Controles de IPV', run: go('controls'), perm: ['controls'] },
+    { icon: '🗑', label: 'Ir a Papelera de reciclaje', run: go('trash'), perm: ['trash'] },
     { icon: '🔑', label: 'Ir a Licencia', run: go('license') },
-    { icon: '＋', label: 'Crear valor del IPV (desde cualquier apartado)', run: () => { closePalette(); runAction?.('create-material'); } },
-    { icon: '＋', label: 'Crear producto o servicio', run: () => { closePalette(); runAction?.('create-product'); } },
-    { icon: '＋', label: 'Crear ficha de costo', run: () => { closePalette(); runAction?.('create-ficha'); } },
-    { icon: '🧪', label: 'Cargar datos de prueba (comidas, bebidas e inventario)', run: () => { closePalette(); runAction?.('seed-demo'); } },
+    { icon: '＋', label: 'Crear valor del IPV (desde cualquier apartado)', run: () => { closePalette(); runAction?.('create-material'); }, perm: ['materials', 'edit'] },
+    { icon: '＋', label: 'Crear producto o servicio', run: () => { closePalette(); runAction?.('create-product'); }, perm: ['products', 'edit'] },
+    { icon: '＋', label: 'Crear ficha de costo', run: () => { closePalette(); runAction?.('create-ficha'); }, perm: ['fichas', 'edit'] },
+    { icon: '🧪', label: 'Cargar datos de prueba (comidas, bebidas e inventario)', run: () => { closePalette(); runAction?.('seed-demo'); },
+      show: () => ver('materials', 'edit') && ver('products', 'edit') && ver('fichas', 'edit') },
     { icon: '↻', label: 'Actualizar datos', run: () => { closePalette(); refreshData(); } },
-    { icon: '📊', label: 'Ver estadísticas avanzadas', run: () => { closePalette(); window.showStatisticsModal?.(); } },
-    { icon: '⇪', label: 'Importar valores IPV desde CSV', run: () => { closePalette(); openImporter(); } },
+    { icon: '📊', label: 'Ver estadísticas avanzadas', run: () => { closePalette(); window.showStatisticsModal?.(); }, perm: ['fichas'] },
+    { icon: '⇪', label: 'Importar valores IPV desde CSV', run: () => { closePalette(); openImporter(); }, perm: ['materials', 'edit'] },
     { icon: '⎙', label: 'Exportar vista actual a PDF', run: () => { closePalette(); exportPDF(); } },
-    { icon: '⬇', label: 'Descargar reporte de fichas (CSV)', run: () => { closePalette(); window.exportReport?.('fichas_summary'); } },
-    { icon: '⬇', label: 'Descargar inventario de valores (CSV)', run: () => { closePalette(); window.exportReport?.('materials_inventory'); } },
+    { icon: '⬇', label: 'Descargar reporte de fichas (CSV)', run: () => { closePalette(); window.exportReport?.('fichas_summary'); }, perm: ['fichas'] },
+    { icon: '⬇', label: 'Descargar inventario de valores (CSV)', run: () => { closePalette(); window.exportReport?.('materials_inventory'); }, perm: ['materials'] },
     { icon: '🎨', label: 'Personalizar tema y colores', run: () => { closePalette(); openThemeBuilder(); } },
     { icon: '◐', label: 'Alternar modo oscuro/claro', run: () => { closePalette(); document.getElementById('theme-toggle')?.click(); } },
     { icon: '🔔', label: 'Abrir centro de notificaciones', run: () => { closePalette(); bell.click(); } },
@@ -627,7 +777,8 @@
     let sel = 0, list = [];
     const draw = () => {
       const q = norm(input.value);
-      list = commands().filter(c => q.split(' ').every(w => norm(c.label).includes(w)));
+      list = commands().filter(c => (!c.perm || ver(c.perm[0], c.perm[1] || 'view')) && (!c.show || c.show()))
+        .filter(c => q.split(' ').every(w => norm(c.label).includes(w)));
       sel = Math.min(sel, Math.max(0, list.length - 1));
       ul.innerHTML = list.map((c, i) => `<li role="option" class="${i === sel ? 'active' : ''}" data-i="${i}"><span>${c.icon}</span>${esc(c.label)}</li>`).join('') || '<li class="empty">Sin resultados</li>';
     };

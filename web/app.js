@@ -5,7 +5,7 @@
    ========================================================================== */
 
 const state = {
-  view: 'dashboard', dashboard: null,
+  view: 'dashboard', dashboard: null, matTab: 'valores',
   products: [], materials: [], fichas: [], controls: [],
   trash: [], inventory: null, license: null, categories: { materials: [], products: [] },
   search: '',
@@ -20,7 +20,7 @@ const YIELD_UNITS = ['comensales', 'copas', 'vasos', 'raciones', 'porciones', 't
 
 const views = {
   dashboard: { crumb: 'Resumen' }, products: { crumb: 'Productos y servicios' },
-  materials: { crumb: 'Valores del IPV' }, inventory: { crumb: 'Inventario' },
+  materials: { crumb: 'Valores del IPV' }, inventory: { crumb: 'Valores del IPV · Inventario' },
   fichas: { crumb: 'Fichas de costo' }, controls: { crumb: 'Controles de IPV' },
   trash: { crumb: 'Papelera de reciclaje' }, license: { crumb: 'Licencia' },
   creator: { crumb: 'Creador de Licencias' },
@@ -31,11 +31,74 @@ const viewRenderers = {
   trash: 'renderTrash', license: 'renderLicense', creator: 'renderCreator',
 };
 
+/* ── Sistema de Seguridad por Usuarios ─────────────────────────────────────
+   Cada usuario tiene permisos por módulo (view / edit / costs). Llegan con la
+   sesión desde el servidor y se usan para no dibujar apartados ni botones que
+   ese usuario no puede utilizar; el servidor los vuelve a comprobar y filtra
+   los datos, así que ocultar aquí es comodidad, no la única defensa.
+   Sin sesión (servidor en modo abierto) se permite todo, igual que en el API. */
+const VIEW_MODULE = {
+  products: 'products', materials: 'materials', inventory: 'materials',
+  fichas: 'fichas', controls: 'controls', trash: 'trash',
+};
+const MODULE_LABEL = {
+  materials: 'Valores del IPV', products: 'Productos y servicios', fichas: 'Fichas de costo',
+  controls: 'Controles de IPV', trash: 'Papelera de reciclaje',
+};
+/* Acción de pantalla → (módulo, permiso) que exige. El servidor lo comprueba igual;
+   esto evita mostrar botones que terminarían en un error 403. */
+const ACTION_PERMISSION = {
+  'view-material': ['materials', 'view'], 'create-material': ['materials', 'edit'],
+  'edit-material': ['materials', 'edit'], 'trash-material': ['materials', 'edit'],
+  'stock-plus': ['materials', 'edit'], 'stock-minus': ['materials', 'edit'],
+  'stock-save': ['materials', 'edit'], 'seed-demo': ['materials', 'edit'],
+  'export-materials': ['materials', 'view'], 'export-inventory': ['materials', 'view'],
+  'view-fichas-of-material': ['fichas', 'view'],
+  'view-product': ['products', 'view'], 'create-product': ['products', 'edit'],
+  'edit-product': ['products', 'edit'], 'trash-product': ['products', 'edit'],
+  'export-products': ['products', 'view'],
+  'view-ficha': ['fichas', 'view'], 'create-ficha': ['fichas', 'edit'],
+  'edit-ficha': ['fichas', 'edit'], 'approve-ficha': ['fichas', 'edit'],
+  'trash-ficha': ['fichas', 'edit'], 'export-fichas': ['fichas', 'view'],
+  'create-ficha-for': ['fichas', 'edit'],
+  'view-control': ['controls', 'view'], 'generate-control': ['controls', 'edit'],
+  'validate-control': ['controls', 'edit'], 'trash-control': ['controls', 'edit'],
+  'export-controls': ['controls', 'view'],
+  'restore-trash': ['trash', 'edit'], 'purge-trash': ['trash', 'edit'], 'empty-trash': ['trash', 'edit'],
+};
+function canDo(module, perm) {
+  const a = window.IPVAuth;
+  return a && typeof a.can === 'function' ? a.can(module, perm) : true;
+}
+function canSee(module) { return canDo(module, 'view'); }
+function canEdit(module) { return canDo(module, 'edit'); }
+function canSeeCosts(module = 'materials') { return canDo(module, 'costs'); }
+
+/* Oculta del menú (y de los accesos rápidos) los apartados sin permiso de view,
+   y saca al usuario de una pantalla a la que ya no puede entrar. */
+function applyPermissionNav() {
+  $$('[data-view]').forEach(el => {
+    const modulo = VIEW_MODULE[el.dataset.view];
+    if (!modulo) return;
+    const visible = canSee(modulo);
+    el.style.display = visible ? '' : 'none';
+    el.toggleAttribute('aria-hidden', !visible);
+    el.tabIndex = visible ? 0 : -1;
+  });
+  if (VIEW_MODULE[state.view] && !canSee(VIEW_MODULE[state.view])) setView('dashboard');
+}
+
 /* ── Utilities ── */
 function esc(v = '') { return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 /* Dinero en formato $ 3,163,138.00 CUP: $ delante, miles con coma y decimales con punto. */
 const NUM_FMT = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function money(v) { const n = Number(v || 0); return `$ ${NUM_FMT.format(Number.isFinite(n) ? n : 0)} CUP`; }
+/* Importe o candado: el servidor envía null cuando el usuario no tiene permiso `costs` */
+function moneyOrLock(v, module = 'materials') {
+  if (v !== null && v !== undefined) return money(v);
+  return canSeeCosts(module) ? money(v)
+    : '<span class="lock-pill" title="Su usuario no puede ver precios ni importes">🔒 protegido</span>';
+}
 function dec(v, d = 3) { const n = Number(v || 0); return new Intl.NumberFormat('en-US', { maximumFractionDigits: d }).format(Number.isFinite(n) ? n : 0); }
 function dateLabel(v) { if (!v) return '—'; const d = new Date(v); if (Number.isNaN(d.getTime())) return esc(v); return new Intl.DateTimeFormat('es', { day: '2-digit', month: 'short', year: 'numeric' }).format(d); }
 function currentMonth() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }
@@ -75,7 +138,12 @@ async function api(path, opts = {}, retried = false) {
   if (r.status === 403 && d.password_expired && window.IPVAuth?.forcePasswordChange && !retried) {
     if (await window.IPVAuth.forcePasswordChange()) return api(path, opts, true);
   }
-  if (!r.ok) throw new Error(d.error || `Error ${r.status}`);
+  if (!r.ok) {
+    const err = new Error(d.error || `Error ${r.status}`);
+    err.status = r.status;
+    err.denied = d.permission_denied || '';  // permiso denegado por el Sistema de Seguridad por Usuarios
+    throw err;
+  }
   return d;
 }
 
@@ -87,20 +155,28 @@ function setConn(on, label = '') {
 
 async function refreshData(quiet = false) {
   if (!quiet) setConn(false, 'Actualizando…');
+  /* Un apartado sin permiso devuelve 403: se omite y la carga sigue adelante. */
+  const optional = async (path, fallback) => {
+    try { return await api(path); } catch (e) { if (e.status === 403) return fallback; throw e; }
+  };
   try {
     const [d, p, m, f, c, t, inv, cat] = await Promise.all([
-      api('/api/dashboard'), api('/api/products'), api('/api/materials'), api('/api/fichas'),
-      api('/api/controls'), api('/api/trash'), api('/api/inventory'), api('/api/categories'),
+      api('/api/dashboard'),
+      optional('/api/products', []), optional('/api/materials', []), optional('/api/fichas', []),
+      optional('/api/controls', []), optional('/api/trash', { items: [] }),
+      optional('/api/inventory', null), optional('/api/categories', { materials: [], products: [] }),
     ]);
     Object.assign(state, { dashboard: d, products: p, materials: m, fichas: f, controls: c,
       trash: t.items || [], inventory: inv, categories: cat });
     setConn(true, 'Base de datos conectada');
-    $('#nav-products').textContent = p.filter(x => x.active).length;
-    $('#nav-materials').textContent = m.length;
-    $('#nav-fichas').textContent = f.length;
-    $('#nav-trash').textContent = state.trash.length || '';
-    $('#nav-stock').textContent = `${(inv.totals.materials || 0) - (inv.totals.low_stock || 0)}`;
-    $('#nav-pending-dot').style.display = c.some(x => x.status === 'Pendiente' || x.status === 'Con diferencias') ? 'block' : 'none';
+    const nav = (sel, texto) => { const el = $(sel); if (el) el.textContent = texto; };
+    nav('#nav-products', p.filter(x => x.active).length);
+    nav('#nav-materials', canSee('materials') ? m.length : '🔒');
+    nav('#nav-fichas', f.length);
+    nav('#nav-trash', state.trash.length || '');
+    const dot = $('#nav-pending-dot');
+    if (dot) dot.style.display = c.some(x => x.status === 'Pendiente' || x.status === 'Con diferencias') ? 'block' : 'none';
+    applyPermissionNav();
     render();
   } catch (e) {
     setConn(false, 'No se pudo conectar');
@@ -112,9 +188,17 @@ async function refreshData(quiet = false) {
 /* ── Navigation ── */
 function setView(v) {
   if (!views[v]) return;
+  /* «Inventario» ya no es una entrada aparte: es la segunda pestaña de Valores del IPV */
+  if (v === 'inventory') { state.matTab = 'inventario'; v = 'materials'; }
+  else if (v === 'materials' && state.view !== 'materials') state.matTab = 'valores';
+  if (VIEW_MODULE[v] && !canSee(VIEW_MODULE[v])) {
+    toast(`Su usuario no tiene permiso para abrir «${views[v].crumb}».`, 'error');
+    v = 'dashboard';
+  }
   state.view = v; state.search = '';
   $$('[data-view]').forEach(el => el.classList.toggle('active', el.dataset.view === v));
-  $('#crumb-current').textContent = views[v].crumb;
+  const crumb = $('#crumb-current');
+  if (crumb) crumb.textContent = views[v].crumb;
   $('#sidebar').classList.remove('open'); $('#sidebar-overlay').classList.remove('active');
   render();
 }
@@ -133,6 +217,12 @@ function render() {
 /* ── Helpers ── */
 function heading(eye, title, desc, action = '') { return `<div class="page-heading"><div><div class="eyebrow">${eye}</div><h1>${title}</h1><p>${desc}</p></div>${action ? `<div>${action}</div>` : ''}</div>`; }
 function statCard(label, value, note, icon) { return `<article class="stat-card"><div class="stat-top"><span>${label}</span><span class="stat-icon">${icon}</span></div><div class="stat-value">${value}</div><div class="stat-note">${note}</div></article>`; }
+/* Tarjeta del resumen: sin permiso de acceso al módulo, muestra el candado. */
+function statCardPerm(module, label, value, note, icon) {
+  return canSee(module)
+    ? statCard(label, value, note, icon)
+    : statCard(label, '🔒', '<span style="color:var(--text-4)">Sin permiso de acceso</span>', icon);
+}
 function prodCell(name, code, cat) { return `<div class="product-cell"><div class="product-avatar ${catClass(cat)}">${catIcon(cat)}</div><div><span class="product-title">${esc(name)}</span><span class="product-code">${esc(code || '')}</span></div></div>`; }
 function searchBox(ph = 'Buscar por nombre o código…') { return `<label class="searchbox"><span>⌕</span><input id="table-search" type="search" placeholder="${ph}" value="${esc(state.search)}" autocomplete="off"></label>`; }
 function yieldBadge(qty, unit, tone = '') { return `<span class="yield-badge ${tone}" title="Rendimiento de la ficha">👥 ${esc(dec(qty))} ${esc(unit || '')}</span>`; }
@@ -142,10 +232,14 @@ function stockPill(m) {
 }
 function rowActions(kind, item) {
   const id = item.id;
+  /* Sin permiso de edición del módulo solo queda el detalle (el servidor
+     rechazaría igualmente cualquier cambio) */
+  const modulo = { material: 'materials', product: 'products', ficha: 'fichas', control: 'controls' }[kind] || '';
+  const editar = canEdit(modulo);
   return `<div class="row-actions">
     <button class="icon-btn" data-action="view-${kind}" data-id="${id}" title="Ver detalle" aria-label="Ver detalle">👁</button>
-    <button class="icon-btn" data-action="edit-${kind}" data-id="${id}" title="Editar" aria-label="Editar">✎</button>
-    <button class="icon-btn danger" data-action="trash-${kind}" data-id="${id}" title="Mover a la papelera" aria-label="Eliminar">🗑</button>
+    ${editar ? `<button class="icon-btn" data-action="edit-${kind}" data-id="${id}" title="Editar" aria-label="Editar">✎</button>
+    <button class="icon-btn danger" data-action="trash-${kind}" data-id="${id}" title="Mover a la papelera" aria-label="Eliminar">🗑</button>` : ''}
   </div>`;
 }
 
@@ -168,12 +262,14 @@ function countPill(shown, total, label = 'ítems') {
 /* ── Dashboard ── */
 function renderDashboard() {
   const d = state.dashboard;
-  const cats = d.categories || [];
+  const cats = canSee('products') ? (d.categories || []) : [];
   const max = Math.max(1, ...cats.map(c => Number(c.count)));
-  const catRows = cats.length ? cats.map(c => `<div class="category-row"><span class="category-name">${esc(c.category)}</span><div class="category-track"><div class="category-fill" style="width:${Math.max(8, Number(c.count) / max * 100)}%"></div></div><span class="category-count">${c.count}</span></div>`).join('') : '<div class="empty-state">Sin categorías</div>';
+  const catRows = cats.length ? cats.map(c => `<div class="category-row"><span class="category-name">${esc(c.category)}</span><div class="category-track"><div class="category-fill" style="width:${Math.max(8, Number(c.count) / max * 100)}%"></div></div><span class="category-count">${c.count}</span></div>`).join('')
+    : canSee('products') ? '<div class="empty-state">Sin categorías</div>'
+    : '<div class="empty-state"><div class="empty-icon">🔒</div><b>Catálogo protegido</b><p>Su usuario no tiene permiso para consultar «Productos y servicios».</p></div>';
 
   // Cost chart
-  const costData = d.cost_by_category || [];
+  const costData = (canSee('fichas') && canSeeCosts('fichas')) ? (d.cost_by_category || []) : [];
   const maxCost = Math.max(1, ...costData.map(c => Number(c.total || 0)));
   const chartBars = costData.length ? costData.map((c, i) => {
     const pct = Math.max(4, Number(c.total || 0) / maxCost * 100);
@@ -181,29 +277,33 @@ function renderDashboard() {
     return `<div class="category-row"><span class="category-name">${esc(c.category)}</span><div class="category-track"><div class="category-fill" style="width:${pct}%;background:${colors[i % 4]}"></div></div><span class="category-count">${money(c.total)}</span></div>`;
   }).join('') : '';
 
+  const verCostos = canSeeCosts();
   content.innerHTML = `
-    ${heading('Visión general', 'Control de costos integral', 'Gestión centralizada de productos, valores de referencia del IPV, inventario, fichas de costo y controles de verificación.', '<button class="primary-btn" data-action="create-ficha"><span class="plus">＋</span> Nueva ficha de costo</button>')}
+    ${heading('Visión general', 'Control de costos integral', 'Gestión centralizada de productos, valores de referencia del IPV, inventario, fichas de costo y controles de verificación.', canEdit('fichas') ? '<button class="primary-btn" data-action="create-ficha"><span class="plus">＋</span> Nueva ficha de costo</button>' : '')}
     <div class="stats-grid">
-      ${statCard('Productos activos', d.products, '<span class="positive">Catálogo</span> · productos y servicios', '▦')}
-      ${statCard('Fichas de costo', d.fichas, `<span class="positive">${d.approved_fichas} aprobadas</span> · todas las versiones`, '▤')}
-      ${statCard('Controles pendientes', d.pending_controls, d.pending_controls ? '<span style="color:var(--orange)">Requieren revisión</span>' : '<span class="positive">Todos al día</span>', '◷')}
-      ${statCard('Valores del IPV', d.materials, d.low_stock ? `<span style="color:var(--orange)">${d.low_stock} bajo mínimo</span> · existencias ${money(d.stock_value)}` : `Existencias valoradas en ${money(d.stock_value)}`, '◈')}
+      ${statCardPerm('products', 'Productos activos', d.products, '<span class="positive">Catálogo</span> · productos y servicios', '▦')}
+      ${statCardPerm('fichas', 'Fichas de costo', d.fichas, `<span class="positive">${d.approved_fichas || 0} aprobadas</span> · todas las versiones`, '▤')}
+      ${statCardPerm('controls', 'Controles pendientes', d.pending_controls, d.pending_controls ? '<span style="color:var(--orange)">Requieren revisión</span>' : '<span class="positive">Todos al día</span>', '◷')}
+      ${statCardPerm('materials', 'Valores del IPV', d.materials, !canSee('materials') ? ''
+        : d.low_stock
+          ? `<span style="color:var(--orange)">${d.low_stock} bajo mínimo</span>${verCostos ? ` · existencias ${money(d.stock_value)}` : ' · costos protegidos'}`
+          : (verCostos ? `Existencias valoradas en ${money(d.stock_value)}` : 'Existencias sin importe (costos protegidos)'), '◈')}
     </div>
     <div class="dashboard-grid">
-      <section class="panel">
+      ${canSee('fichas') ? `<section class="panel">
         <div class="panel-heading"><div><h2 class="panel-title">Fichas recientes</h2><p class="panel-subtitle">Últimos documentos modificados</p></div><button class="text-btn" data-view="fichas">Ver todas →</button></div>
         ${d.recent_fichas?.length
-          ? `<div class="table-wrap"><table><thead><tr>${idTh()}<th>Producto</th><th>Rendimiento</th><th>Estado</th><th>Costo total</th><th>Actualización</th><th></th></tr></thead><tbody>${d.recent_fichas.map((f, i) => `<tr>${idTd(i, f.id)}<td>${prodCell(f.product_name, f.product_code, f.category)}</td><td>${yieldBadge(f.yield_qty, f.yield_unit)}</td><td>${stPill(f.status)}</td><td class="amount">${money(f.total_cost)}</td><td>${dateLabel(f.updated_at)}</td><td><button class="text-btn" data-action="view-ficha" data-id="${f.id}">Abrir ↗</button></td></tr>`).join('')}</tbody></table></div>`
-          : '<div class="empty-state"><div class="empty-icon">▤</div><b>Empieza con una ficha</b><p>Crea la primera ficha de costo.</p><button class="primary-btn" data-action="create-ficha">Crear ficha</button></div>'}
-      </section>
+          ? `<div class="table-wrap"><table><thead><tr>${idTh()}<th>Producto</th><th>Rendimiento</th><th>Estado</th><th>Costo total</th><th>Actualización</th><th></th></tr></thead><tbody>${d.recent_fichas.map((f, i) => `<tr>${idTd(i, f.id)}<td>${prodCell(f.product_name, f.product_code, f.category)}</td><td>${yieldBadge(f.yield_qty, f.yield_unit)}</td><td>${stPill(f.status)}</td><td class="amount">${moneyOrLock(f.total_cost, 'fichas')}</td><td>${dateLabel(f.updated_at)}</td><td><button class="text-btn" data-action="view-ficha" data-id="${f.id}">Abrir ↗</button></td></tr>`).join('')}</tbody></table></div>`
+          : `<div class="empty-state"><div class="empty-icon">▤</div><b>Empieza con una ficha</b><p>Crea la primera ficha de costo.</p>${canEdit('fichas') ? '<button class="primary-btn" data-action="create-ficha">Crear ficha</button>' : ''}</div>`}
+      </section>` : lockedDashPanel('Fichas de costo', 'Su usuario no tiene permiso para consultar las fichas de costo.')}
       <section class="panel category-panel">
-        <div class="panel-heading"><div><h2 class="panel-title">Catálogo por categoría</h2><p class="panel-subtitle">Productos y servicios activos</p></div><button class="icon-button" data-view="products" title="Abrir catálogo">↗</button></div>
+        <div class="panel-heading"><div><h2 class="panel-title">${canSee('products') ? 'Catálogo por categoría' : 'Accesos rápidos'}</h2><p class="panel-subtitle">${canSee('products') ? 'Productos y servicios activos' : 'Apartados disponibles para su usuario'}</p></div>${canSee('products') ? '<button class="icon-button" data-view="products" title="Abrir catálogo">↗</button>' : ''}</div>
         <div class="category-list">${catRows}</div>
         ${chartBars ? `<div style="margin-top:20px"><div class="panel-subtitle" style="margin-bottom:10px;font-weight:600;font-size:10px;color:var(--text-3)">DISTRIBUCIÓN DE COSTOS</div><div class="category-list">${chartBars}</div></div>` : ''}
         <div class="quick-grid">
-          <button class="quick-tile" data-action="create-material"><span>◈</span><b>Nuevo valor del IPV</b><small>Desde cualquier pantalla</small></button>
-          <button class="quick-tile" data-view="inventory"><span>▣</span><b>Ver inventario</b><small>${money(d.stock_value)} en existencias</small></button>
-          <button class="quick-tile" data-view="trash"><span>🗑</span><b>Papelera</b><small>${d.trash || 0} elemento(s)</small></button>
+          ${canEdit('materials') ? '<button class="quick-tile" data-action="create-material"><span>◈</span><b>Nuevo valor del IPV</b><small>Desde cualquier pantalla</small></button>' : ''}
+          ${canSee('materials') ? `<button class="quick-tile" data-view="inventory"><span>▣</span><b>Ver inventario</b><small>${verCostos ? `${money(d.stock_value)} en existencias` : 'existencias sin costos'}</small></button>` : ''}
+          ${canSee('trash') ? `<button class="quick-tile" data-view="trash"><span>🗑</span><b>Papelera</b><small>${d.trash || 0} elemento(s)</small></button>` : ''}
         </div>
         <div class="insight-card"><small>CONTROL Y TRAZABILIDAD</small><b>Una historia para cada costo.</b><p>Las fichas aprobadas y los controles conservan la versión exacta utilizada para la revisión.</p></div>
       </section>
@@ -217,7 +317,7 @@ function renderProducts() {
   const cats = [...new Set(state.products.map(p => p.category))].sort();
   const rows = state.products.filter(p => `${p.name} ${p.code} ${p.category}`.toLowerCase().includes(q) && (!cf || p.category === cf));
   content.innerHTML = `
-    ${heading('Catálogo', 'Productos y servicios', 'Organiza los elementos que tendrán una Ficha de Costo asociada. El rendimiento indica cuántos comensales, copas o vasos salen de cada lote.', '<button class="primary-btn" data-action="create-product"><span class="plus">＋</span> Nuevo producto</button>')}
+    ${heading('Catálogo', 'Productos y servicios', 'Organiza los elementos que tendrán una Ficha de Costo asociada. El rendimiento indica cuántos comensales, copas o vasos salen de cada lote.', canEdit('products') ? '<button class="primary-btn" data-action="create-product"><span class="plus">＋</span> Nuevo producto</button>' : '')}
     <div class="toolbar">${searchBox()}<select class="filter-select" id="product-category"><option value="">Todas las categorías</option>${cats.map(c => `<option value="${esc(c)}" ${c === cf ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select><button class="secondary-btn" data-action="export-products">⤓ Exportar CSV</button>${countPill(rows.length, state.products.length, 'productos')}</div>
     <section class="panel table-panel">${rows.length
       ? `<div class="table-wrap"><table style="min-width:980px"><thead><tr>${idTh()}<th>Producto</th><th>Categoría</th><th>Unidad</th><th>Rendimiento</th><th>Fichas</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map((p, i) => {
@@ -229,8 +329,42 @@ function renderProducts() {
   $('#product-category')?.addEventListener('change', e => { state.filters.products.category = e.target.value; renderProducts(); });
 }
 
-/* ── Materials (Valores del IPV) — CRUD completo ── */
-function renderMaterials() {
+/* ── Valores del IPV · entrada única con pestañas Valores e Inventario ──────
+   Antes había dos entradas separadas («Valores del IPV» e «Inventario de
+   valores del IPV»); ahora son una sola con dos pestañas y un único permiso de
+   módulo. El Sistema de Seguridad por Usuarios decide qué se muestra:
+     · view  — abrir la entrada (sin él se oculta del menú y el API responde 403)
+     · edit  — crear, editar, ajustar existencias, papelera y datos de prueba
+     · costs — ver precio unitario, valor en almacén y totales en dinero
+   Los permisos llegan con la sesión y el servidor filtra además los datos:
+   sin `costs` los precios viajan como null, no solo se esconden en pantalla. */
+function permPill(text, title) { return `<span class="perm-pill" title="${esc(title)}">🔒 ${esc(text)}</span>`; }
+
+function lockedPanel(title, message) {
+  return `<section class="panel"><div class="empty-state"><div class="empty-icon">🔒</div>
+    <b>Sin permiso para ver «${esc(title)}»</b><p>${esc(message)}</p>
+    <button class="secondary-btn" data-view="dashboard">← Volver al resumen</button></div></section>`;
+}
+/* Variante para el propio resumen: no ofrece "volver" porque ya se está ahí. */
+function lockedDashPanel(title, message) {
+  return `<section class="panel"><div class="empty-state"><div class="empty-icon">🔒</div>
+    <b>«${esc(title)}» protegido</b><p>${esc(message)}</p></div></section>`;
+}
+
+function materialsTabs() {
+  const inv = state.inventory || { items: [], totals: {} };
+  const total = inv.totals.materials === undefined ? state.materials.length : inv.totals.materials;
+  const low = Number(inv.totals.low_stock || 0);
+  const tab = state.matTab === 'inventario' ? 'inventario' : 'valores';
+  return `<div class="seg-tabs" role="tablist" aria-label="Apartados de Valores del IPV">
+    <button class="seg-tab ${tab === 'valores' ? 'active' : ''}" role="tab" aria-selected="${tab === 'valores'}" data-mat-tab="valores"><span class="seg-icon">◈</span>Valores<span class="seg-count">${state.materials.length}</span></button>
+    <button class="seg-tab ${tab === 'inventario' ? 'active' : ''}" role="tab" aria-selected="${tab === 'inventario'}" data-mat-tab="inventario"><span class="seg-icon">▣</span>Inventario<span class="seg-count">${total}</span>${low ? `<span class="seg-warn" title="${low} valores bajo mínimo">⚠ ${low}</span>` : ''}</button>
+    ${canSeeCosts() ? '' : permPill('Costos protegidos', 'Su usuario consulta existencias y recetas, pero no precios ni importes.')}
+  </div>`;
+}
+
+/* Pestaña «Valores»: referencias con precio, vigencia y estado (CRUD completo) */
+function valuesBody() {
   const q = state.search.toLowerCase();
   const { category, status } = state.filters.materials;
   const cats = [...new Set(state.materials.map(m => m.category || 'Insumos'))].sort();
@@ -240,72 +374,120 @@ function renderMaterials() {
     && (!status || m.status === status));
   const low = state.materials.filter(m => Number(m.min_stock) > 0 && Number(m.stock) <= Number(m.min_stock)).length;
   const totalValue = state.materials.reduce((s, m) => s + Number(m.stock || 0) * Number(m.unit_price || 0), 0);
-  content.innerHTML = `
-    ${heading('Referencias', 'Valores del IPV', 'Insumos, licores, bebidas y servicios con precio unitario, existencias y vigencia. Puede crearlos, editarlos o eliminarlos desde cualquier pantalla.', `
-      <div class="btn-row">
-        <button class="secondary-btn" data-action="seed-demo" title="Cargar más inventarios y fichas de ejemplo">🧪 Datos de prueba</button>
-        <button class="primary-btn" data-action="create-material"><span class="plus">＋</span> Nuevo valor</button>
-      </div>`)}
+  const costos = canSeeCosts(), editar = canEdit('materials'), papelera = canSee('trash');
+  return `
     <div class="inv-grid">
       <div class="inv-card"><small>Valores registrados</small><b>${state.materials.length}</b><span>${cats.length} categorías</span></div>
-      <div class="inv-card"><small>Valor del inventario</small><b>${money(totalValue)}</b><span>existencias × precio</span></div>
+      <div class="inv-card"><small>Valor del inventario</small><b>${costos ? money(totalValue) : '🔒'}</b><span>${costos ? 'existencias × precio' : 'sin permiso para ver costos'}</span></div>
       <div class="inv-card ${low ? 'warn' : ''}"><small>Bajo mínimo</small><b>${low}</b><span>${low ? 'requiere reposición' : 'todo en orden'}</span></div>
-      <div class="inv-card"><small>En la papelera</small><b>${state.trash.filter(t => t.kind === 'materials').length}</b><span><button class="text-btn" data-view="trash">Ver papelera →</button></span></div>
+      <div class="inv-card"><small>En la papelera</small><b>${papelera ? state.trash.filter(t => t.kind === 'materials').length : '🔒'}</b><span>${papelera ? '<button class="text-btn" data-view="trash">Ver papelera →</button>' : 'sin permiso'}</span></div>
     </div>
     <div class="toolbar">${searchBox()}
       <select class="filter-select" id="material-category"><option value="">Todas las categorías</option>${cats.map(c => `<option value="${esc(c)}" ${c === category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
       <select class="filter-select" id="material-status"><option value="">Todos los estados</option><option value="Vigente" ${status === 'Vigente' ? 'selected' : ''}>Vigente</option><option value="Inactivo" ${status === 'Inactivo' ? 'selected' : ''}>Inactivo</option></select>
-      <button class="secondary-btn" data-action="export-materials">⤓ Exportar CSV</button>${countPill(rows.length, state.materials.length, 'valores')}</div>
+      <button class="secondary-btn" data-action="export-materials" title="${costos ? 'Exportar CSV' : 'Exportar CSV sin precios (su usuario no puede verlos)'}">⤓ Exportar CSV</button>${countPill(rows.length, state.materials.length, 'valores')}</div>
     <section class="panel table-panel">${rows.length
-      ? `<div class="table-wrap"><table style="min-width:1140px"><thead><tr>${idTh()}<th>Valor del IPV</th><th>Categoría</th><th>Unidad</th><th>Precio</th><th>Existencias</th><th>Mínimo</th><th>Fuente</th><th>Vigencia</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map((m, i) => `<tr>${idTd(i, m.id)}<td><div class="product-cell"><div class="product-avatar" style="background:var(--orange-glow);color:var(--orange)">◈</div><div><span class="product-title">${esc(m.name)}</span><span class="product-code">${esc(m.code)}</span></div></div></td><td><span class="cat-pill">${esc(m.category || 'Insumos')}</span></td><td>${esc(m.unit)}</td><td class="amount">${money(m.unit_price)}</td><td>${stockPill(m)}</td><td>${dec(m.min_stock)}</td><td class="category-tag">${esc(m.source || m.supplier || '—')}</td><td>${dateLabel(m.effective_from)}</td><td>${stPill(m.status)}</td><td>${rowActions('material', m)}</td></tr>`).join('')}</tbody></table></div>`
-      : `<div class="empty-state"><div class="empty-icon">◈</div><b>${q || category || status ? 'Sin resultados' : 'No hay valores'}</b><p>${q || category || status ? 'Ajusta los filtros.' : 'Registra los insumos de referencia.'}</p><button class="primary-btn" data-action="create-material">Crear el primero</button></div>`}</section>`;
-  $('#table-search')?.addEventListener('input', e => { state.search = e.target.value; renderMaterials(); });
-  $('#material-category')?.addEventListener('change', e => { state.filters.materials.category = e.target.value; renderMaterials(); });
-  $('#material-status')?.addEventListener('change', e => { state.filters.materials.status = e.target.value; renderMaterials(); });
+      ? `<div class="table-wrap"><table style="min-width:${costos ? 1140 : 1040}px"><thead><tr>${idTh()}<th>Valor del IPV</th><th>Categoría</th><th>Unidad</th>${costos ? '<th>Precio</th>' : ''}<th>Existencias</th><th>Mínimo</th><th>Fuente</th><th>Vigencia</th><th>Estado</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map((m, i) => `<tr>${idTd(i, m.id)}<td><div class="product-cell"><div class="product-avatar" style="background:var(--orange-glow);color:var(--orange)">◈</div><div><span class="product-title">${esc(m.name)}</span><span class="product-code">${esc(m.code)}</span></div></div></td><td><span class="cat-pill">${esc(m.category || 'Insumos')}</span></td><td>${esc(m.unit)}</td>${costos ? `<td class="amount">${money(m.unit_price)}</td>` : ''}<td>${stockPill(m)}</td><td>${dec(m.min_stock)}</td><td class="category-tag">${esc(m.source || m.supplier || '—')}</td><td>${dateLabel(m.effective_from)}</td><td>${stPill(m.status)}</td><td>${rowActions('material', m)}</td></tr>`).join('')}</tbody></table></div>`
+      : `<div class="empty-state"><div class="empty-icon">◈</div><b>${q || category || status ? 'Sin resultados' : 'No hay valores'}</b><p>${q || category || status ? 'Ajusta los filtros.' : 'Registra los insumos de referencia.'}</p>${editar ? '<button class="primary-btn" data-action="create-material">Crear el primero</button>' : permPill('Solo consulta', 'Su usuario no puede crear valores del IPV.')}</div>`}</section>`;
 }
 
-/* ── Inventario ── */
-function renderInventory() {
+/* Pestaña «Inventario»: existencias, valor en almacén y recetas que usa cada insumo */
+function inventoryBody() {
   const inv = state.inventory || { items: [], totals: {} };
   const q = state.search.toLowerCase();
   const { category, low } = state.filters.inventory;
   const cats = [...new Set(inv.items.map(m => m.category || 'Insumos'))].sort();
   const rows = inv.items.filter(m => `${m.name} ${m.code} ${m.category}`.toLowerCase().includes(q)
     && (!category || (m.category || 'Insumos') === category) && (!low || m.low_stock));
-  content.innerHTML = `
-    ${heading('Almacén', 'Inventario de valores del IPV', 'Cuánto queda de cada insumo, cuánto vale y para qué recetas se utiliza. Sirve para saber cuántos comensales o copas se pueden preparar.', '<button class="primary-btn" data-action="create-material"><span class="plus">＋</span> Nuevo valor</button>')}
-    <div class="inv-grid">
-      <div class="inv-card"><small>Valores con control</small><b>${inv.totals.materials || 0}</b><span>${inv.totals.categories || 0} categorías</span></div>
-      <div class="inv-card"><small>Valor total del inventario</small><b>${money(inv.totals.stock_value)}</b><span>existencias × precio unitario</span></div>
-      <div class="inv-card ${inv.totals.low_stock ? 'warn' : ''}"><small>Bajo mínimo</small><b>${inv.totals.low_stock || 0}</b><span>${inv.totals.low_stock ? 'necesitan reposición' : 'nada que reponer'}</span></div>
-      <div class="inv-card"><small>En la papelera</small><b>${state.trash.filter(t => t.kind === 'materials').length}</b><span><button class="text-btn" data-view="trash">Recuperar →</button></span></div>
-    </div>
-    <div class="toolbar">${searchBox('Buscar en el inventario…')}
-      <select class="filter-select" id="inv-category"><option value="">Todas las categorías</option>${cats.map(c => `<option value="${esc(c)}" ${c === category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
-      <label class="check-inline"><input type="checkbox" id="inv-low" ${low ? 'checked' : ''}> Solo bajo mínimo</label>
-      <button class="secondary-btn" data-action="export-inventory">⤓ Exportar CSV</button>${countPill(rows.length, inv.items.length, 'ítems')}</div>
-    <section class="panel table-panel">${rows.length
-      ? `<div class="table-wrap"><table style="min-width:1180px"><thead><tr>${idTh()}<th>Valor</th><th>Categoría</th><th>Existencias</th><th>Mínimo</th><th>Precio</th><th>Valor total</th><th>Entradas / salidas</th><th>Se usa en</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map((m, i) => `<tr>${idTd(i, m.id)}
-        <td><div class="product-cell"><div class="product-avatar" style="background:var(--orange-glow);color:var(--orange)">◈</div><div><span class="product-title">${esc(m.name)}</span><span class="product-code">${esc(m.code)}</span></div></div></td>
-        <td><span class="cat-pill">${esc(m.category || 'Insumos')}</span></td>
-        <td>${stockPill(m)}</td><td>${dec(m.min_stock)} ${esc(m.unit)}</td>
-        <td class="amount">${money(m.unit_price)}</td><td class="amount">${money(m.stock_value)}</td>
-        <td><div class="stock-stepper">
+  const costos = canSeeCosts(), editar = canEdit('materials'), papelera = canSee('trash');
+  const stepper = m => editar
+    ? `<div class="stock-stepper">
           <button data-action="stock-minus" data-id="${m.id}" title="Registrar salida">−</button>
           <input type="number" step="0.01" value="${esc(m.stock)}" data-stock-input="${m.id}" aria-label="Existencias de ${esc(m.name)}">
           <button data-action="stock-plus" data-id="${m.id}" title="Registrar entrada">＋</button>
           <button class="icon-btn" data-action="stock-save" data-id="${m.id}" title="Guardar existencias">✓</button>
-        </div></td>
+        </div>`
+    : `<span class="stock-readonly" title="Su usuario no puede mover existencias">${esc(dec(m.stock))} ${esc(m.unit)}</span>`;
+  return `
+    <div class="inv-grid">
+      <div class="inv-card"><small>Valores con control</small><b>${inv.totals.materials || 0}</b><span>${inv.totals.categories || 0} categorías</span></div>
+      <div class="inv-card"><small>Valor total del inventario</small><b>${costos ? money(inv.totals.stock_value) : '🔒'}</b><span>${costos ? 'existencias × precio unitario' : 'sin permiso para ver costos'}</span></div>
+      <div class="inv-card ${inv.totals.low_stock ? 'warn' : ''}"><small>Bajo mínimo</small><b>${inv.totals.low_stock || 0}</b><span>${inv.totals.low_stock ? 'necesitan reposición' : 'nada que reponer'}</span></div>
+      <div class="inv-card"><small>En la papelera</small><b>${papelera ? state.trash.filter(t => t.kind === 'materials').length : '🔒'}</b><span>${papelera ? '<button class="text-btn" data-view="trash">Recuperar →</button>' : 'sin permiso'}</span></div>
+    </div>
+    <div class="toolbar">${searchBox('Buscar en el inventario…')}
+      <select class="filter-select" id="inv-category"><option value="">Todas las categorías</option>${cats.map(c => `<option value="${esc(c)}" ${c === category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+      <label class="check-inline"><input type="checkbox" id="inv-low" ${low ? 'checked' : ''}> Solo bajo mínimo</label>
+      <button class="secondary-btn" data-action="export-inventory" title="${costos ? 'Exportar CSV' : 'Exportar CSV sin precios (su usuario no puede verlos)'}">⤓ Exportar CSV</button>${countPill(rows.length, inv.items.length, 'ítems')}</div>
+    <section class="panel table-panel">${rows.length
+      ? `<div class="table-wrap"><table style="min-width:${costos ? 1180 : 1000}px"><thead><tr>${idTh()}<th>Valor</th><th>Categoría</th><th>Existencias</th><th>Mínimo</th>${costos ? '<th>Precio</th><th>Valor total</th>' : ''}<th>Entradas / salidas</th><th>Se usa en</th><th style="text-align:right">Acciones</th></tr></thead><tbody>${rows.map((m, i) => `<tr>${idTd(i, m.id)}
+        <td><div class="product-cell"><div class="product-avatar" style="background:var(--orange-glow);color:var(--orange)">◈</div><div><span class="product-title">${esc(m.name)}</span><span class="product-code">${esc(m.code)}</span></div></div></td>
+        <td><span class="cat-pill">${esc(m.category || 'Insumos')}</span></td>
+        <td>${stockPill(m)}</td><td>${dec(m.min_stock)} ${esc(m.unit)}</td>
+        ${costos ? `<td class="amount">${money(m.unit_price)}</td><td class="amount">${money(m.stock_value)}</td>` : ''}
+        <td>${stepper(m)}</td>
         <td>${m.used_by.length
           ? `<div class="chips">${m.used_by.slice(0, 3).map(u => `<span class="used-chip" title="${esc(u.product_name)}: ${esc(u.per_serving)} ${esc(m.unit)} por ${esc(u.yield_unit || 'unidad')}">${esc(u.product_name)} <b>${esc(dec(u.servings))}</b></span>`).join('')}${m.used_by.length > 3 ? `<span class="used-chip">+${m.used_by.length - 3}</span>` : ''}</div>`
           : '<span style="color:var(--text-4)">Sin recetas</span>'}</td>
         <td>${rowActions('material', m)}</td></tr>`).join('')}</tbody></table></div>`
-      : `<div class="empty-state"><div class="empty-icon">▣</div><b>${q || category || low ? 'Sin resultados' : 'Inventario vacío'}</b><p>${q || category || low ? 'Ajusta los filtros.' : 'Cargue datos de prueba o registre valores del IPV.'}</p><button class="primary-btn" data-action="seed-demo">🧪 Cargar datos de prueba</button></div>`}</section>`;
-  $('#table-search')?.addEventListener('input', e => { state.search = e.target.value; renderInventory(); });
-  $('#inv-category')?.addEventListener('change', e => { state.filters.inventory.category = e.target.value; renderInventory(); });
-  $('#inv-low')?.addEventListener('change', e => { state.filters.inventory.low = e.target.checked; renderInventory(); });
+      : `<div class="empty-state"><div class="empty-icon">▣</div><b>${q || category || low ? 'Sin resultados' : 'Inventario vacío'}</b><p>${q || category || low ? 'Ajusta los filtros.' : 'Cargue datos de prueba o registre valores del IPV.'}</p>${editar ? '<button class="primary-btn" data-action="seed-demo">🧪 Cargar datos de prueba</button>' : permPill('Solo consulta', 'Su usuario no puede cargar datos ni mover existencias.')}</div>`}</section>`;
+}
+
+function bindValuesTab() {
+  $('#table-search')?.addEventListener('input', e => { state.search = e.target.value; renderMaterialsModule('valores'); });
+  $('#material-category')?.addEventListener('change', e => { state.filters.materials.category = e.target.value; renderMaterialsModule('valores'); });
+  $('#material-status')?.addEventListener('change', e => { state.filters.materials.status = e.target.value; renderMaterialsModule('valores'); });
+}
+
+function bindInventoryTab() {
+  $('#table-search')?.addEventListener('input', e => { state.search = e.target.value; renderMaterialsModule('inventario'); });
+  $('#inv-category')?.addEventListener('change', e => { state.filters.inventory.category = e.target.value; renderMaterialsModule('inventario'); });
+  $('#inv-low')?.addEventListener('change', e => { state.filters.inventory.low = e.target.checked; renderMaterialsModule('inventario'); });
   $$('[data-stock-input]').forEach(inp => inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); saveStock(inp.dataset.stockInput); } }));
 }
+
+function bindMaterialsTabs() {
+  $$('[data-mat-tab]').forEach(b => b.addEventListener('click', () => {
+    if (b.dataset.matTab === state.matTab) return;
+    state.search = '';
+    renderMaterialsModule(b.dataset.matTab);
+  }));
+}
+
+/* Entrada única: la misma pantalla para las pestañas Valores e Inventario */
+function renderMaterialsModule(tab) {
+  state.matTab = tab === 'inventario' ? 'inventario' : 'valores';
+  const inventario = state.matTab === 'inventario';
+  const crumb = $('#crumb-current');
+  if (crumb) crumb.textContent = inventario ? 'Valores del IPV · Inventario' : 'Valores del IPV';
+  $$('[data-view]').forEach(el => el.classList.toggle('active', el.dataset.view === 'materials'));
+  if (!canSee('materials')) {
+    content.innerHTML = lockedPanel('Valores del IPV',
+      'Su usuario no tiene permiso para consultar los valores del IPV ni el inventario. Pida al administrador que se lo conceda en Usuarios → 🔐 Permisos.');
+    return;
+  }
+  const editar = canEdit('materials');
+  const acciones = editar
+    ? (inventario
+      ? '<button class="primary-btn" data-action="create-material"><span class="plus">＋</span> Nuevo valor</button>'
+      : `<div class="btn-row">
+        <button class="secondary-btn" data-action="seed-demo" title="Cargar más inventarios y fichas de ejemplo">🧪 Datos de prueba</button>
+        <button class="primary-btn" data-action="create-material"><span class="plus">＋</span> Nuevo valor</button>
+      </div>`)
+    : permPill('Solo consulta', 'Su usuario puede ver estos datos, pero no crearlos ni modificarlos.');
+  content.innerHTML = `
+    ${heading('Referencias y almacén', 'Valores del IPV', inventario
+      ? 'Cuánto queda de cada insumo, cuánto vale y para qué recetas se utiliza. Sirve para saber cuántos comensales o copas se pueden preparar.'
+      : 'Insumos, licores, bebidas y servicios con precio unitario, existencias y vigencia. Puede crearlos, editarlos o eliminarlos desde cualquier pantalla.',
+      acciones)}
+    ${materialsTabs()}
+    <div id="mat-body">${inventario ? inventoryBody() : valuesBody()}</div>`;
+  bindMaterialsTabs();
+  if (inventario) bindInventoryTab(); else bindValuesTab();
+}
+
+function renderMaterials() { renderMaterialsModule(state.matTab); }
+function renderInventory() { renderMaterialsModule('inventario'); }
 
 /* ── Papelera de reciclaje ── */
 const TRASH_ICON = { products: '▦', materials: '◈', fichas: '▤', controls: '✓' };
@@ -746,17 +928,17 @@ async function openMaterialDetail(id) {
       : '<div class="empty-state"><div class="empty-icon">▤</div><b>Sin recetas que lo usen</b><p>Este valor todavía no aparece en ninguna ficha de costo.</p></div>';
     showModal(`Valor del IPV · ${m.name}`, `${m.code} · ${m.category || 'Insumos'}`, `
       <div class="detail-grid">
-        <div class="detail-box"><span>Precio unitario</span><b>${money(m.unit_price)}</b></div>
+        <div class="detail-box"><span>Precio unitario</span><b>${moneyOrLock(m.unit_price)}</b></div>
         <div class="detail-box"><span>Existencias</span><b style="color:${m.low_stock ? 'var(--red)' : 'var(--text)'}">${dec(m.stock)} ${esc(m.unit)}</b></div>
         <div class="detail-box"><span>Existencia mínima</span><b>${dec(m.min_stock)} ${esc(m.unit)}</b></div>
-        <div class="detail-box"><span>Valor en almacén</span><b>${money(m.stock_value)}</b></div>
+        <div class="detail-box"><span>Valor en almacén</span><b>${moneyOrLock(m.stock_value)}</b></div>
         <div class="detail-box"><span>Proveedor</span><b>${esc(m.supplier || '—')}</b></div>
         <div class="detail-box"><span>Fuente / vigencia</span><b>${esc(m.source || '—')} · ${dateLabel(m.effective_from)}</b></div>
       </div>${used}
       <div class="modal-actions">
         <button class="secondary-btn" data-action="close-modal">Cerrar</button>
-        <button class="secondary-btn" data-action="edit-material" data-id="${m.id}">✎ Editar</button>
-        <button class="primary-btn" data-action="view-fichas-of-material" data-id="${m.id}">Ver fichas</button>
+        ${canEdit('materials') ? `<button class="secondary-btn" data-action="edit-material" data-id="${m.id}">✎ Editar</button>` : ''}
+        ${canSee('fichas') ? `<button class="primary-btn" data-action="view-fichas-of-material" data-id="${m.id}">Ver fichas</button>` : ''}
       </div>`);
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -805,7 +987,7 @@ function openFichaModal(ficha = null, presetProductId = null) {
     <div class="line-builder">
       <div class="line-builder-head"><b>Componentes del lote</b><span id="line-total" class="amount">Total: $ 0.00 CUP</span></div>
       <div class="line-entry">
-        <div class="form-field"><label>Valor del IPV</label><select id="f-mat">${state.materials.map(m => `<option value="${m.id}" data-price="${m.unit_price}" data-unit="${esc(m.unit)}" data-name="${esc(m.name)}">${esc(m.name)} (${esc(m.code)}) — ${money(m.unit_price)}/${esc(m.unit)}</option>`).join('')}</select></div>
+        <div class="form-field"><label>Valor del IPV</label><select id="f-mat">${state.materials.map(m => `<option value="${m.id}" data-price="${m.unit_price ?? ''}" data-unit="${esc(m.unit)}" data-name="${esc(m.name)}">${esc(m.name)} (${esc(m.code)}) — ${m.unit_price === null || m.unit_price === undefined ? '🔒 costos protegidos' : `${money(m.unit_price)}/${esc(m.unit)}`}</option>`).join('')}</select></div>
         <div class="form-field"><label>Cantidad del lote</label><input id="f-qty" type="number" step="0.001" min="0.001" placeholder="0"></div>
         <div class="form-field">&nbsp;<button type="button" class="secondary-btn add-line-btn" id="add-line">＋ Añadir</button></div>
         <div class="form-field">&nbsp;<button type="button" class="secondary-btn add-line-btn" id="new-material" title="Crear un valor del IPV sin salir de esta ficha">＋ Valor</button></div>
@@ -817,12 +999,13 @@ function openFichaModal(ficha = null, presetProductId = null) {
 
   function renderLines() {
     let t = 0;
+    const verCostos = canSeeCosts('materials');  // sin permiso, el total se calcula al guardar
     $('#line-list').innerHTML = lines.map((l, i) => {
       const s = (parseFloat(l.quantity) || 0) * (parseFloat(l.unitCost) || 0);
       t += s;
-      return `<div class="line-chip"><span class="line-num" title="Número de orden del componente">${i + 1}</span><span class="line-text">${esc(l.description)} · ${dec(l.quantity)} ${esc(l.unit)}</span><b>${money(s)}</b><button type="button" class="remove-line" data-idx="${i}" aria-label="Quitar">×</button></div>`;
+      return `<div class="line-chip"><span class="line-num" title="Número de orden del componente">${i + 1}</span><span class="line-text">${esc(l.description)} · ${dec(l.quantity)} ${esc(l.unit)}</span><b>${verCostos ? money(s) : '🔒'}</b><button type="button" class="remove-line" data-idx="${i}" aria-label="Quitar">×</button></div>`;
     }).join('');
-    $('#line-total').textContent = `Total del lote: ${money(t.toFixed(2))}`;
+    $('#line-total').textContent = verCostos ? `Total del lote: ${money(t.toFixed(2))}` : 'Total del lote: 🔒 costos protegidos';
     $$('.remove-line', $('#line-list')).forEach(b => b.addEventListener('click', () => { lines.splice(+b.dataset.idx, 1); renderLines(); }));
     renderYield();
   }
@@ -831,7 +1014,9 @@ function openFichaModal(ficha = null, presetProductId = null) {
     const unit = $('#f-yield-unit').value;
     const total = lines.reduce((s, l) => s + (parseFloat(l.quantity) || 0) * (parseFloat(l.unitCost) || 0), 0);
     $('#yield-preview').innerHTML = lines.length
-      ? `<b>Con ${dec(y)} ${esc(unit)}</b> el costo por ${esc(unit.replace(/s$/, ''))} es <b>${money((total / y).toFixed(2))}</b> · total del lote ${money(total.toFixed(2))}`
+      ? (canSeeCosts('materials')
+        ? `<b>Con ${dec(y)} ${esc(unit)}</b> el costo por ${esc(unit.replace(/s$/, ''))} es <b>${money((total / y).toFixed(2))}</b> · total del lote ${money(total.toFixed(2))}`
+        : `<b>Con ${dec(y)} ${esc(unit)}</b> el costo se calculará al guardar: su usuario no puede ver importes.`)
       : 'Añada componentes para ver el costo por comensal, copa o vaso.';
   }
   renderLines();
@@ -849,7 +1034,7 @@ function openFichaModal(ficha = null, presetProductId = null) {
     add(m) {
       const sel = $('#f-mat');
       if (sel && !sel.querySelector(`option[value="${m.id}"]`)) {
-        sel.insertAdjacentHTML('beforeend', `<option value="${m.id}" data-price="${esc(m.unit_price)}" data-unit="${esc(m.unit)}" data-name="${esc(m.name)}">${esc(m.name)} (${esc(m.code)}) — ${money(m.unit_price)}/${esc(m.unit)}</option>`);
+        sel.insertAdjacentHTML('beforeend', `<option value="${m.id}" data-price="${esc(m.unit_price ?? '')}" data-unit="${esc(m.unit)}" data-name="${esc(m.name)}">${esc(m.name)} (${esc(m.code)}) — ${m.unit_price === null || m.unit_price === undefined ? '🔒 costos protegidos' : `${money(m.unit_price)}/${esc(m.unit)}`}</option>`);
         sel.value = String(m.id);
       }
       $('#f-qty').value = '1';
@@ -919,10 +1104,16 @@ async function validateControl(id) { try { const c = await api(`/api/controls/${
 
 /* ── CSV Export ── */
 function exportCsv(type) {
+  /* Sistema de Seguridad por Usuarios: sin permiso de vista no hay datos que exportar,
+     y sin permiso de costos el CSV sale sin columnas de precio ni importes. */
+  const modulo = { products: 'products', materials: 'materials', inventory: 'materials',
+    fichas: 'fichas', controls: 'controls' }[type];
+  if (modulo && !canSee(modulo)) { toast('Su usuario no tiene permiso para exportar este apartado.', 'error'); return; }
+  const costos = canSeeCosts('materials');
   let rows = [], fn = 'export.csv';
   if (type === 'products') { fn = 'productos.csv'; rows = [['Id', 'Código', 'Nombre', 'Categoría', 'Unidad', 'Rinde', 'Unidad rinde', 'Fichas', 'Estado'], ...state.products.map((p, i) => [i + 1, p.code, p.name, p.category, p.unit, p.last_yield_qty || p.yield_qty, p.last_yield_unit || p.yield_unit, p.ficha_count, p.active ? 'Activo' : 'Inactivo'])]; }
-  else if (type === 'materials') { fn = 'valores-ipv.csv'; rows = [['Id', 'Código', 'Nombre', 'Categoría', 'Unidad', 'Precio', 'Moneda', 'Existencias', 'Mínimo', 'Proveedor', 'Fuente', 'Vigencia', 'Estado'], ...state.materials.map((m, i) => [i + 1, m.code, m.name, m.category, m.unit, m.unit_price, m.currency, m.stock, m.min_stock, m.supplier, m.source, m.effective_from, m.status])]; }
-  else if (type === 'inventory') { const inv = state.inventory || { items: [] }; fn = 'inventario.csv'; rows = [['Id', 'Código', 'Nombre', 'Categoría', 'Unidad', 'Existencias', 'Mínimo', 'Precio', 'Valor total', 'Recetas'], ...inv.items.map((m, i) => [i + 1, m.code, m.name, m.category, m.unit, m.stock, m.min_stock, m.unit_price, m.stock_value, m.used_by.map(u => `${u.product_name} (${u.per_serving} ${m.unit}/${u.yield_unit})`).join(' | ')])]; }
+  else if (type === 'materials') { fn = 'valores-ipv.csv'; rows = [['Id', 'Código', 'Nombre', 'Categoría', 'Unidad', ...(costos ? ['Precio', 'Moneda'] : []), 'Existencias', 'Mínimo', 'Proveedor', 'Fuente', 'Vigencia', 'Estado'], ...state.materials.map((m, i) => [i + 1, m.code, m.name, m.category, m.unit, ...(costos ? [m.unit_price, m.currency] : []), m.stock, m.min_stock, m.supplier, m.source, m.effective_from, m.status])]; }
+  else if (type === 'inventory') { const inv = state.inventory || { items: [] }; fn = 'inventario.csv'; rows = [['Id', 'Código', 'Nombre', 'Categoría', 'Unidad', 'Existencias', 'Mínimo', ...(costos ? ['Precio', 'Valor total'] : []), 'Recetas'], ...inv.items.map((m, i) => [i + 1, m.code, m.name, m.category, m.unit, m.stock, m.min_stock, ...(costos ? [m.unit_price, m.stock_value] : []), m.used_by.map(u => `${u.product_name} (${u.per_serving} ${m.unit}/${u.yield_unit})`).join(' | ')])]; }
   else if (type === 'fichas') { fn = 'fichas.csv'; rows = [['Id', 'Producto', 'Código', 'Categoría', 'Versión', 'Vigente', 'Rinde', 'Unidad rinde', 'Total lote', 'Costo por unidad', 'Con inventario', 'Estado'], ...state.fichas.map((f, i) => [i + 1, f.product_name, f.product_code, f.category, f.version, f.valid_from, f.yield_qty, f.yield_unit, f.total_cost, f.cost_per_serving, f.servings_from_stock ?? '', f.status])]; }
   else { fn = 'controles.csv'; rows = [['Id', 'Control', 'Producto', 'Código', 'Período', 'Ficha', 'Total', 'Estado'], ...state.controls.map((c, i) => [i + 1, c.code, c.product_name, c.product_code, c.period, c.ficha_version, c.snapshot_total, c.status])]; }
   const csv = '\ufeff' + rows.map(r => r.map(c => `"${String(c ?? '').replaceAll('"', '""')}"`).join(';')).join('\r\n');
@@ -936,7 +1127,7 @@ function globalSearch(query) {
   const results = [
     ...state.products.filter(p => `${p.name} ${p.code}`.toLowerCase().includes(q)).slice(0, 3).map(p => ({ type: 'Producto', name: p.name, sub: p.code, action: 'view-product', id: p.id })),
     ...state.fichas.filter(f => `${f.product_name} ${f.product_code}`.toLowerCase().includes(q)).slice(0, 3).map(f => ({ type: 'Ficha', name: `${f.product_name} v${f.version}`, sub: `${f.status} · ${money(f.total_cost)}`, action: 'view-ficha', id: f.id })),
-    ...state.materials.filter(m => `${m.name} ${m.code}`.toLowerCase().includes(q)).slice(0, 3).map(m => ({ type: 'Valor', name: m.name, sub: `${money(m.unit_price)} / ${m.unit}`, action: '', id: 0 })),
+    ...state.materials.filter(m => `${m.name} ${m.code}`.toLowerCase().includes(q)).slice(0, 3).map(m => ({ type: 'Valor', name: m.name, sub: canSeeCosts() ? `${money(m.unit_price)} / ${m.unit}` : `${m.unit} · costos protegidos`, action: '', id: 0 })),
     ...state.controls.filter(c => `${c.code} ${c.product_name}`.toLowerCase().includes(q)).slice(0, 3).map(c => ({ type: 'Control', name: c.code, sub: `${c.product_name} · ${c.status}`, action: 'view-control', id: c.id })),
   ];
   const overlay = $('#search-overlay');
@@ -1034,6 +1225,11 @@ async function viewEntity(kind, id) {
 }
 
 async function runAction(action, id, el, extra = {}) {
+  const exige = ACTION_PERMISSION[action];
+  if (exige && !canDo(exige[0], exige[1])) {
+    toast(`Su usuario no tiene permiso para esa acción en «${MODULE_LABEL[exige[0]] || exige[0]}».`, 'error');
+    return;
+  }
   const kind = { 'view-material': 'material', 'edit-material': 'material', 'trash-material': 'material',
     'view-product': 'product', 'edit-product': 'product', 'trash-product': 'product',
     'view-ficha': 'ficha', 'edit-ficha': 'ficha', 'trash-ficha': 'ficha',
@@ -1168,11 +1364,30 @@ function updateCreatorNav() {
   const btn = $('#nav-creator');
   if (btn) btn.style.display = (!u || u.role === 'admin') ? '' : 'none';
 }
-document.addEventListener('ipv:auth', updateCreatorNav);
+document.addEventListener('ipv:auth', async () => {
+  updateCreatorNav();
+  const antes = JSON.stringify(window.IPVAuth?.permissions?.() || null);
+  /* Los permisos los guarda el servidor: se vuelven a leer al entrar, al renovar
+     la sesión y al recargar, por si el administrador los cambió en caliente. */
+  const ahora = JSON.stringify((await window.IPVAuth?.reloadPermissions?.()) || null);
+  applyPermissionNav();
+  if ((!window.IPVAuth || window.IPVAuth.user) && state.dashboard && ahora !== antes) refreshData(true);
+});
 
 /* ── Init ── */
 updateCreatorNav();
-refreshData();
+applyPermissionNav();
+/* enterprise.js define IPVAuth (sesión + permisos) un instante después de app.js:
+   se espera para que la primera carga de datos viaje ya autenticada. Sin esto, el
+   primer lote de peticiones salía sin cabecera y terminaba en 401 + renovación. */
+(async function boot() {
+  for (let i = 0; i < 40 && !window.IPVAuth; i++) await new Promise(r => setTimeout(r, 25));
+  if (window.IPVAuth?.user) {
+    await window.IPVAuth.reloadPermissions?.();
+    applyPermissionNav();
+  }
+  refreshData();
+})();
 
 /* ==========================================================================
    ENHANCED FEATURES — Skeleton, Confirm, Auto-refresh, Charts, Timeline
@@ -1341,8 +1556,8 @@ function showShortcutsHelp() {
     <div style="display:grid;gap:10px">
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Resumen</span><div class="kbd-hint"><kbd>1</kbd></div></div>
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Productos</span><div class="kbd-hint"><kbd>2</kbd></div></div>
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Valores IPV</span><div class="kbd-hint"><kbd>3</kbd></div></div>
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Inventario</span><div class="kbd-hint"><kbd>4</kbd></div></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Valores del IPV (pestaña Valores)</span><div class="kbd-hint"><kbd>3</kbd></div></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Valores del IPV (pestaña Inventario)</span><div class="kbd-hint"><kbd>4</kbd></div></div>
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Fichas</span><div class="kbd-hint"><kbd>5</kbd></div></div>
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Controles</span><div class="kbd-hint"><kbd>6</kbd></div></div>
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Papelera</span><div class="kbd-hint"><kbd>7</kbd></div></div>
@@ -1551,10 +1766,11 @@ function addFAB() {
   fab.addEventListener('click', () => {
     showModal('Acciones rápidas', 'Disponible en cualquier apartado del sistema', `
       <div class="quick-grid">
-        ${QUICK_TILES.map(([a, i, t, s]) => `<button class="quick-tile" data-action="${a}"><span>${i}</span><b>${t}</b><small>${s}</small></button>`).join('')}
-        <button class="quick-tile" data-view="inventory"><span>▣</span><b>Ver inventario</b><small>Cuánto queda y para qué se usa</small></button>
-        <button class="quick-tile" data-view="trash"><span>🗑</span><b>Papelera</b><small>Restaurar o borrar definitivamente</small></button>
-        <button class="quick-tile" data-action="seed-demo"><span>🧪</span><b>Datos de prueba</b><small>Catálogo de ejemplo para aprender</small></button>
+        ${QUICK_TILES.filter(([a]) => { const e = ACTION_PERMISSION[a]; return !e || canDo(e[0], e[1]); })
+          .map(([a, i, t, s]) => `<button class="quick-tile" data-action="${a}"><span>${i}</span><b>${t}</b><small>${s}</small></button>`).join('')}
+        ${canSee('materials') ? '<button class="quick-tile" data-view="inventory"><span>▣</span><b>Ver inventario</b><small>Cuánto queda y para qué se usa</small></button>' : ''}
+        ${canSee('trash') ? '<button class="quick-tile" data-view="trash"><span>🗑</span><b>Papelera</b><small>Restaurar o borrar definitivamente</small></button>' : ''}
+        ${canEdit('materials') ? '<button class="quick-tile" data-action="seed-demo"><span>🧪</span><b>Datos de prueba</b><small>Catálogo de ejemplo para aprender</small></button>' : ''}
       </div>
       <div class="modal-actions"><button class="secondary-btn" data-action="close-modal">Cerrar</button></div>`);
   });
@@ -1590,7 +1806,13 @@ async function approveFichaWithConfetti(id) {
 }
 
 /* ── Export Report ── */
+const REPORT_MODULE = { materials_inventory: 'materials', fichas_summary: 'fichas', controls_pending: 'controls' };
 async function exportReport(type) {
+  const modulo = REPORT_MODULE[type];
+  if (modulo && !canSee(modulo)) {
+    toast(`Su usuario no tiene permiso para consultar «${MODULE_LABEL[modulo]}».`, 'error');
+    return;
+  }
   try {
     const report = await api(`/api/report/${type}`);
     if (!report.data || !report.data.length) {
@@ -1627,6 +1849,7 @@ document.addEventListener('keydown', e => {
 });
 
 async function showStatisticsModal() {
+  if (!canSee('fichas')) { toast('Su usuario no tiene permiso para ver las estadísticas de costos.', 'error'); return; }
   showModal('Estadísticas Avanzadas', 'Análisis completo del sistema', '<div id="stats-content"><div class="typing-indicator"><span></span><span></span><span></span></div></div>');
   const content = await renderStatisticsPanel();
   $('#stats-content').innerHTML = content;

@@ -10,8 +10,9 @@ Autor: **Ing. Yosvany Hernández Quintero**
 
 ### 🎨 Interfaz Web
 - **Ajuste a la ventana**: la barra lateral ya no duplica el ancho; la aplicación cabe al 100 % sin reducir el zoom
-- **Valores del IPV con CRUD completo** (crear, ver, editar, eliminar) desde cualquier apartado, con categorías, existencias y precio
-- **Inventario**: existencias, mínimo, valor en almacén y recetas que usa cada insumo; se ve cuántos comensales o copas se pueden preparar
+- **Valores del IPV: una sola entrada con dos pestañas** (`3` Valores · `4` Inventario), gobernada por el Sistema de Seguridad por Usuarios
+  - **Valores**: CRUD completo (crear, ver, editar, eliminar) desde cualquier apartado, con categorías, existencias y precio
+  - **Inventario**: existencias, mínimo, valor en almacén y recetas que usa cada insumo; se ve cuántos comensales o copas se pueden preparar
 - **Rendimiento de fichas**: cada plato indica comensales (o copas/vasos) y el costo por unidad; el inventario calcula cuántas raciones salen
 - **Papelera de reciclaje** en todos los módulos: restaurar o borrar definitivamente
 - **Columna «Id»** al principio de cada tabla y lista (1, 2, 3 …) con el contador de ítems en la barra de herramientas: se sabe al instante cuántos productos, valores, fichas o controles hay
@@ -49,6 +50,7 @@ Autor: **Ing. Yosvany Hernández Quintero**
 
 ### 🔒 Seguridad Enterprise
 - **JWT HS256** (librería estándar) con roles **admin / editor / viewer**, rotación y revocación de refresh tokens
+- **Sistema de Seguridad por Usuarios**: permisos finos por módulo (`view` / `edit` / `costs`) que el administrador ajusta persona a persona en Web → Usuarios → 🔐 Permisos. Rigen la entrada **Valores del IPV** (pestañas Valores e Inventario) y el resto de apartados: sin `view` la ruta responde **403** y la entrada desaparece del menú; sin `costs` los precios e importes **no se descargan** (viajan como `null` y se ven como 🔒). Se comprueban en cada petición, así que un cambio surte efecto al instante sin cerrar sesiones. Los administradores conservan siempre todos los permisos
 - **Contraseñas PBKDF2-SHA256** (310 000 iteraciones) y política de complejidad
 - **Bloqueo de cuenta** 15 min tras 5 intentos fallidos
 - **Verificación en dos pasos (TOTP, RFC 6238)** con 8 códigos de recuperación de un solo uso y protección anti-reutilización; obligatoria para administradores con `IPV_REQUIRE_ADMIN_MFA=1`
@@ -196,6 +198,59 @@ El último número dice cuántos ítems hay y la barra de herramientas lo repite
 - Las **exportaciones CSV** incluyen la columna `Id` como primera columna.
 - La **app Android** numera igual sus tarjetas y muestra el total de cada listado.
 
+### Sistema de Seguridad por Usuarios (permisos por módulo)
+
+Cada usuario tiene permisos propios, independientes de su rol, sobre cada apartado. El módulo
+**`materials`** es la entrada única **Valores del IPV**, que incluye sus dos pestañas
+(*Valores* e *Inventario*).
+
+| Permiso | Qué autoriza | Sin él… |
+|---|---|---|
+| `view` | Abrir el apartado y consultar sus datos | La entrada se oculta del menú y el API responde `403 {"permission_denied":"materials.view"}` |
+| `edit` | Crear, editar, ajustar existencias, restaurar, purgar, importar CSV y cargar datos de prueba | Se ocultan los botones y el servidor rechaza la escritura con `403` |
+| `costs` | Ver precio unitario, valor en almacén y totales en dinero | Los importes **no se envían**: `unit_price`, `stock_value` y `totals.stock_value` llegan como `null`, con `costs_hidden: true`; la web muestra 🔒 |
+
+El permiso `costs` existe en los cinco módulos: en *Valores del IPV* tapa `unit_price` y el valor de
+las existencias; en *Fichas de costo* tapa `total_cost`, `unit_cost` y `subtotal`; en *Controles de IPV*
+tapa `snapshot_total` y `checked_total`; y en la analítica (`/api/statistics`, `/api/report/*`) tapa los
+promedios y los costos por categoría.
+
+Permisos por defecto según el rol (se pueden cambiar usuario a usuario):
+
+| Rol | Valores del IPV e Inventario | Productos, fichas, controles, papelera |
+|---|---|---|
+| **Administrador** | ver · editar · costos (siempre, no se puede limitar) | ver · editar · costos |
+| **Editor** | ver · editar · costos | ver · editar · costos |
+| **Consulta (viewer)** | ver, **sin costos**: ve existencias, mínimos y recetas, pero no precios | ver (sin editar) |
+
+**El resumen también se recorta.** `/api/dashboard` mezcla datos de todos los apartados, así que cada
+tarjeta y cada panel dependen del módulo que los alimenta: sin `view` sobre *Productos y servicios* los
+contadores y el catálogo por categoría llegan en `null` / `[]`; sin `view` sobre *Fichas de costo* no
+llegan las fichas recientes ni la distribución de costos; y la línea de actividad solo incluye los
+apartados que el usuario puede consultar. La web dibuja 🔒 en lugar de las tarjetas bloqueadas.
+
+**Solo se envía lo que cambia.** Los permisos ausentes en la petición conservan el valor del rol, así
+que `{ "permissions": { "fichas": { "costs": false } } }` quita los importes de las fichas sin cerrar el
+apartado. `edit` y `costs` siempre se descuentan de `view`: si se niega la vista, el resto queda negado.
+
+**Cómo se administra** — Web → paleta de comandos (`Ctrl+Shift+P`) → *Gestionar usuarios y permisos* →
+🔐 en la fila del usuario. Hay plantillas listas (*Acceso completo*, *Solo consulta*,
+*Almacén (sin costos)*, *Todo menos costos*) y *Restablecer según rol*. Los cambios se guardan en la
+tabla `user_permissions`, se auditan (`UPDATE_USER_PERMISSIONS`) y se aplican en la siguiente petición
+del usuario, sin cerrar sus sesiones. Cada acceso denegado queda auditado como `PERMISSION_DENIED`
+con el módulo y el permiso que faltaron.
+
+**Ejemplo** — usuario de almacén que mueve existencias pero no ve dinero:
+
+```json
+PUT /api/users/7
+{ "permissions": {
+    "materials": { "view": true,  "edit": true,  "costs": false },
+    "products":  { "view": false }, "fichas": { "view": false },
+    "controls":  { "view": false }, "trash":  { "view": true, "edit": false }
+} }
+```
+
 ### Comandos de administración
 
 ```powershell
@@ -233,8 +288,8 @@ docker compose up -d    # contenedor de solo lectura, sin privilegios, usuario n
 - `DELETE /api/products/:id` - Enviar a la papelera
 - `POST /api/products/:id/restore` - Restaurar (404 si ya está activo)
 
-### Materiales (Valores IPV)
-- `GET /api/materials` - Listar materiales
+### Valores del IPV (módulo `materials`: pestañas Valores e Inventario)
+- `GET /api/materials` - Listar materiales (`materials.view`; sin `materials.costs`, `unit_price` llega como `null`)
 - `GET /api/materials/:id` - Detalle, existencias y recetas que lo usan
 - `POST /api/materials` - Crear material
 - `PUT /api/materials/:id` - Actualizar (precio, categoría, existencias, vigencia…)
@@ -244,7 +299,7 @@ docker compose up -d    # contenedor de solo lectura, sin privilegios, usuario n
 - `POST /api/materials/:id/restore` · `POST /api/trash/materials/:id/restore` - Restaurar
 
 ### Inventario y papelera
-- `GET /api/inventory` - Existencias, valor y raciones posibles por receta
+- `GET /api/inventory` - Existencias, valor y raciones posibles por receta (pestaña *Inventario* de la misma entrada; sin `materials.costs` los importes llegan como `null` y `costs_hidden: true`)
 - `GET /api/trash` - Elementos en la papelera
 - `POST /api/trash/:kind/:id/restore` - Restaurar
 - `DELETE /api/trash/:kind/:id` - Borrado definitivo
@@ -273,7 +328,8 @@ docker compose up -d    # contenedor de solo lectura, sin privilegios, usuario n
 
 ### Autenticación y sistema
 - `POST /api/auth/login` · `POST /api/auth/refresh` · `POST /api/auth/logout` · `GET /api/auth/me`
-- `GET/POST /api/users` - Gestión de usuarios (admin) · `PUT /api/users/:id` (`force_password_change`, `revoke_sessions`…)
+- `GET/POST /api/users` - Gestión de usuarios (admin), con los permisos efectivos de cada uno · `PUT /api/users/:id` (`role`, `force_password_change`, `revoke_sessions`, **`permissions`**, **`reset_permissions`**…)
+- `GET /api/auth/me` - Usuario actual **y sus permisos por módulo** (los usa la web para dibujar el menú)
 - `POST /api/auth/password` - Cambiar contraseña (devuelve tokens nuevos para este dispositivo)
 - `GET /api/auth/sessions` · `DELETE /api/auth/sessions/:sid` · `POST /api/auth/sessions/revoke-others` - Dispositivos conectados
 - `GET /api/events` - Cambios en tiempo real (SSE)
@@ -285,7 +341,7 @@ docker compose up -d    # contenedor de solo lectura, sin privilegios, usuario n
 
 | Tecla | Acción |
 |-------|--------|
-| `1-9` | Navegar entre vistas (Resumen, Productos, Valores, Inventario, Fichas, Controles, Papelera, Licencia, Creador de Licencias) |
+| `1-9` | Navegar entre vistas (Resumen, Productos, **Valores del IPV** `3`, **su pestaña Inventario** `4`, Fichas, Controles, Papelera, Licencia, Creador de Licencias) |
 | `Ctrl+K` | Búsqueda global |
 | `F5` | Actualizar datos |
 | `Esc` | Cerrar modal |
