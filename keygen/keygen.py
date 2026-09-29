@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import csv
 import getpass
+from decimal import Decimal, InvalidOperation
 import hashlib
 import hmac
 import json
@@ -105,7 +106,19 @@ def rates() -> dict:
         return dict(DEFAULT_RATES)
 
 
-def price_usd(app: str, plan: str) -> int:
+def price_usd(app: str, plan: str, custom_price: str | int | float | Decimal | None = None) -> int | float:
+    if plan == "PX":
+        if custom_price is None:
+            raise ValueError("Indique el precio acordado en USD para el período personalizado.")
+        try:
+            amount = Decimal(str(custom_price).strip().replace(",", "."))
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError("El precio personalizado debe ser un importe válido en USD.") from exc
+        if not amount.is_finite() or amount < 0:
+            raise ValueError("El precio personalizado debe ser finito y no negativo.")
+        return float(amount.quantize(Decimal("0.01")))
+    if custom_price is not None:
+        raise ValueError("El precio manual solo se admite con el plan personalizado PX.")
     return L.PLANS[plan][2] if app == L.APP_WEB else L.PLANS[plan][3]
 
 
@@ -146,36 +159,70 @@ def clean_phone(num: str) -> str:
     return digits
 
 
-def emit(d: int, user: str, code: str, plan: str) -> tuple[str, str]:
-    token = L.issue(d, user, code, plan)
+LEDGER_FIELDS = ["fecha", "serie", "usuario", "app", "plan", "desde", "hasta", "vence",
+                 "codigo_solicitud", "precio_usd", "precio_cup"]
+
+
+def _upgrade_ledger_schema() -> None:
+    """Add period columns while preserving older issuance records."""
+    if not LEDGER.exists():
+        return
+    with LEDGER.open(encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        old_fields = reader.fieldnames or []
+        rows = list(reader)
+    if all(field in old_fields for field in LEDGER_FIELDS):
+        return
+    temporary = LEDGER.with_suffix(LEDGER.suffix + ".tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=LEDGER_FIELDS)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({field: row.get(field, "") or "" for field in LEDGER_FIELDS})
+        os.replace(temporary, LEDGER)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def emit(d: int, user: str, code: str, plan: str, start_date: str | None = None,
+         end_date: str | None = None, custom_price: str | int | float | Decimal | None = None) -> tuple[str, str]:
+    token = L.issue(d, user, code, plan, start_date=start_date, end_date=end_date)
     data = L.decode(token, L.public_from_private(d))
-    new_file = not LEDGER.exists()
+    usd = price_usd(data["app"], plan, custom_price)
+    LEDGER.parent.mkdir(parents=True, exist_ok=True)
+    _upgrade_ledger_schema()
     with LEDGER.open("a", newline="", encoding="utf-8") as fh:
-        w = csv.writer(fh)
-        if new_file:
-            w.writerow(["fecha", "serie", "usuario", "app", "plan", "vence", "codigo_solicitud", "precio_usd", "precio_cup"])
-        usd = price_usd(data["app"], plan)
-        w.writerow([time.strftime("%Y-%m-%d %H:%M"), data["sn"], data["usr"], data["app"], plan,
-                    time.strftime("%Y-%m-%d", time.localtime(data["exp"])), code.upper(), usd, round(usd * rates()["USD"])])
+        w = csv.DictWriter(fh, fieldnames=LEDGER_FIELDS)
+        if fh.tell() == 0:
+            w.writeheader()
+        w.writerow({"fecha": time.strftime("%Y-%m-%d %H:%M"), "serie": data["sn"], "usuario": data["usr"],
+                    "app": data["app"], "plan": plan, "desde": data.get("start_date", ""),
+                    "hasta": data.get("end_date", ""),
+                    "vence": data.get("end_date") or time.strftime("%Y-%m-%d", time.localtime(data["exp"])),
+                    "codigo_solicitud": code.upper(), "precio_usd": usd,
+                    "precio_cup": round(usd * rates()["USD"])})
     return token, whatsapp_reply(data, token)
 
 
 def whatsapp_reply(data: dict, token: str) -> str:
-    vence = time.strftime("%d/%m/%Y", time.localtime(data["exp"]))
+    vence = data.get("end_date") or time.strftime("%d/%m/%Y", time.localtime(data["exp"]))
+    period = f"\nVigencia: {data['start_date']} hasta {data['end_date']} (UTC)" if data["plan"] == "PX" else ""
     return (f"✅ *Licencia IPV Fichas de Costo*\n"
             f"Usuario: {data['usr']}\n"
             f"Aplicación: {L.APP_NAMES[data['app']]}\n"
-            f"Plan: {L.PLANS[data['plan']][0]} — vence el {vence}\n"
+            f"Plan: {L.PLANS[data['plan']][0]}{period} — vence el {vence}\n"
             f"Serie: {data['sn']}\n\n"
             f"Copie la licencia completa y péguela en *Activar licencia*:\n\n{token}")
 
 
 def describe(token: str, pub: str) -> str:
     data = L.decode(token, pub)
+    period = (f"\nVigencia: {data['start_date']} hasta {data['end_date']} (UTC)" if data["plan"] == "PX" else "")
     return (f"Firma válida ✔\nUsuario: {data['usr']}\nApp: {L.APP_NAMES[data['app']]}\n"
-            f"Dispositivo: {data['dev']}\nPlan: {L.PLANS[data['plan']][0]}\n"
+            f"Dispositivo: {data['dev']}\nPlan: {L.PLANS[data['plan']][0]}{period}\n"
             f"Emitida: {time.strftime('%d/%m/%Y %H:%M', time.localtime(data['iat']))}\n"
-            f"Vence: {time.strftime('%d/%m/%Y %H:%M', time.localtime(data['exp']))}\nSerie: {data['sn']}")
+            f"Vence: {data.get('end_date') or time.strftime('%d/%m/%Y %H:%M', time.localtime(data['exp']))}\nSerie: {data['sn']}")
 
 
 def current_public() -> str:
@@ -202,10 +249,15 @@ def cmd_init(args) -> None:
 
 def cmd_emit(args) -> None:
     d = load_private_key(ask_passphrase())
-    _token, reply = emit(d, args.usuario, args.codigo, args.plan.upper())
+    plan = args.plan.upper()
+    _token, reply = emit(d, args.usuario, args.codigo, plan, args.desde, args.hasta, args.precio_usd)
     app = L.parse_request_code(args.codigo)[0]
     print(reply)
-    print("\nPrecio:", price_line(app, args.plan.upper()))
+    if plan == "PX":
+        print(f"\nPrecio acordado: {price_usd(app, plan, args.precio_usd)} USD = "
+              f"{fmt_cup(float(price_usd(app, plan, args.precio_usd)) * rates()['USD'])} CUP")
+    else:
+        print("\nPrecio:", price_line(app, plan))
 
 
 def cmd_verify(args) -> None:
@@ -218,7 +270,10 @@ def cmd_prices(_args) -> None:
     for app in (L.APP_WEB, L.APP_ANDROID):
         print(f"\n{L.APP_NAMES[app]}")
         for plan, (name, days, *_rest) in L.PLANS.items():
-            print(f"  {plan}  {name:<9} ({days:>3} días): {price_line(app, plan)}")
+            if plan == "PX":
+                print(f"  {plan}  {name}: precio acordado manualmente por el proveedor")
+            else:
+                print(f"  {plan}  {name:<9} ({days:>3} días): {price_line(app, plan)}")
 
 
 # ------------------------------------------------------------ GUI -------------
@@ -228,7 +283,7 @@ def run_gui() -> None:
 
     root = tk.Tk()
     root.title("IPV Keygen — Licencias")
-    root.geometry("760x640")
+    root.geometry("820x740")
     root.configure(bg="#0f172a")
     style = ttk.Style(root)
     style.theme_use("clam")
@@ -246,6 +301,7 @@ def run_gui() -> None:
              fg="#94a3b8").grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 12))
 
     user_var, code_var, plan_var = tk.StringVar(), tk.StringVar(), tk.StringVar(value="1M — 1 Mes")
+    start_var, end_var, custom_price_var = tk.StringVar(), tk.StringVar(), tk.StringVar()
     price_var = tk.StringVar(value="")
     ttk.Label(frm, text="Usuario:").grid(row=2, column=0, sticky="w")
     ttk.Entry(frm, textvariable=user_var, width=60).grid(row=2, column=1, sticky="we", pady=4)
@@ -253,22 +309,41 @@ def run_gui() -> None:
     ttk.Entry(frm, textvariable=code_var, width=60).grid(row=3, column=1, sticky="we", pady=4)
     ttk.Label(frm, text="Plan:").grid(row=4, column=0, sticky="w")
     plans = [f"{k} — {v[0]}" for k, v in L.PLANS.items()]
-    ttk.Combobox(frm, textvariable=plan_var, values=plans, state="readonly", width=20).grid(row=4, column=1, sticky="w", pady=4)
-    tk.Label(frm, textvariable=price_var, bg="#0f172a", fg="#fbbf24", wraplength=700, justify="left").grid(row=5, column=0, columnspan=2, sticky="w", pady=6)
+    ttk.Combobox(frm, textvariable=plan_var, values=plans, state="readonly", width=28).grid(row=4, column=1, sticky="w", pady=4)
+    ttk.Label(frm, text="Desde / Hasta / USD (solo PX):").grid(row=5, column=0, sticky="w")
+    date_fields = ttk.Frame(frm)
+    date_fields.grid(row=5, column=1, sticky="w", pady=4)
+    for label_text, variable, width in (("Desde · AAAA-MM-DD", start_var, 13),
+                                        ("Hasta · AAAA-MM-DD", end_var, 13),
+                                        ("Precio USD", custom_price_var, 10)):
+        cell = ttk.Frame(date_fields)
+        cell.pack(side="left", padx=(0, 7))
+        ttk.Label(cell, text=label_text).pack(anchor="w")
+        ttk.Entry(cell, textvariable=variable, width=width).pack(anchor="w")
+    tk.Label(frm, textvariable=price_var, bg="#0f172a", fg="#fbbf24", wraplength=700, justify="left").grid(row=6, column=0, columnspan=2, sticky="w", pady=6)
     out = tk.Text(frm, height=16, bg="#1e293b", fg="#f8fafc", insertbackground="white", wrap="word", relief="flat")
-    out.grid(row=7, column=0, columnspan=2, sticky="nsew", pady=8)
+    out.grid(row=8, column=0, columnspan=2, sticky="nsew", pady=8)
     frm.columnconfigure(1, weight=1)
-    frm.rowconfigure(7, weight=1)
+    frm.rowconfigure(8, weight=1)
 
     def update_price(*_a):
         try:
             app = L.parse_request_code(code_var.get())[0]
-            price_var.set(f"{L.APP_NAMES[app]} · {price_line(app, plan_var.get()[:2])}")
+            selected_plan = plan_var.get()[:2]
+            if selected_plan == "PX":
+                price = custom_price_var.get().strip() or "—"
+                period = f"{start_var.get() or 'AAAA-MM-DD'} hasta {end_var.get() or 'AAAA-MM-DD'}"
+                price_var.set(f"{L.APP_NAMES[app]} · período {period} UTC · precio acordado {price} USD")
+            else:
+                price_var.set(f"{L.APP_NAMES[app]} · {price_line(app, selected_plan)}")
         except ValueError:
             price_var.set("Pegue el código de solicitud recibido por WhatsApp (IPVW-… para PC, IPVA-… para móvil).")
 
     code_var.trace_add("write", update_price)
     plan_var.trace_add("write", update_price)
+    start_var.trace_add("write", update_price)
+    end_var.trace_add("write", update_price)
+    custom_price_var.trace_add("write", update_price)
     update_price()
 
     def key() -> int | None:
@@ -288,7 +363,12 @@ def run_gui() -> None:
         if d is None:
             return
         try:
-            _token, reply = emit(d, user_var.get(), code_var.get(), plan_var.get()[:2])
+            selected_plan = plan_var.get()[:2]
+            custom = selected_plan == "PX"
+            _token, reply = emit(d, user_var.get(), code_var.get(), selected_plan,
+                                 (start_var.get().strip() or None) if custom else None,
+                                 (end_var.get().strip() or None) if custom else None,
+                                 (custom_price_var.get().strip() or None) if custom else None)
         except ValueError as exc:
             messagebox.showerror("Keygen", str(exc))
             return
@@ -323,6 +403,9 @@ def main(argv=None) -> None:
     p.add_argument("--usuario", required=True)
     p.add_argument("--codigo", required=True, help="código de solicitud IPVW-/IPVA-")
     p.add_argument("--plan", required=True, choices=[k for k in L.PLANS] + [k.lower() for k in L.PLANS])
+    p.add_argument("--desde", help="inicio inclusivo AAAA-MM-DD (obligatorio para PX; UTC)")
+    p.add_argument("--hasta", help="fin inclusivo AAAA-MM-DD (obligatorio para PX; UTC)")
+    p.add_argument("--precio-usd", help="precio acordado manualmente para PX")
     p = sub.add_parser("verificar", help="comprobar una licencia")
     p.add_argument("--licencia", required=True)
     sub.add_parser("precios", help="tabla de precios en USD/CUP")

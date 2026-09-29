@@ -114,8 +114,10 @@ Guía completa: [precios-y-licencias.md](precios-y-licencias.md).
 ```powershell
 .\iniciar-https.ps1 -Stop        # el servidor debe estar detenido
 .\iniciar-https.ps1 -EncryptDb   # SQLCipher AES-256, genera IPV_DB_KEY en .env
-.\iniciar-https.ps1 -Status      # debe decir «Base de datos cifrada»
+.\iniciar-https.ps1 -Status      # muestra que la cabecera es compatible con SQLCipher
 ```
+
+`-Status` inspecciona únicamente la cabecera del archivo: la marca como compatible con SQLCipher, pero no demuestra que la clave permita descifrarla ni que la integridad esté intacta. Tome como resultado del cifrado el código de salida de `-EncryptDb` y haga una copia de seguridad comprobada antes de eliminar cualquier respaldo en claro.
 
 ⚠ **Guarde una copia de `IPV_DB_KEY` fuera del equipo.** Sin esa clave no se recuperan ni la base de datos ni las copias de seguridad.
 

@@ -45,7 +45,7 @@ private val GREEN_PALE = 0xFFE8F2EC.toInt()
 private val LIME = 0xFFD7E78D.toInt()
 private val LIME_VIVID = 0xFFA8D850.toInt()
 private val INK = 0xFF20352C.toInt()
-private val MUTED = 0xFF7D8983.toInt()
+private val MUTED = 0xFF626E68.toInt() // contraste mínimo 4.5:1 sobre superficies claras
 private val LINE = 0xFFE6ECE7.toInt()
 private val CANVAS = 0xFFF6F8F5.toInt()
 private val SURFACE = 0xFFFFFFFF.toInt()
@@ -168,13 +168,13 @@ private class IpvApi(private val activity: Activity) {
                 throw PasswordExpiredException(errorOf(code, text))
             }
             if (code !in 200..299) throw IOException(errorOf(code, text))
-            if (method == "GET" && cacheable) { cache.put(path, text); lastFromCacheMinutes = -1 }
+            if (method == "GET" && cacheable) cache.put(path, text)
             text
         } catch (error: IOException) {
             if (error is AuthRequiredException || error is PinMismatchException || error is PasswordExpiredException ||
                 method != "GET" || !cacheable || error.message?.startsWith("Error HTTP") == true) throw error
             val cached = cache.get(path) ?: throw error
-            lastFromCacheMinutes = cached.second
+            lastFromCacheMinutes = if (lastFromCacheMinutes < 0) cached.second else maxOf(lastFromCacheMinutes, cached.second)
             cached.first
         }
         return JSONTokener(result).nextValue()
@@ -400,6 +400,7 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
             background = rounded(0x2AFFFFFF, 9)
             minWidth = dp(45)
+            contentDescription = "Estadísticas"
         }
         header.addView(statsBtn)
 
@@ -407,6 +408,7 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
             background = rounded(0x2AFFFFFF, 9)
             minWidth = dp(45)
+            contentDescription = "Acerca de IPV"
         }
         header.addView(aboutBtn)
 
@@ -414,6 +416,7 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
             background = rounded(0x2AFFFFFF, 9)
             minWidth = dp(45)
+            contentDescription = "Configuración"
         }
         header.addView(settings)
         root.addView(header)
@@ -477,6 +480,7 @@ class MainActivity : Activity() {
             addText(content, "Cargando datos desde la base de datos…", 13f, MUTED)
         }
         executor.execute {
+            api.lastFromCacheMinutes = -1
             try {
                 val freshDashboard = api.request("GET", "/api/dashboard") as JSONObject
                 val freshProducts = api.request("GET", "/api/products") as JSONArray
@@ -503,6 +507,18 @@ class MainActivity : Activity() {
                         connectionLabel.setTextColor(SUCCESS)
                     }
                     renderPage()
+                    if (offline >= 0) {
+                        val notice = label(
+                            "Datos de caché · pueden estar desactualizados. Puede consultar; las modificaciones requieren conexión y confirmación del servidor.",
+                            11f, INK, true
+                        ).apply {
+                            setPadding(dp(12), dp(10), dp(12), dp(10))
+                            background = rounded(0xFFFFF3CD.toInt(), 9)
+                        }
+                        content.addView(notice, 0, LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                        ).apply { bottomMargin = dp(10) })
+                    }
                 }
             } catch (error: PinMismatchException) {
                 runOnUiThread {
@@ -574,8 +590,24 @@ class MainActivity : Activity() {
         addSpacer(content, 12)
         addText(content, "FICHAS RECIENTES", 9f, MUTED, true, bottom = 6)
         val recentFichas = dashboard.optJSONArray("recent_fichas") ?: JSONArray()
-        if (recentFichas.length() == 0) {
-            addText(content, "Aún no hay fichas registradas.", 11f, MUTED, bottom = 8)
+        val totalFichas = dashboard.optInt("fichas", fichas.length())
+        if (recentFichas.length() == 0 && totalFichas == 0) {
+            val productCount = dashboard.optInt("products", products.length())
+            val materialCount = dashboard.optInt("materials", materials.length())
+            addText(content, "Aún no hay fichas registradas.", 11f, MUTED, bottom = 4)
+            addText(content, "Primeros pasos", 14f, INK, true, bottom = 4)
+            addText(content, "${if (productCount > 0) "✓" else "1."} Registre un producto o servicio desde Productos${if (productCount > 0) " · Completado" else " · Pendiente"}.", 11f, MUTED, bottom = 3)
+            addText(content, "${if (materialCount > 0) "✓" else "2."} Añada valores e insumos del IPV${if (materialCount > 0) " · Completado" else " · Pendiente"}.", 11f, MUTED, bottom = 3)
+            addText(content, "3. Cree y revise una ficha de costo.", 11f, MUTED, bottom = 8)
+            when {
+                productCount == 0 -> addButton(content, "Ir a Productos", true) { currentTab = "Productos"; refresh() }
+                materialCount == 0 -> addButton(content, "Ir a Valores IPV", true) { currentTab = "Valores IPV"; refresh() }
+                else -> addButton(content, "Ir a Fichas", true) { currentTab = "Fichas"; refresh() }
+            }
+        } else if (recentFichas.length() == 0) {
+            val fichaLabel = if (totalFichas == 1) "ficha" else "fichas"
+            addText(content, "Hay $totalFichas $fichaLabel, pero no hay cambios recientes para mostrar.", 11f, MUTED, bottom = 4)
+            addButton(content, "Ver fichas", false) { currentTab = "Fichas"; refresh() }
         } else {
             addCount(content, recentFichas.length(), "fichas")
             for (i in 0 until recentFichas.length()) {
@@ -1261,6 +1293,17 @@ class MainActivity : Activity() {
             }
             action(); return
         }
+        license.pending()?.let { pending ->
+            if (licenseDialog?.isShowing != true) {
+                licenseDialog = AlertDialog.Builder(this)
+                    .setTitle("Licencia programada")
+                    .setMessage("La licencia comenzará el ${pending.validFromDate} (UTC) y vencerá el ${pending.expiryText()}. El acceso se habilitará desde su fecha de inicio.")
+                    .setPositiveButton("Cerrar aplicación") { _, _ -> finish() }
+                    .setCancelable(false)
+                    .show()
+            }
+            return
+        }
         try {
             val info = license.current()
             val left = info.daysLeft(System.currentTimeMillis() / 1000)
@@ -1319,10 +1362,10 @@ class MainActivity : Activity() {
         form.addView(label("1. Escriba su nombre y elija el plan.\n2. Envíe la solicitud por WhatsApp.\n3. Pegue la licencia recibida y pulse Activar.", 12f, MUTED))
         val user = EditText(this).apply { hint = "Usuario (nombre o empresa)"; setSingleLine() }
         form.addView(user)
-        val planKeys = LicenseCore.PLANS.keys.toList()
+        val planKeys = LicenseCore.PLANS.keys.filter { it != "PX" }
         val plan = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
-                LicenseCore.PLANS.values.map { "${it.first} — ${it.third} USD" })
+                adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                planKeys.map { key -> "${LicenseCore.PLANS.getValue(key).first} — ${LicenseCore.PLANS.getValue(key).third} USD" })
             setSelection(1)
         }
         form.addView(plan)
@@ -1373,6 +1416,17 @@ class MainActivity : Activity() {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 try {
                     val info = license.activate(token.text.toString())
+                    val now = System.currentTimeMillis() / 1000
+                    if (info.validFrom > now) {
+                        dialog.dismiss()
+                        licenseDialog = AlertDialog.Builder(this)
+                            .setTitle("Licencia programada")
+                            .setMessage("Quedó guardada. Comenzará el ${info.validFromDate} (UTC) y vencerá el ${info.expiryText()}; la aplicación se habilitará desde esa fecha.")
+                            .setPositiveButton("Cerrar aplicación") { _, _ -> finish() }
+                            .setCancelable(false)
+                            .show()
+                        return@setOnClickListener
+                    }
                     toast("✅ Licencia activada: ${info.planName}, vence el ${info.expiryText()}")
                     dialog.dismiss()
                     onActivated()

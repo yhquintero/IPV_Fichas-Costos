@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -61,9 +62,40 @@ class LicenciaCryptoTest(unittest.TestCase):
 
     def test_todos_los_planes(self):
         for plan, (_n, days, usd_web, usd_android) in L.PLANS.items():
+            if plan == "PX":  # PX necesita período y precio acordado, no tiene duración fija
+                continue
             data = L.decode(L.issue(self.d, "Cliente", self.code, plan), self.pub)
             self.assertEqual(data["exp"] - data["iat"], days * L.DAY)
             self.assertGreater(usd_web, usd_android)
+
+    def test_periodo_personalizado_inclusivo_y_programado(self):
+        issued = int(datetime(2026, 3, 1, tzinfo=timezone.utc).timestamp())
+        start, end = "2026-03-10", "2026-04-02"
+        token = L.issue(self.d, "Cliente", self.code, "PX", now=issued, start_date=start, end_date=end)
+        data = L.decode(token, self.pub)
+        expected_nbf = int(datetime(2026, 3, 10, tzinfo=timezone.utc).timestamp())
+        expected_exp = int(datetime(2026, 4, 3, tzinfo=timezone.utc).timestamp())
+        self.assertEqual((data["start_date"], data["end_date"], data["nbf"], data["exp"]),
+                         (start, end, expected_nbf, expected_exp))
+        with self.assertRaisesRegex(ValueError, "comienza el 2026-03-10"):
+            L.check(token, self.pub, L.APP_WEB, self.body, expected_nbf - 1)
+        scheduled = L.check(token, self.pub, L.APP_WEB, self.body, expected_nbf - 1, allow_not_yet_valid=True)
+        self.assertEqual(scheduled["plan"], "PX")
+        self.assertEqual(L.check(token, self.pub, L.APP_WEB, self.body, expected_nbf)["plan"], "PX")
+        self.assertEqual(L.check(token, self.pub, L.APP_WEB, self.body, expected_exp - 1)["plan"], "PX")
+        with self.assertRaisesRegex(ValueError, "venció"):
+            L.check(token, self.pub, L.APP_WEB, self.body, expected_exp)
+        self.assertEqual(L.public_info(data, expected_nbf)["valid_until"], end)
+
+    def test_periodo_personalizado_rechaza_fechas_invalidas(self):
+        with self.assertRaisesRegex(ValueError, "Desde y Hasta"):
+            L.issue(self.d, "Cliente", self.code, "PX")
+        with self.assertRaisesRegex(ValueError, "Hasta no puede ser anterior"):
+            L.issue(self.d, "Cliente", self.code, "PX", start_date="2026-03-12", end_date="2026-03-11")
+        with self.assertRaisesRegex(ValueError, "formato AAAA-MM-DD"):
+            L.issue(self.d, "Cliente", self.code, "PX", start_date="2026-03-01", end_date="2026-03-02T00:00")
+        with self.assertRaisesRegex(ValueError, "solo se usan con el plan personalizado"):
+            L.issue(self.d, "Cliente", self.code, "1M", start_date="2026-03-01", end_date="2026-03-02")
 
 
 class LicenciaServidorTest(unittest.TestCase):
@@ -178,10 +210,20 @@ class KeygenCliTest(unittest.TestCase):
             self.assertEqual(L.decode(token, key["public"])["plan"], "6M")
             self.assertIn("39 USD = $ 28,860.00 CUP", out.stdout)
             self.assertIn("Firma válida", run("verificar", "--licencia", token).stdout)
+            start = (datetime.now(timezone.utc).date() + timedelta(days=2)).isoformat()
+            end = (datetime.now(timezone.utc).date() + timedelta(days=32)).isoformat()
+            custom = run("emitir", "--usuario", "Luis", "--codigo", code, "--plan", "PX",
+                         "--desde", start, "--hasta", end, "--precio-usd", "18.50")
+            self.assertEqual(custom.returncode, 0, custom.stderr)
+            custom_token = next(line for line in custom.stdout.splitlines() if line.startswith("IPV1."))
+            custom_data = L.decode(custom_token, key["public"])
+            self.assertEqual((custom_data["plan"], custom_data["start_date"], custom_data["end_date"]), ("PX", start, end))
+            self.assertIn("18.5 USD", custom.stdout)
+            self.assertIn("Firma válida", run("verificar", "--licencia", custom_token).stdout)
             bad = run("emitir", "--usuario", "x", "--codigo", code, "--plan", "1M", e={**env, "IPV_KEYGEN_PASS": "mala"})
             self.assertNotEqual(bad.returncode, 0)
             self.assertIn("Contraseña incorrecta", bad.stderr)
-            self.assertEqual(len((work / "keygen/registro_licencias.csv").read_text(encoding="utf-8").splitlines()), 2)
+            self.assertEqual(len((work / "keygen/registro_licencias.csv").read_text(encoding="utf-8").splitlines()), 3)
 
 
 if __name__ == "__main__":

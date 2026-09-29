@@ -181,9 +181,16 @@ async function refreshData(quiet = false) {
   } catch (e) {
     setConn(false, 'No se pudo conectar');
     if (!quiet) toast(e.message, 'error');
-    content.innerHTML = `<div class="empty-state panel"><div class="empty-icon">⌁</div><b>No se pudo conectar con la base de datos</b><p>Verifique que el servidor esté activo y actualice la página.</p><button class="primary-btn" data-action="refresh">Reintentar conexión</button></div>`;
+    content.innerHTML = `<div class="empty-state panel"><div class="empty-icon">⌁</div><b>No se pudo conectar con la base de datos</b><p>Verifique que el servidor esté activo y actualice la página. La web no conserva una copia local de los datos; los cambios requieren confirmación del servidor.</p><button class="primary-btn" data-action="refresh">Reintentar conexión</button></div>`;
   }
 }
+
+/* Online/offline del navegador describe el enlace, no garantiza que el servidor IPV responda. */
+window.addEventListener('offline', () => setConn(false, 'Sin conexión · no se pueden guardar cambios'));
+window.addEventListener('online', () => {
+  setConn(false, 'Red disponible · comprobando servidor…');
+  refreshData();
+});
 
 /* ── Navigation ── */
 function setView(v) {
@@ -260,6 +267,25 @@ function countPill(shown, total, label = 'ítems') {
 }
 
 /* ── Dashboard ── */
+function renderSetupChecklist() {
+  const steps = [
+    { module: 'products', label: 'Crea el primer producto o servicio', action: 'create-product', count: state.products?.length || 0 },
+    { module: 'materials', label: 'Registra al menos un valor o insumo del IPV', action: 'create-material', count: state.materials?.length || 0 },
+    { module: 'fichas', label: 'Prepara y revisa una ficha de costo', action: 'create-ficha', count: state.fichas?.length || state.dashboard?.fichas || 0 },
+  ];
+  const next = steps.find(step => step.count < 1);
+  const rows = steps.map((step, index) => {
+    const done = step.count > 0;
+    const stateText = done ? 'Completado' : !canSee(step.module) || !canEdit(step.module) ? 'Solicite acceso al administrador' : 'Pendiente';
+    return `<li class="setup-step ${done ? 'is-done' : ''}"><span class="setup-step-number" aria-hidden="true">${done ? '✓' : index + 1}</span><span class="setup-step-copy"><b>${step.label}</b><small>${stateText}</small></span></li>`;
+  }).join('');
+  const nextAllowed = next && canSee(next.module) && canEdit(next.module);
+  const action = nextAllowed
+    ? `<button class="primary-btn" data-action="${next.action}">Continuar: ${next.label}</button>`
+    : next ? '<p class="setup-access-note">Pida al administrador acceso de edición para continuar.</p>' : '<p class="setup-access-note">Ya completó la configuración inicial. Puede abrir una ficha para revisarla.</p>';
+  return `<section class="setup-checklist" aria-labelledby="setup-checklist-title"><div class="setup-checklist-heading"><span class="setup-icon" aria-hidden="true">✦</span><div><h3 id="setup-checklist-title">Primeros pasos</h3><p>Prepare el catálogo y los valores antes de calcular su primera ficha.</p></div></div><ol aria-label="Pasos para crear la primera ficha">${rows}</ol>${action}</section>`;
+}
+
 function renderDashboard() {
   const d = state.dashboard;
   const cats = canSee('products') ? (d.categories || []) : [];
@@ -294,7 +320,7 @@ function renderDashboard() {
         <div class="panel-heading"><div><h2 class="panel-title">Fichas recientes</h2><p class="panel-subtitle">Últimos documentos modificados</p></div><button class="text-btn" data-view="fichas">Ver todas →</button></div>
         ${d.recent_fichas?.length
           ? `<div class="table-wrap"><table><thead><tr>${idTh()}<th>Producto</th><th>Rendimiento</th><th>Estado</th><th>Costo total</th><th>Actualización</th><th></th></tr></thead><tbody>${d.recent_fichas.map((f, i) => `<tr>${idTd(i, f.id)}<td>${prodCell(f.product_name, f.product_code, f.category)}</td><td>${yieldBadge(f.yield_qty, f.yield_unit)}</td><td>${stPill(f.status)}</td><td class="amount">${moneyOrLock(f.total_cost, 'fichas')}</td><td>${dateLabel(f.updated_at)}</td><td><button class="text-btn" data-action="view-ficha" data-id="${f.id}">Abrir ↗</button></td></tr>`).join('')}</tbody></table></div>`
-          : `<div class="empty-state"><div class="empty-icon">▤</div><b>Empieza con una ficha</b><p>Crea la primera ficha de costo.</p>${canEdit('fichas') ? '<button class="primary-btn" data-action="create-ficha">Crear ficha</button>' : ''}</div>`}
+          : Number(d.fichas || 0) === 0 ? renderSetupChecklist() : `<div class="empty-state"><div class="empty-icon">▤</div><b>No hay fichas recientes</b><p>El catálogo todavía no tiene fichas recientes para mostrar.</p></div>`}
       </section>` : lockedDashPanel('Fichas de costo', 'Su usuario no tiene permiso para consultar las fichas de costo.')}
       <section class="panel category-panel">
         <div class="panel-heading"><div><h2 class="panel-title">${canSee('products') ? 'Catálogo por categoría' : 'Accesos rápidos'}</h2><p class="panel-subtitle">${canSee('products') ? 'Productos y servicios activos' : 'Apartados disponibles para su usuario'}</p></div>${canSee('products') ? '<button class="icon-button" data-view="products" title="Abrir catálogo">↗</button>' : ''}</div>
@@ -584,7 +610,8 @@ function loadLicenseInto(box) {
         ${lic.valid ? `<div class="lic-kv">
           <div><small>Plan</small><b>${esc(lic.plan_name)}</b></div>
           <div><small>Emitida</small><b>${fmtDate(lic.issued_at)}</b></div>
-          <div><small>Vence</small><b>${fmtDate(lic.expires_at)}</b></div>
+          ${lic.valid_from ? `<div><small>Válida desde</small><b>${esc(lic.valid_from)} (UTC)</b></div>` : ''}
+          <div><small>Vence</small><b>${lic.valid_until ? `${esc(lic.valid_until)} (UTC)` : fmtDate(lic.expires_at)}</b></div>
           <div><small>Días restantes</small><b style="color:${days <= 7 ? 'var(--orange)' : 'var(--green)'}">${days}</b></div>
         </div>` : ''}
         <div class="panel">
@@ -606,8 +633,24 @@ function creatorPriceHint() {
   const st = state.creator; if (!st) return;
   const hint = $('#creator-price'); if (!hint) return;
   const code = ($('#creator-code')?.value || '').trim().toUpperCase();
-  const p = (st.plans || {})[$('#creator-plan')?.value || '1M'];
+  const selectedPlan = $('#creator-plan')?.value || '1M';
+  const p = (st.plans || {})[selectedPlan];
   if (!p) return;
+  if (selectedPlan === 'PX') {
+    if (!code.startsWith('IPVA') && !code.startsWith('IPVW')) {
+      hint.innerHTML = code ? '<span style="color:var(--orange)">El código debe empezar por IPVW- (PC) o IPVA- (móvil).</span>'
+        : 'Pegue el código de solicitud recibido por WhatsApp: IPVW-… (PC) o IPVA-… (móvil).';
+      return;
+    }
+    const from = $('#creator-start-date')?.value || 'AAAA-MM-DD';
+    const until = $('#creator-end-date')?.value || 'AAAA-MM-DD';
+    const price = $('#creator-custom-price')?.value || '—';
+    const appName = code.startsWith('IPVA') ? '📱 IPV Android (móvil)' : code.startsWith('IPVW') ? '💻 IPV Web (servidor/PC)' : 'IPV';
+    const rate = Number(st.rates?.USD || 0);
+    const cup = Number(price) * rate;
+    hint.textContent = `${appName} · ${p.name}: ${from} a ${until} (UTC) · precio acordado ${price} USD${Number.isFinite(cup) && price !== '—' ? ` ≈ ${money(cup)}` : ''}`;
+    return;
+  }
   if (code.startsWith('IPVA')) { hint.innerHTML = `📱 IPV Android (móvil) · <b>${esc(p.name)}</b> — ${p.usd_android} USD ≈ ${money(p.cup_android)}`; return; }
   if (code.startsWith('IPVW')) { hint.innerHTML = `💻 IPV Web (servidor/PC) · <b>${esc(p.name)}</b> — ${p.usd_web} USD ≈ ${money(p.cup_web)}`; return; }
   hint.innerHTML = code ? '<span style="color:var(--orange)">El código debe empezar por IPVW- (PC) o IPVA- (móvil).</span>'
@@ -618,7 +661,7 @@ function creatorResultPanel(r) {
   const self = state.creator?.license && !state.creator.license.valid;
   return `<div class="panel animate-fade" id="creator-result">
     <div class="panel-heading"><div><h2 class="panel-title">✅ Licencia creada — ${esc(r.plan_name)}</h2>
-      <p class="panel-subtitle">${esc(r.app_name)} · Usuario: ${esc(r.user)} · Serie ${esc(r.serial)} · vence el ${fmtDate(r.expires_at)} · ${r.price_usd} USD ≈ ${money(r.price_cup)}</p></div></div>
+      <p class="panel-subtitle">${esc(r.app_name)} · Usuario: ${esc(r.user)} · Serie ${esc(r.serial)} · ${r.valid_from ? `vigencia ${esc(r.valid_from)} a ${esc(r.valid_until)} (UTC)` : `vence el ${fmtDate(r.expires_at)}`} · ${r.price_usd} USD ≈ ${money(r.price_cup)}</p></div></div>
     <textarea class="lic-input lic-token" id="creator-token" rows="4" readonly spellcheck="false">${esc(r.license)}</textarea>
     <div class="lic-actions">
       <button class="secondary-btn" data-action="creator-copy" data-target="#creator-token">📋 Copiar licencia</button>
@@ -635,6 +678,17 @@ function renderCreator() {
     <div id="creator-body"><div class="lic-status-card"><div class="lic-status-icon">🛠</div><div class="lic-status-copy"><h3>Consultando…</h3><p>Cargando el estado del sistema de licencias.</p></div></div></div>
   </div>`;
   loadCreatorInto($('#creator-body'));
+}
+
+function toggleCreatorCustomFields() {
+  const custom = $('#creator-plan')?.value === 'PX';
+  const fields = $('#creator-custom-fields');
+  if (!fields) return;
+  fields.hidden = !custom;
+  ['creator-start-date', 'creator-end-date', 'creator-custom-price'].forEach(id => {
+    const input = $(`#${id}`); if (input) input.required = custom;
+  });
+  creatorPriceHint();
 }
 
 async function loadCreatorInto(box) {
@@ -668,10 +722,16 @@ async function loadCreatorInto(box) {
       <div class="panel-heading"><div><h2 class="panel-title">🔑 Emitir licencia</h2>
         <p class="panel-subtitle">Pegue el código de solicitud del cliente (IPVW-… PC · IPVA-… móvil) y firme su licencia</p></div></div>
       <div class="form-grid">
-        <div class="form-field"><label>Usuario / cliente</label><input id="creator-user" maxlength="80" placeholder="Nombre o empresa" autocomplete="off"></div>
-        <div class="form-field"><label>Plan</label><select id="creator-plan">${planOpts}</select></div>
-        <div class="form-field full"><label>Código de solicitud</label><input id="creator-code" style="letter-spacing:1px" placeholder="IPVW-XXXXX-XXXXX-XXXXX-XXXXX-XX" spellcheck="false" autocomplete="off"></div>
-        <div class="form-field full"><label>Contraseña de la clave de firma</label><input id="creator-pass" type="password" autocomplete="off" placeholder="La del archivo clave_privada.json"></div>
+        <div class="form-field"><label for="creator-user">Usuario / cliente</label><input id="creator-user" maxlength="80" placeholder="Nombre o empresa" autocomplete="off"></div>
+        <div class="form-field"><label for="creator-plan">Plan</label><select id="creator-plan">${planOpts}</select></div>
+        <div class="form-grid full" id="creator-custom-fields" hidden>
+          <div class="form-field"><label for="creator-start-date">Desde (incluida)</label><input id="creator-start-date" type="date" aria-describedby="creator-custom-note"></div>
+          <div class="form-field"><label for="creator-end-date">Hasta (incluida)</label><input id="creator-end-date" type="date" aria-describedby="creator-custom-note"></div>
+          <div class="form-field"><label for="creator-custom-price">Precio acordado (USD)</label><input id="creator-custom-price" type="number" min="0" step="0.01" inputmode="decimal" aria-describedby="creator-custom-note" placeholder="Importe acordado"></div>
+          <p class="small-note full" id="creator-custom-note">Las fechas se interpretan en UTC; ambos días son inclusivos. El precio personalizado lo define el proveedor y no se calcula automáticamente.</p>
+        </div>
+        <div class="form-field full"><label for="creator-code">Código de solicitud</label><input id="creator-code" style="letter-spacing:1px" placeholder="IPVW-XXXXX-XXXXX-XXXXX-XXXXX-XX" spellcheck="false" autocomplete="off"></div>
+        <div class="form-field full"><label for="creator-pass">Contraseña de la clave de firma</label><input id="creator-pass" type="password" autocomplete="off" placeholder="La del archivo clave_privada.json"></div>
       </div>
       <p class="small-note" id="creator-price" style="margin:4px 0 12px"></p>
       <button class="primary-btn" id="creator-emit-btn">⚙️ Crear licencia</button>
@@ -723,9 +783,11 @@ async function loadCreatorInto(box) {
       <tbody><tr><td colspan="9" class="small-note">Pulse «Cargar» para ver las últimas licencias emitidas.</td></tr></tbody></table></div>
     </div>`;
 
-  creatorPriceHint();
+  toggleCreatorCustomFields();
   $('#creator-code')?.addEventListener('input', creatorPriceHint);
-  $('#creator-plan')?.addEventListener('change', creatorPriceHint);
+  $('#creator-plan')?.addEventListener('change', toggleCreatorCustomFields);
+  ['creator-start-date', 'creator-end-date', 'creator-custom-price'].forEach(id =>
+    $(`#${id}`)?.addEventListener('input', creatorPriceHint));
 
   const showMsg = (sel, msg, ok = false) => { const m = $(sel); if (m) { m.textContent = msg; m.hidden = false; m.style.color = ok ? 'var(--green)' : 'var(--red)'; } };
 
@@ -733,9 +795,26 @@ async function loadCreatorInto(box) {
     const btn = $('#creator-emit-btn'), msg = $('#creator-emit-msg');
     btn.disabled = true; msg.hidden = true;
     try {
+      const plan = $('#creator-plan').value;
+      if (plan === 'PX') {
+        const start = $('#creator-start-date').value, end = $('#creator-end-date').value;
+        const priceText = $('#creator-custom-price').value.trim(), price = Number(priceText);
+        if (!start || !end || priceText === '') {
+          throw new Error('Para el plan personalizado indique las fechas Desde/Hasta y el precio acordado en USD.');
+        }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || end < start) {
+          throw new Error('Revise el rango: Hasta debe ser una fecha válida igual o posterior a Desde.');
+        }
+        if (!Number.isFinite(price) || price < 0) {
+          throw new Error('El precio acordado debe ser un número igual o mayor que cero.');
+        }
+      }
       const r = await api('/api/keygen/emit', { method: 'POST', body: JSON.stringify({
-        user: $('#creator-user').value.trim(), code: $('#creator-code').value.trim(),
-        plan: $('#creator-plan').value, passphrase: $('#creator-pass').value }) });
+        user: $('#creator-user').value.trim(), code: $('#creator-code').value.trim(), plan,
+        start_date: plan === 'PX' ? $('#creator-start-date').value : null,
+        end_date: plan === 'PX' ? $('#creator-end-date').value : null,
+        custom_price_usd: plan === 'PX' ? $('#creator-custom-price').value : null,
+        passphrase: $('#creator-pass').value }) });
       $('#creator-result-box').innerHTML = creatorResultPanel(r);
       $('#creator-pass').value = '';
     } catch (e) { showMsg('#creator-emit-msg', e.message); }
@@ -760,7 +839,7 @@ async function loadCreatorInto(box) {
   $('#creator-verify-btn')?.addEventListener('click', async () => {
     try {
       const r = await api('/api/keygen/verify', { method: 'POST', body: JSON.stringify({ license: $('#creator-verify-token').value }) });
-      showMsg('#creator-verify-msg', `✅ Firma ${r.signature} · ${r.app_name} · ${r.user} · ${r.plan_name} · vence el ${fmtDate(r.expires_at)} · serie ${r.serial}`, true);
+      showMsg('#creator-verify-msg', `✅ Firma ${r.signature} · ${r.app_name} · ${r.user} · ${r.plan_name} · ${r.valid_from ? `vigencia ${r.valid_from} a ${r.valid_until} UTC` : `vence el ${fmtDate(r.expires_at)}`} · serie ${r.serial}`, true);
     } catch (e) { showMsg('#creator-verify-msg', e.message); }
   });
 

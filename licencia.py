@@ -28,6 +28,7 @@ import secrets
 import threading
 import time
 import uuid
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 
 # Estos dos valores los escribe `python keygen/keygen.py init`. Vacío = licencias desactivadas (modo desarrollo).
@@ -48,6 +49,8 @@ PLANS = {
     "6M": ("6 Meses", 180, 90, 39),
     "1A": ("1 Año", 365, 160, 70),
     "2A": ("2 Años", 730, 280, 120),
+    # El período y precio se especifican al emitir; cero no es un precio ofertado.
+    "PX": ("Personalizado (desde–hasta)", 0, 0, 0),
 }
 
 _B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
@@ -249,8 +252,28 @@ def _unb64u(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def issue(d: int, user: str, code: str, plan: str, now: float | None = None) -> str:
-    """Emite una licencia firmada (lo usa el Keygen)."""
+def _custom_period(start_date: str, end_date: str, issued_at: int) -> tuple[date, date, int, int]:
+    """Parse inclusive ISO dates and return dates plus UTC [nbf, exp) epoch bounds."""
+    try:
+        start = date.fromisoformat(str(start_date))
+        end = date.fromisoformat(str(end_date))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Use fechas válidas con formato AAAA-MM-DD para Desde y Hasta.") from exc
+    if start.isoformat() != start_date or end.isoformat() != end_date:
+        raise ValueError("Las fechas deben escribirse exactamente como AAAA-MM-DD.")
+    if end < start:
+        raise ValueError("La fecha Hasta no puede ser anterior a Desde.")
+    issued_day = datetime.fromtimestamp(issued_at, timezone.utc).date()
+    if end < issued_day:
+        raise ValueError("La fecha Hasta ya venció; elija un período vigente o futuro.")
+    nbf = int(datetime.combine(start, datetime_time.min, timezone.utc).timestamp())
+    exp = int(datetime.combine(end + timedelta(days=1), datetime_time.min, timezone.utc).timestamp())
+    return start, end, nbf, exp
+
+
+def issue(d: int, user: str, code: str, plan: str, now: float | None = None,
+          start_date: str | None = None, end_date: str | None = None) -> str:
+    """Emite una licencia firmada; las fechas de rango son inclusivas y se interpretan en UTC."""
     app, body = parse_request_code(code)
     if plan not in PLANS:
         raise ValueError(f"Plan desconocido: {plan}. Opciones: {', '.join(PLANS)}")
@@ -258,8 +281,17 @@ def issue(d: int, user: str, code: str, plan: str, now: float | None = None) -> 
     if not user:
         raise ValueError("Indique el nombre del usuario/cliente.")
     iat = int(now if now is not None else time.time())
-    payload = {"v": 1, "app": app, "dev": body, "usr": user, "plan": plan,
-               "iat": iat, "exp": iat + PLANS[plan][1] * DAY, "sn": secrets.token_hex(4).upper()}
+    payload = {"v": 1, "app": app, "dev": body, "usr": user, "plan": plan, "iat": iat,
+               "sn": secrets.token_hex(4).upper()}
+    if plan == "PX":
+        if not start_date or not end_date:
+            raise ValueError("El período personalizado requiere las fechas Desde y Hasta.")
+        start, end, nbf, exp = _custom_period(start_date, end_date, iat)
+        payload.update({"start_date": start.isoformat(), "end_date": end.isoformat(), "nbf": nbf, "exp": exp})
+    else:
+        if start_date is not None or end_date is not None:
+            raise ValueError("Las fechas Desde/Hasta solo se usan con el plan personalizado PX.")
+        payload["exp"] = iat + PLANS[plan][1] * DAY
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
     return f"IPV1.{_b64u(raw)}.{_b64u(sign(d, raw))}"
 
@@ -279,10 +311,20 @@ def decode(token: str, pub_hex: str) -> dict:
     data = json.loads(raw)
     if data.get("v") != 1 or data.get("plan") not in PLANS:
         raise ValueError("Versión de licencia no admitida.")
+    if data["plan"] == "PX":
+        try:
+            start, end, nbf, exp = _custom_period(data["start_date"], data["end_date"], int(data["iat"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("El período personalizado firmado no es válido.") from exc
+        if data.get("nbf") != nbf or data.get("exp") != exp:
+            raise ValueError("Las fechas firmadas no coinciden con el período indicado.")
+    elif any(key in data for key in ("start_date", "end_date", "nbf")):
+        raise ValueError("Una licencia de plan fijo no puede incluir fechas personalizadas.")
     return data
 
 
-def check(token: str, pub_hex: str, app: str, device_body: str, now: float, last_seen: float = 0) -> dict:
+def check(token: str, pub_hex: str, app: str, device_body: str, now: float, last_seen: float = 0,
+          allow_not_yet_valid: bool = False) -> dict:
     data = decode(token, pub_hex)
     if data["app"] != app:
         raise ValueError(f"Esta licencia es para {APP_NAMES.get(data['app'], data['app'])}.")
@@ -291,14 +333,21 @@ def check(token: str, pub_hex: str, app: str, device_body: str, now: float, last
     if now + ROLLBACK_TOLERANCE < max(data["iat"], last_seen):
         raise ValueError("La fecha del equipo es anterior a la última registrada. Corrija la fecha y la hora.")
     if now >= data["exp"]:
-        raise ValueError(f"La licencia venció el {time.strftime('%d/%m/%Y', time.localtime(data['exp']))}.")
+        until = data.get("end_date") or time.strftime('%d/%m/%Y', time.localtime(data['exp']))
+        raise ValueError(f"La licencia venció el {until}.")
+    if now < data.get("nbf", data["iat"]) and not allow_not_yet_valid:
+        start = data.get("start_date") or time.strftime('%d/%m/%Y', time.localtime(data["iat"]))
+        raise ValueError(f"La licencia todavía no está vigente; comienza el {start}.")
     return data
 
 
 def public_info(data: dict, now: float) -> dict:
-    return {"user": data["usr"], "plan": data["plan"], "plan_name": PLANS[data["plan"]][0],
+    info = {"user": data["usr"], "plan": data["plan"], "plan_name": PLANS[data["plan"]][0],
             "serial": data["sn"], "issued_at": data["iat"], "expires_at": data["exp"],
             "days_left": max(0, int((data["exp"] - now) // DAY))}
+    if data["plan"] == "PX":
+        info.update({"valid_from": data["start_date"], "valid_until": data["end_date"]})
+    return info
 
 
 class LicenseStore:
@@ -340,7 +389,8 @@ class LicenseStore:
         now = time.time() if now is None else now
         base = {"enforced": self.enforced, "request_code": self.code,
                 "whatsapp": os.environ.get("IPV_LICENSE_WHATSAPP", WHATSAPP_NUMBER).strip(),
-                "plans": {k: {"name": v[0], "days": v[1], "usd": v[2]} for k, v in PLANS.items()}}
+                "plans": {k: {"name": v[0], "days": v[1], "usd": v[2]}
+                          for k, v in PLANS.items() if k != "PX"}}
         if not self.enforced:
             return {**base, "valid": True, "reason": "Licencias desactivadas (sin clave pública configurada)."}
         with self.lock:
@@ -364,7 +414,7 @@ class LicenseStore:
         now = time.time() if now is None else now
         token = "".join(str(token).split())
         with self.lock:
-            data = check(token, self.pub, APP_WEB, self.body, now, self._last_seen())  # ValueError si no vale
+            data = check(token, self.pub, APP_WEB, self.body, now, self._last_seen(), allow_not_yet_valid=True)  # guardar licencias programadas
             self._write("licencia.lic", token)
             self._write("licencia.state", json.dumps({"last_seen": int(max(now, self._last_seen()))}))
             self._cache = None

@@ -4,6 +4,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -154,10 +155,40 @@ class CreadorLicenciasTest(unittest.TestCase):
         # Verificar
         st, info = self.req("POST", "/api/keygen/verify", {"license": res["license"]}, token=self.token)
         self.assertEqual((st, info["user"], info["app_name"]), (200, "Luis Pérez", "IPV Android (móvil)"))
+        # Emisión personalizada: fechas inclusivas UTC, precio manual y firma verificable.
+        start = (datetime.now(timezone.utc).date() + timedelta(days=1))
+        end = start + timedelta(days=20)
+        st, missing = self.req("POST", "/api/keygen/emit", {
+            "user": "Luis Pérez", "code": code, "plan": "PX", "passphrase": PASS,
+        }, token=self.token)
+        self.assertEqual(st, 400)
+        self.assertIn("Desde, Hasta", missing["error"])
+        for fields in (
+            {"start_date": (start + timedelta(days=1)).isoformat(), "end_date": start.isoformat(), "custom_price_usd": "22.75"},
+            {"start_date": start.isoformat(), "end_date": end.isoformat(), "custom_price_usd": "-0.01"},
+        ):
+            st, rejected = self.req("POST", "/api/keygen/emit", {
+                "user": "Luis Pérez", "code": code, "plan": "PX", "passphrase": PASS, **fields,
+            }, token=self.token)
+            self.assertEqual(st, 400, rejected)
+        st, custom = self.req("POST", "/api/keygen/emit", {
+            "user": "Luis Pérez", "code": code, "plan": "PX", "passphrase": PASS,
+            "start_date": start.isoformat(), "end_date": end.isoformat(), "custom_price_usd": "22.75",
+        }, token=self.token)
+        self.assertEqual(st, 200, custom)
+        self.assertEqual((custom["plan"], custom["valid_from"], custom["valid_until"], custom["price_usd"]),
+                         ("PX", start.isoformat(), end.isoformat(), 22.75))
+        custom_data = L.decode(custom["license"], L.PUBLIC_KEY_HEX)
+        self.assertEqual((custom_data["start_date"], custom_data["end_date"]), (start.isoformat(), end.isoformat()))
+        st, custom_info = self.req("POST", "/api/keygen/verify", {"license": custom["license"]}, token=self.token)
+        self.assertEqual((st, custom_info["valid_from"], custom_info["valid_until"]),
+                         (200, start.isoformat(), end.isoformat()))
         # Historial
         st, items = self.req("GET", "/api/keygen/ledger", token=self.token)
         self.assertEqual(st, 200)
         self.assertEqual(items["items"][0]["usuario"], "Luis Pérez")
+        self.assertEqual((items["items"][0]["plan"], items["items"][0]["desde"], items["items"][0]["hasta"]),
+                         ("PX", start.isoformat(), end.isoformat()))
         # La licencia emitida activa este mismo servidor si el código es el suyo
         self_lic = self.req("POST", "/api/keygen/emit", {"user": "Empresa Propia", "code": self.store.code,
                                                          "plan": "1A", "passphrase": PASS}, token=self.token)[1]

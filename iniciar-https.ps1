@@ -12,7 +12,9 @@
 # ==========================================================================
 [CmdletBinding()]
 param(
+    [ValidateRange(1, 65535)]
     [int]$Port = 8443,              # Puerto HTTPS
+    [ValidateRange(0, 65535)]
     [int]$RedirectPort = 8080,      # Puerto HTTP que redirige a HTTPS (0 o -NoRedirect para desactivar)
     [switch]$NoRedirect,            # No levantar la redirección HTTP → HTTPS
     [switch]$Tls13Only,             # Exigir TLS 1.3 (clientes modernos); por defecto TLS 1.2+
@@ -67,9 +69,9 @@ IPV · Fichas y Costos — iniciar-https.ps1
 USO HABITUAL
   .\iniciar-https.ps1                    Arranca el servidor HTTPS (crea/renueva certificados si hace falta)
   .\iniciar-https.ps1 -Open              Igual, y abre el navegador
-  .\iniciar-https.ps1 -Check             Diagnóstico completo del acceso seguro (no arranca nada)
+  .\iniciar-https.ps1 -Check             Diagnóstico completo; código 0=correcto, 2=avisos, 1=problemas
   .\iniciar-https.ps1 -Status            Estado del servidor y de la base de datos
-  .\iniciar-https.ps1 -Stop              Detiene el servidor que escucha en el puerto
+  .\iniciar-https.ps1 -Stop              Detiene solo un proceso IPV verificable de este repositorio
 
 PRIMERA INSTALACIÓN
   .\iniciar-https.ps1 -InitSecurity      Crea .env con secreto JWT de 384 bits y el usuario administrador
@@ -82,8 +84,8 @@ CERTIFICADOS Y CLIENTES
   .\iniciar-https.ps1 -ExportCa 'E:\'    Copia la CA a un USB o carpeta de red para instalarla en otros equipos
 
 MANTENIMIENTO
-  .\iniciar-https.ps1 -Backup            Copia de seguridad consistente
-  .\iniciar-https.ps1 -HealthCheck       Salud del servidor en JSON
+  .\iniciar-https.ps1 -Backup            Copia de seguridad; devuelve código distinto de cero si falla o falla la réplica
+  .\iniciar-https.ps1 -HealthCheck       Salud del servidor en JSON (0=OK, 1=sin respuesta)
   .\iniciar-https.ps1 -AuditLog          Últimos 40 eventos de auditoría
 
 OPCIONES
@@ -93,6 +95,9 @@ OPCIONES
   -Tls13Only           Exigir TLS 1.3 (solo clientes modernos)
   -Open                Abrir el navegador al arrancar
 
+Seleccione una sola operación de mantenimiento por ejecución. Los puertos deben estar
+entre 1 y 65535 y el puerto de redirección debe ser distinto del HTTPS.
+
 Guía paso a paso: docs\acceso-seguro-https.md
 '@
     Write-Host $texto
@@ -100,6 +105,19 @@ Guía paso a paso: docs\acceso-seguro-https.md
 
 if ($Help) { Show-Help; exit 0 }
 
+# Las opciones operativas son excluyentes para impedir que, por ejemplo, -Stop
+# o -Backup parezcan ejecutados cuando el script solo terminó mostrando -Status.
+$selectedModes = @(
+    [bool]$Check, [bool]$Stop, [bool]$ConfigureNetworkOnly, [bool]$Status,
+    [bool]$Backup, [bool]$HealthCheck, [bool]$AuditLog, [bool]$InitSecurity,
+    [bool]$ShowPin, [bool]$EncryptDb, [bool](-not [string]::IsNullOrWhiteSpace($ExportCa))
+) | Where-Object { $_ }
+if ($selectedModes.Count -gt 1) {
+    throw 'Seleccione una sola operación: -Check, -Stop, -Status, -Backup, -HealthCheck, -AuditLog, -InitSecurity, -ShowPin, -ExportCa o -EncryptDb.'
+}
+if ($RedirectPort -ne 0 -and $RedirectPort -eq $Port) {
+    throw 'El puerto HTTP de redirección debe ser distinto del puerto HTTPS.'
+}
 # ==========================================================================
 #  Red local: alias en hosts y regla de firewall
 # ==========================================================================
@@ -122,15 +140,37 @@ function Get-LanIPv4 {
 
 function Get-FirewallRuleName { param([int]$TcpPort) return "IPV Fichas y Costos HTTPS $TcpPort (red local)" }
 
+function Test-LocalNetworkConfigured {
+    param([int]$HttpsPort = 8443, [int]$HttpPort = 0)
+    $hostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+    $hostPattern = '^\s*(?!#)\S+\s+.*\b' + [regex]::Escape($ServerAlias) + '\b'
+    $hostLines = if (Test-Path $hostsPath) { @(Select-String -Path $hostsPath -Pattern $hostPattern -ErrorAction SilentlyContinue) } else { @() }
+    $hostReady = $hostLines.Count -gt 0
+    if ($hostReady -and -not ($hostLines | Where-Object { $_.Line -match ('^\s*127\.0\.0\.1\s+' + [regex]::Escape($ServerAlias) + '(?:\s|$)') })) {
+        Write-Aviso "El alias $ServerAlias ya está definido, pero apunta a otra dirección; no se cambiará sin intervención manual."
+    }
+    foreach ($tcpPort in @($HttpsPort, $HttpPort)) {
+        if ($tcpPort -le 0) { continue }
+        $rule = Get-NetFirewallRule -DisplayName (Get-FirewallRuleName $tcpPort) -ErrorAction SilentlyContinue
+        if (-not $rule -or $rule.Enabled -ne 'True') { return $false }
+    }
+    return $hostReady
+}
+
 function Set-LocalNetwork {
     param([int]$HttpsPort = 8443, [int]$HttpPort = 0)
     $hostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
     if (Test-Path $hostsPath) {
         $pattern = '^\s*(?!#)\S+\s+.*\b' + [regex]::Escape($ServerAlias) + '\b'
-        $hasAlias = Select-String -Path $hostsPath -Pattern $pattern -Quiet
-        if (-not $hasAlias) {
-            Add-Content -Path $hostsPath -Value "`r`n127.0.0.1`t$ServerAlias # IPV Fichas y Costos local" -Encoding ASCII
-            try { & ipconfig.exe /flushdns | Out-Null } catch { }
+        $aliasLines = @(Select-String -Path $hostsPath -Pattern $pattern -ErrorAction SilentlyContinue)
+        $expectedPattern = '^\s*127\.0\.0\.1\s+' + [regex]::Escape($ServerAlias) + '(?:\s|$)'
+        if (-not ($aliasLines | Where-Object { $_.Line -match $expectedPattern })) {
+            if ($aliasLines.Count -gt 0) {
+                Write-Aviso "El alias $ServerAlias ya apunta a otra dirección en hosts; no se cambiará automáticamente. Revise $hostsPath."
+            } else {
+                Add-Content -Path $hostsPath -Value "`r`n127.0.0.1`t$ServerAlias # IPV Fichas y Costos local" -Encoding ASCII
+                try { & ipconfig.exe /flushdns | Out-Null } catch { }
+            }
         }
     }
     foreach ($tcpPort in @($HttpsPort, $HttpPort)) {
@@ -221,6 +261,9 @@ function Export-RsaPrivateKeyPem {
     param([System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate)
     $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Certificate)
     if ($null -eq $rsa) { throw 'No se pudo leer la clave privada RSA del certificado.' }
+    $parameters = $null
+    $parts = $null
+    $der = $null
     try {
         $parameters = $rsa.ExportParameters($true)
         $parts = [System.Collections.Generic.List[byte[]]]::new()
@@ -232,6 +275,13 @@ function Export-RsaPrivateKeyPem {
         $der = ConvertTo-DerSequence $parts
         return ConvertTo-Pem 'RSA PRIVATE KEY' $der
     } finally {
+        if ($null -ne $parameters) {
+            foreach ($name in @('Modulus', 'Exponent', 'D', 'P', 'Q', 'DP', 'DQ', 'InverseQ')) {
+                if ($null -ne $parameters.$name) { [Array]::Clear($parameters.$name, 0, $parameters.$name.Length) }
+            }
+        }
+        if ($null -ne $parts) { foreach ($part in $parts) { if ($part.Length -gt 0) { [Array]::Clear($part, 0, $part.Length) } } }
+        if ($null -ne $der) { [Array]::Clear($der, 0, $der.Length) }
         $rsa.Dispose()
     }
 }
@@ -278,8 +328,12 @@ function Test-CertCoversNames {
     $sanText = Get-CertSanText $Certificate
     if ([string]::IsNullOrWhiteSpace($sanText)) { return $false }
     foreach ($entry in $Entries) {
-        $value = $entry.Substring($entry.IndexOf('=') + 1)
-        if ($sanText -notmatch [regex]::Escape($value)) { return $false }
+        $parts = $entry -split '=', 2
+        if ($parts.Count -ne 2) { return $false }
+        $value = [regex]::Escape($parts[1])
+        if ($parts[0] -eq 'IPAddress') { $pattern = "(?<![0-9.])$value(?![0-9.])" }
+        else { $pattern = "(?<![A-Za-z0-9.-])$value(?![A-Za-z0-9.-])" }
+        if ($sanText -notmatch $pattern) { return $false }
     }
     return $true
 }
@@ -322,17 +376,38 @@ function New-ServerCert {
         )
 }
 
+function Set-PrivateFilePermissions {
+    param([string]$Path)
+    $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $grant = '*{0}:(M)' -f $sid
+    & icacls.exe $Path /inheritance:r /grant:r $grant | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "No se pudieron restringir los permisos del archivo secreto '$Path'." }
+}
+
 function Export-ServerPem {
     param([System.Security.Cryptography.X509Certificates.X509Certificate2]$Leaf,
           [System.Security.Cryptography.X509Certificates.X509Certificate2]$Ca)
-    $certificatePem = (ConvertTo-Pem 'CERTIFICATE' $Leaf.RawData) + (ConvertTo-Pem 'CERTIFICATE' $Ca.RawData)
-    [System.IO.File]::WriteAllText($leafPemPath, $certificatePem, [System.Text.Encoding]::ASCII)
-    [System.IO.File]::WriteAllText($keyPemPath, (Export-RsaPrivateKeyPem $Leaf), [System.Text.Encoding]::ASCII)
+    $nonce = [guid]::NewGuid().ToString('N')
+    $certTemp = "$leafPemPath.$nonce.tmp"
+    $keyTemp = "$keyPemPath.$nonce.tmp"
     try {
-        $currentUser = (whoami).Trim()
-        & icacls.exe $keyPemPath /inheritance:r /grant:r "${currentUser}:(M)" | Out-Null
+        $certificatePem = (ConvertTo-Pem 'CERTIFICATE' $Leaf.RawData) + (ConvertTo-Pem 'CERTIFICATE' $Ca.RawData)
+        [System.IO.File]::WriteAllText($certTemp, $certificatePem, [System.Text.Encoding]::ASCII)
+        $privatePem = Export-RsaPrivateKeyPem $Leaf
+        [System.IO.File]::WriteAllText($keyTemp, $privatePem, [System.Text.Encoding]::ASCII)
+        $privatePem = $null
+        Set-PrivateFilePermissions -Path $keyTemp
+        Move-Item -LiteralPath $certTemp -Destination $leafPemPath -Force -ErrorAction Stop
+        Move-Item -LiteralPath $keyTemp -Destination $keyPemPath -Force -ErrorAction Stop
     } catch {
-        Write-Aviso 'No se pudo restringir automáticamente la clave PEM; proteja certs\ipv-server-key.pem.'
+        # Si solo uno de los dos archivos pudo publicarse, elimine el par para
+        # forzar una regeneración segura en el siguiente inicio.
+        Remove-Item -LiteralPath $leafPemPath, $keyPemPath -Force -ErrorAction SilentlyContinue
+        throw
+    } finally {
+        foreach ($temp in @($certTemp, $keyTemp)) {
+            if (Test-Path $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+        }
     }
 }
 
@@ -382,21 +457,61 @@ ni comparta el archivo certs\ipv-server-key.pem.
 # ==========================================================================
 #  Configuración (.env), Python y base de datos
 # ==========================================================================
+function Get-ProcessEnvironmentSnapshot {
+    $snapshot = @{}
+    foreach ($entry in Get-ChildItem Env:) { $snapshot[$entry.Name] = $entry.Value }
+    return $snapshot
+}
+
+function Restore-ProcessEnvironment {
+    param([hashtable]$Snapshot)
+    foreach ($entry in @(Get-ChildItem Env:)) {
+        if (-not $Snapshot.ContainsKey($entry.Name)) {
+            [Environment]::SetEnvironmentVariable($entry.Name, $null, 'Process')
+        }
+    }
+    foreach ($name in $Snapshot.Keys) {
+        [Environment]::SetEnvironmentVariable($name, [string]$Snapshot[$name], 'Process')
+    }
+}
+
 function Import-DotEnv {
     if (-not (Test-Path $envFile)) { return }
-    foreach ($line in Get-Content $envFile) {
-        if ($line -match '^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$' -and $Matches[2] -ne '') {
-            [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2].Trim('"'), 'Process')
+    foreach ($line in Get-Content -Path $envFile -ErrorAction Stop) {
+        $line = ([string]$line).Trim().TrimStart([char]0xFEFF)
+        if (-not $line -or $line.StartsWith('#')) { continue }
+        if ($line -notmatch '^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$') { continue }
+        $name = $Matches[1]
+        $value = $Matches[2]
+        if ($value.Length -ge 2 -and (($value[0] -eq '"' -and $value[$value.Length - 1] -eq '"') -or
+                                      ($value[0] -eq "'" -and $value[$value.Length - 1] -eq "'"))) {
+            $value = $value.Substring(1, $value.Length - 2)
         }
+        # Asignar también valores vacíos evita reutilizar inadvertidamente un secreto heredado.
+        [Environment]::SetEnvironmentVariable($name, $value, 'Process')
     }
 }
 
 function Get-PythonCommand {
-    $py = Get-Command python -ErrorAction SilentlyContinue
-    if ($py) { return @($py.Source) }
-    $py = Get-Command py -ErrorAction SilentlyContinue
-    if ($py) { return @($py.Source, '-3') }
-    throw 'No se encontró Python. Instale Python 3.10+ y vuelva a ejecutar este script.'
+    $candidates = [System.Collections.Generic.List[object]]::new()
+    $venvPython = Join-Path $repoRoot '.venv\Scripts\python.exe'
+    if (Test-Path $venvPython) { $candidates.Add([string[]]@($venvPython)) }
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if ($python) { $candidates.Add([string[]]@($python.Source)) }
+    $python3 = Get-Command python3 -ErrorAction SilentlyContinue
+    if ($python3) { $candidates.Add([string[]]@($python3.Source)) }
+    $launcher = Get-Command py -ErrorAction SilentlyContinue
+    if ($launcher) { $candidates.Add([string[]]@($launcher.Source, '-3')) }
+
+    foreach ($candidate in $candidates) {
+        try {
+            $versionText = & $candidate[0] @($candidate | Select-Object -Skip 1) -c 'import sys;print("%d.%d.%d" % sys.version_info[:3])' 2>$null
+            if ($LASTEXITCODE -ne 0 -or $versionText -notmatch '^(\d+)\.(\d+)\.(\d+)$') { continue }
+            $version = [version]("$($Matches[1]).$($Matches[2]).$($Matches[3])")
+            if ($version -ge [version]'3.10') { return ,$candidate }
+        } catch { }
+    }
+    throw 'No se encontró una instalación funcional de Python 3.10 o superior. Instálela y vuelva a ejecutar este script.'
 }
 
 function Get-PythonVersion {
@@ -407,59 +522,130 @@ function Get-PythonVersion {
 }
 
 function Invoke-Py([string]$Code) {
-    Import-DotEnv  # carga IPV_DB_KEY y demás variables necesarias para abrir la BD
-    $cmd = Get-PythonCommand
-    $env:IPV_DB_PATH = Join-Path $repoRoot 'data\ipv.db'
-    Push-Location $repoRoot
-    try { & $cmd[0] @($cmd | Select-Object -Skip 1) -c $Code } finally { Pop-Location }
+    $snapshot = Get-ProcessEnvironmentSnapshot
+    try {
+        Import-DotEnv  # carga secretos solo mientras vive el proceso Python
+        $cmd = Get-PythonCommand
+        $env:IPV_DB_PATH = Join-Path $repoRoot 'data\ipv.db'
+        Push-Location $repoRoot
+        try { & $cmd[0] @($cmd | Select-Object -Skip 1) -c $Code } finally { Pop-Location }
+    } finally {
+        Restore-ProcessEnvironment $snapshot
+    }
 }
 
 function Initialize-Security {
     if (Test-Path $envFile) { Write-Aviso '.env ya existe; no se sobrescribe.'; return }
+    $templatePath = Join-Path $repoRoot '.env.example'
+    if (-not (Test-Path $templatePath)) { throw "No se encontró la plantilla '$templatePath'." }
+
     $bytes = New-Object byte[] 48
-    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
     $secret = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
-    $email = Read-Host 'Correo del administrador'
-    $pwd = Read-Host 'Contraseña del administrador (mín. 10, mayúsculas, números y símbolos)' -AsSecureString
-    $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($pwd))
-    $template = Get-Content (Join-Path $repoRoot '.env.example') -Raw
-    $template = $template -replace '(?m)^IPV_JWT_SECRET=.*$', "IPV_JWT_SECRET=$secret"
-    $template = $template -replace '(?m)^IPV_ADMIN_EMAIL=.*$', "IPV_ADMIN_EMAIL=$email"
-    $template = $template -replace '(?m)^IPV_ADMIN_PASSWORD=.*$', "IPV_ADMIN_PASSWORD=$plain"
-    Set-Content -Path $envFile -Value $template -Encoding UTF8
-    try { & icacls.exe $envFile /inheritance:r /grant:r "$((whoami).Trim()):(M)" | Out-Null } catch { }
-    Write-Exito '.env creado con secreto JWT de 384 bits (permisos restringidos al usuario actual).'
-    Write-Aviso 'Tras el primer inicio, borre IPV_ADMIN_PASSWORD del archivo .env.'
+    [Array]::Clear($bytes, 0, $bytes.Length)
+
+    $email = (Read-Host 'Correo del administrador').Trim()
+    try {
+        $mail = [System.Net.Mail.MailAddress]::new($email)
+        if ($mail.Address -ne $email) { throw 'Formato no válido.' }
+    } catch { throw 'Escriba un correo electrónico válido para el administrador.' }
+
+    $securePassword = Read-Host 'Contraseña del administrador (mín. 10; minúscula, mayúscula, número y símbolo)' -AsSecureString
+    $passwordPtr = [IntPtr]::Zero
+    $plain = $null
+    try {
+        $passwordPtr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
+        $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordPtr)
+        if ($plain.Length -lt 10 -or -not ($plain -cmatch '[a-z]') -or -not ($plain -cmatch '[A-Z]') -or
+            -not ($plain -match '\d') -or -not ($plain -match '[^A-Za-z0-9]') -or $plain -match '[\r\n\x00-\x1f\x7f]') {
+            throw 'La contraseña debe tener al menos 10 caracteres, minúscula, mayúscula, número y símbolo; no use saltos de línea ni controles.'
+        }
+
+        $template = Get-Content -Path $templatePath -Raw -ErrorAction Stop
+        $template = [regex]::Replace($template, '(?m)^IPV_JWT_SECRET=.*$', [System.Text.RegularExpressions.MatchEvaluator]{ param($m) "IPV_JWT_SECRET=$secret" })
+        $template = [regex]::Replace($template, '(?m)^IPV_ADMIN_EMAIL=.*$', [System.Text.RegularExpressions.MatchEvaluator]{ param($m) "IPV_ADMIN_EMAIL=$email" })
+        # MatchEvaluator evita que caracteres como $, # o comillas en la contraseña
+        # sean tratados como referencias de reemplazo de una expresión regular.
+        $template = [regex]::Replace($template, '(?m)^IPV_ADMIN_PASSWORD=.*$', [System.Text.RegularExpressions.MatchEvaluator]{ param($m) "IPV_ADMIN_PASSWORD=$plain" })
+        $tempEnv = "$envFile.$([guid]::NewGuid().ToString('N')).tmp"
+        try {
+            Set-Content -Path $tempEnv -Value $template -Encoding UTF8 -ErrorAction Stop
+            $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            $grant = '*{0}:(M)' -f $sid
+            & icacls.exe $tempEnv /inheritance:r /grant:r $grant | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'No se pudieron restringir los permisos del archivo de credenciales.' }
+            Move-Item -LiteralPath $tempEnv -Destination $envFile -ErrorAction Stop
+        } finally {
+            if (Test-Path $tempEnv) { Remove-Item -LiteralPath $tempEnv -Force -ErrorAction SilentlyContinue }
+        }
+        Write-Exito '.env creado con secreto JWT de 384 bits y permisos restringidos al usuario actual.'
+        Write-Aviso 'Tras verificar el primer inicio de sesión, elimine IPV_ADMIN_PASSWORD de .env y conserve la contraseña en un gestor seguro.'
+    } finally {
+        if ($passwordPtr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPtr) }
+        $plain = $null
+        if ($null -ne $securePassword) { $securePassword.Dispose() }
+    }
 }
 
 function Protect-Database {
-    Import-DotEnv
-    if ((Test-ServerHealth).Status -eq 'OK') { throw 'Detenga el servidor antes de cifrar la base de datos (.\iniciar-https.ps1 -Stop).' }
-    $cmd = Get-PythonCommand
-    & $cmd[0] @($cmd | Select-Object -Skip 1) -c 'import sqlcipher3' 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host 'Instalando el motor SQLCipher (sqlcipher3-wheels)…' -ForegroundColor Cyan
-        & $cmd[0] @($cmd | Select-Object -Skip 1) -m pip install --user sqlcipher3-wheels
-        if ($LASTEXITCODE -ne 0) { throw 'No se pudo instalar sqlcipher3-wheels.' }
-    }
-    if (-not $env:IPV_DB_KEY) {
-        if (-not (Test-Path $envFile)) { throw 'Primero ejecute -InitSecurity para crear .env.' }
-        $bytes = New-Object byte[] 32
-        [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-        $key = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
-        $content = Get-Content $envFile -Raw
-        if ($content -match '(?m)^IPV_DB_KEY=') { $content = $content -replace '(?m)^IPV_DB_KEY=.*$', "IPV_DB_KEY=$key" }
-        else { $content = $content.TrimEnd() + "`r`nIPV_DB_KEY=$key`r`n" }
-        Set-Content -Path $envFile -Value $content -Encoding UTF8
-        $env:IPV_DB_KEY = $key
-        Write-Exito 'Clave de cifrado de 256 bits generada y guardada en .env'
-    }
-    $env:IPV_DB_PATH = Join-Path $repoRoot 'data\ipv.db'
-    Push-Location $repoRoot
-    try { & $cmd[0] @($cmd | Select-Object -Skip 1) dbcrypt.py encrypt } finally { Pop-Location }
-    if ($LASTEXITCODE -eq 0) {
+    $snapshot = Get-ProcessEnvironmentSnapshot
+    try {
+        Import-DotEnv
+        $dbPath = Join-Path $dataDir 'ipv.db'
+        if (-not (Test-Path $dbPath)) { throw "No existe la base de datos '$dbPath'; inicie IPV antes de cifrarla." }
+        $ipvProcesses = @(Get-RunningIpvServerProcess)
+        if ($ipvProcesses.Count -gt 0) {
+            throw "IPV ya está ejecutándose (PID $($ipvProcesses[0].ProcessId)); detenga ese proceso y vuelva a intentarlo."
+        }
+        $owner = Get-PortOwner $Port
+        if ($null -ne $owner) {
+            throw "El puerto HTTPS $Port está atendido por $($owner.ProcessName) (PID $($owner.Id)); deténgalo y vuelva a intentarlo."
+        }
+        if ((Test-ServerHealth).Status -eq 'OK') {
+            throw 'Detenga el servidor antes de cifrar la base de datos (..\iniciar-https.ps1 -Stop).'
+        }
+        if (-not (Test-Path $envFile)) { throw 'Primero ejecute -InitSecurity para crear .env y proteger las credenciales.' }
+        $cmd = Get-PythonCommand
+        & $cmd[0] @($cmd | Select-Object -Skip 1) -c 'import sqlcipher3' 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host 'Instalando el motor SQLCipher (sqlcipher3-wheels) para el Python seleccionado…' -ForegroundColor Cyan
+            & $cmd[0] @($cmd | Select-Object -Skip 1) -m pip install sqlcipher3-wheels
+            if ($LASTEXITCODE -ne 0) { throw 'No se pudo instalar sqlcipher3-wheels en el Python seleccionado.' }
+            & $cmd[0] @($cmd | Select-Object -Skip 1) -c 'import sqlcipher3' 2>$null
+            if ($LASTEXITCODE -ne 0) { throw 'SQLCipher se instaló, pero no se puede importar con este Python.' }
+        }
+        if (-not $env:IPV_DB_KEY) {
+            $bytes = New-Object byte[] 32
+            $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+            try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+            $key = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+            [Array]::Clear($bytes, 0, $bytes.Length)
+            $content = Get-Content $envFile -Raw
+            if ($content -match '(?m)^\s*IPV_DB_KEY\s*=') {
+                $content = [regex]::Replace($content, '(?m)^\s*IPV_DB_KEY\s*=.*$', "IPV_DB_KEY=$key")
+            } else {
+                $content = $content.TrimEnd() + "`r`nIPV_DB_KEY=$key`r`n"
+            }
+            $tempEnv = "$envFile.$([guid]::NewGuid().ToString('N')).tmp"
+            try {
+                Set-Content -Path $tempEnv -Value $content -Encoding UTF8 -ErrorAction Stop
+                Set-PrivateFilePermissions -Path $tempEnv
+                Move-Item -LiteralPath $tempEnv -Destination $envFile -Force -ErrorAction Stop
+            } finally {
+                if (Test-Path $tempEnv) { Remove-Item -LiteralPath $tempEnv -Force -ErrorAction SilentlyContinue }
+            }
+            $env:IPV_DB_KEY = $key
+            Write-Exito 'Clave de cifrado de 256 bits generada y guardada en .env'
+        }
+        $env:IPV_DB_PATH = $dbPath
+        Push-Location $repoRoot
+        try { & $cmd[0] @($cmd | Select-Object -Skip 1) dbcrypt.py encrypt } finally { Pop-Location }
+        if ($LASTEXITCODE -ne 0) { throw 'Falló el cifrado. Revise el mensaje anterior y no borre la copia en claro.' }
         Write-Aviso 'IMPORTANTE: guarde una copia de IPV_DB_KEY (archivo .env) fuera de este equipo.'
         Write-Detalle 'Sin esa clave la base de datos y sus copias de seguridad NO se pueden recuperar.'
+    } finally {
+        Restore-ProcessEnvironment $snapshot
     }
 }
 
@@ -491,11 +677,34 @@ function Test-ServerHealth {
 
 function Get-PortOwner {
     param([int]$TcpPort)
+    if ($TcpPort -le 0) { return $null }
     try {
         $conn = Get-NetTCPConnection -LocalPort $TcpPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -eq $conn) { return $null }
-        return Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+        $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $($conn.OwningProcess)" -ErrorAction SilentlyContinue
+        $name = if ($proc) { [System.IO.Path]::GetFileNameWithoutExtension($proc.Name) } else {
+            (Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue).ProcessName
+        }
+        if (-not $name) { return $null }
+        $commandLine = if ($proc) { [string]$proc.CommandLine } else { '' }
+        return [pscustomobject]@{
+            ProcessName = [string]$name
+            Id = [int]$conn.OwningProcess
+            CommandLine = $commandLine
+        }
     } catch { return $null }
+}
+
+function Get-RunningIpvServerProcess {
+    $expectedServer = [IO.Path]::GetFullPath((Join-Path $repoRoot 'server.py'))
+    try {
+        return @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_.CommandLine) -and
+            $_.CommandLine.IndexOf($expectedServer, [StringComparison]::OrdinalIgnoreCase) -ge 0
+        } | Select-Object ProcessId, Name, CommandLine)
+    } catch {
+        throw "No se pudo verificar si IPV está ejecutándose; operación cancelada por seguridad: $($_.Exception.Message)"
+    }
 }
 
 function Test-TlsHandshake {
@@ -544,13 +753,14 @@ function Show-ServerStatus {
     if (Test-Path $envFile) { Write-Detalle 'JWT: configurado (.env)' } else { Write-Aviso 'JWT no configurado — ejecute -InitSecurity' }
     $encrypted = Test-DatabaseEncrypted
     if ($encrypted -eq $false) { Write-Fallo 'Base de datos SIN cifrar — ejecute -EncryptDb' }
-    elseif ($encrypted -eq $true) { Write-Exito 'Base de datos cifrada (SQLCipher AES-256)' }
+    elseif ($encrypted -eq $true) { Write-Detalle 'Cabecera no SQLite en claro: compatible con SQLCipher; el cifrado e integridad no se verifican aquí.' }
     Write-Host ''
 }
 
 function Invoke-Diagnostics {
     $problems = 0
     $warnings = 0
+    $script:DiagnosticsExitCode = 0
     Write-Host ''
     Write-Host '═══════════════════════════════════════════════════' -ForegroundColor Cyan
     Write-Host '  Diagnóstico del acceso seguro (HTTPS)' -ForegroundColor Cyan
@@ -631,10 +841,14 @@ function Invoke-Diagnostics {
             Write-Fallo "La API no respondió: $($health.Message)"; $problems++
         }
         try {
-            $head = Invoke-WebRequest -Uri "https://localhost:$Port/api/health" -Method Head -TimeoutSec 5 -UseBasicParsing
-            if ($head.Headers['Strict-Transport-Security']) { Write-Exito "HSTS activo: $($head.Headers['Strict-Transport-Security'])" }
-            else { Write-Aviso 'Sin cabecera HSTS'; $warnings++ }
-        } catch { }
+            $healthResponse = Invoke-WebRequest -Uri "https://localhost:$Port/api/health" -Method Get -TimeoutSec 5 -UseBasicParsing
+            if ($healthResponse.StatusCode -ne 200) { throw "HTTP $($healthResponse.StatusCode)" }
+            $hsts = $healthResponse.Headers['Strict-Transport-Security']
+            if ($hsts) { Write-Exito "HSTS activo: $hsts" }
+            else { Write-Aviso 'La API respondió, pero no envió HSTS.'; $warnings++ }
+        } catch {
+            Write-Aviso "No se pudo comprobar HSTS: $($_.Exception.Message)"; $warnings++
+        }
         if ($RedirectPort -gt 0) {
             $redir = Get-PortOwner $RedirectPort
             if ($redir) { Write-Exito "Redirección HTTP → HTTPS activa en el puerto $RedirectPort" }
@@ -651,7 +865,7 @@ function Invoke-Diagnostics {
         if ($envText -match '(?m)^IPV_ADMIN_PASSWORD=.+$') { Write-Aviso 'IPV_ADMIN_PASSWORD sigue en .env: bórrelo tras el primer inicio'; $warnings++ }
     } else { Write-Aviso 'Sin .env — ejecute -InitSecurity'; $warnings++ }
     $encrypted = Test-DatabaseEncrypted
-    if ($encrypted -eq $true) { Write-Exito 'Base de datos cifrada (SQLCipher AES-256)' }
+    if ($encrypted -eq $true) { Write-Detalle 'Cabecera no SQLite en claro: compatible con SQLCipher; el cifrado e integridad no se verifican aquí.' }
     elseif ($encrypted -eq $false) { Write-Aviso 'Base de datos sin cifrar — ejecute -EncryptDb'; $warnings++ }
     else { Write-Detalle 'Todavía no hay base de datos (se crea al primer arranque)' }
     $bk = Join-Path $dataDir 'backups'
@@ -661,9 +875,16 @@ function Invoke-Diagnostics {
     } else { Write-Aviso 'Todavía no hay copias de seguridad — ejecute -Backup'; $warnings++ }
 
     Write-Host ''
-    if ($problems -gt 0) { Write-Host "  Resultado: $problems problema(s) y $warnings aviso(s)." -ForegroundColor Red }
-    elseif ($warnings -gt 0) { Write-Host "  Resultado: todo funciona, con $warnings aviso(s)." -ForegroundColor Yellow }
-    else { Write-Host '  Resultado: acceso seguro correcto. Nada que corregir.' -ForegroundColor Green }
+    if ($problems -gt 0) {
+        Write-Host "  Resultado: $problems problema(s) y $warnings aviso(s)." -ForegroundColor Red
+        $script:DiagnosticsExitCode = 1
+    } elseif ($warnings -gt 0) {
+        Write-Host "  Resultado: todo funciona, con $warnings aviso(s)." -ForegroundColor Yellow
+        $script:DiagnosticsExitCode = 2
+    } else {
+        Write-Host '  Resultado: acceso seguro correcto. Nada que corregir.' -ForegroundColor Green
+        $script:DiagnosticsExitCode = 0
+    }
     Write-Host ''
 }
 
@@ -673,13 +894,26 @@ function Stop-IpvServer {
         if ($tcpPort -le 0) { continue }
         $owner = Get-PortOwner $tcpPort
         if ($null -eq $owner) { continue }
-        if ($owner.ProcessName -notmatch 'python|py') {
-            Write-Aviso "El puerto $tcpPort lo usa $($owner.ProcessName) (PID $($owner.Id)); no se detiene automáticamente."
+        $expectedServer = [IO.Path]::GetFullPath((Join-Path $repoRoot 'server.py'))
+        $isIpvProcess = $owner.ProcessName -match '^(python|pythonw|py)$' -and
+            -not [string]::IsNullOrWhiteSpace($owner.CommandLine) -and
+            $owner.CommandLine.IndexOf($expectedServer, [StringComparison]::OrdinalIgnoreCase) -ge 0
+        if (-not $isIpvProcess) {
+            Write-Aviso "El puerto $tcpPort lo usa $($owner.ProcessName) (PID $($owner.Id)); no coincide de forma verificable con este IPV y no se terminará."
             continue
         }
-        Stop-Process -Id $owner.Id -Force
-        Write-Exito "Servidor detenido (PID $($owner.Id), puerto $tcpPort)."
-        $stopped = $true
+        try {
+            Stop-Process -Id $owner.Id -ErrorAction Stop
+            $process = Get-Process -Id $owner.Id -ErrorAction SilentlyContinue
+            if ($process) {
+                Start-Sleep -Milliseconds 500
+                Stop-Process -Id $owner.Id -Force -ErrorAction Stop
+            }
+            Write-Exito "Servidor IPV detenido (PID $($owner.Id), puerto $tcpPort)."
+            $stopped = $true
+        } catch {
+            Write-Aviso "No se pudo detener PID $($owner.Id): $($_.Exception.Message)"
+        }
     }
     if (-not $stopped) { Write-Detalle 'No había ningún servidor IPV escuchando.' }
 }
@@ -696,7 +930,7 @@ if ($ConfigureNetworkOnly) {
 if ($InitSecurity) { Initialize-Security; exit 0 }
 if ($EncryptDb) { Protect-Database; exit $LASTEXITCODE }
 if ($Stop) { Stop-IpvServer; exit 0 }
-if ($Check) { Invoke-Diagnostics; exit 0 }
+if ($Check) { Invoke-Diagnostics; exit $script:DiagnosticsExitCode }
 if ($ExportCa) { Export-CaFile -Destination $ExportCa; exit 0 }
 if ($ShowPin) {
     $pin = Get-CaPin
@@ -711,9 +945,26 @@ if ($ShowPin) {
     exit 0
 }
 if ($Status) { Show-ServerStatus; exit 0 }
-if ($HealthCheck) { Test-ServerHealth | ConvertTo-Json; exit 0 }
+if ($HealthCheck) {
+    $health = Test-ServerHealth
+    $health | ConvertTo-Json -Depth 4
+    if ($health.Status -ne 'OK') { exit 1 }
+    exit 0
+}
 if ($Backup) {
-    Invoke-Py 'import server; i = server.auto_backup(); print("Copia creada:", i["filename"], i["size"], "bytes") if i else print("No se pudo crear la copia.")'
+    $backupCode = @'
+import json, sys, server
+info = server.auto_backup()
+if not info or info.get("error") or not info.get("success", True):
+    print(json.dumps({"ok": False, "error": (info or {}).get("error", "no se creó la copia")}, ensure_ascii=False))
+    sys.exit(1)
+failures = [item for item in info.get("offsite", []) if not item.get("ok")]
+print(json.dumps({"ok": not failures, "archivo": info.get("filename"), "bytes": info.get("size"),
+                  "replicas": info.get("offsite", []), "fallos_replica": failures}, ensure_ascii=False))
+sys.exit(2 if failures else 0)
+'@
+    Invoke-Py $backupCode
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     exit 0
 }
 if ($AuditLog) {
@@ -725,15 +976,18 @@ if ($AuditLog) {
 #  Arranque del servidor HTTPS
 # ==========================================================================
 # Eleva solo los cambios de hosts/firewall; el servidor Python sigue con los permisos del usuario.
-if (-not (Test-IsAdministrator)) {
+if (-not (Test-IsAdministrator) -and -not (Test-LocalNetworkConfigured -HttpsPort $Port -HttpPort $RedirectPort)) {
     try {
         $powershellExe = if ($PSVersionTable.PSEdition -eq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $PSHOME 'powershell.exe' }
         $quotedScript = '"' + $PSCommandPath + '"'
         $networkArgs = "-NoProfile -ExecutionPolicy Bypass -File $quotedScript -ConfigureNetworkOnly -Port $Port -RedirectPort $RedirectPort"
-        Start-Process -FilePath $powershellExe -Verb RunAs -ArgumentList $networkArgs | Out-Null
+        $networkSetup = Start-Process -FilePath $powershellExe -Verb RunAs -ArgumentList $networkArgs -Wait -PassThru
+        if ($networkSetup.ExitCode -ne 0) { throw "La configuración elevada de red terminó con código $($networkSetup.ExitCode)." }
     } catch {
-        Write-Aviso 'No se pudo configurar automáticamente hosts/firewall. El servidor funcionará localmente; revise el acceso desde la LAN.'
+        Write-Aviso "No se pudo configurar hosts/firewall: $($_.Exception.Message). El servidor funcionará localmente; revise el acceso desde la LAN."
     }
+} elseif (-not (Test-IsAdministrator)) {
+    Write-Detalle 'Alias y reglas de firewall ya están configurados; se evita solicitar UAC.'
 }
 try {
     if (Get-NetConnectionProfile -ErrorAction SilentlyContinue | Where-Object { $_.NetworkCategory -eq 'Public' }) {
@@ -741,12 +995,15 @@ try {
     }
 } catch { }
 
+$runningServer = @(Get-RunningIpvServerProcess)
+if ($runningServer.Count -gt 0) {
+    throw "IPV ya está ejecutándose desde este repositorio (PID $($runningServer[0].ProcessId)). Use -Stop o revise manualmente el proceso antes de iniciar otra instancia."
+}
 $owner = Get-PortOwner $Port
 if ($null -ne $owner) {
     throw "El puerto $Port ya está en uso por $($owner.ProcessName) (PID $($owner.Id)). Use .\iniciar-https.ps1 -Stop o elija otro puerto con -Port."
 }
 
-Import-DotEnv
 New-Item -ItemType Directory -Path $certDir -Force | Out-Null
 New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
 
@@ -793,14 +1050,12 @@ if ($reason) {
 }
 
 # --- Variables de entorno del servidor -------------------------------------
-$python = Get-Command python -ErrorAction SilentlyContinue
-$pythonArgs = @()
-if ($null -eq $python) {
-    $python = Get-Command py -ErrorAction SilentlyContinue
-    if ($null -eq $python) { throw 'No se encontró Python. Instale Python 3.10+ y vuelva a ejecutar este script.' }
-    $pythonArgs += '-3'
-}
-
+$pythonCommand = Get-PythonCommand
+$pythonExe = $pythonCommand[0]
+$pythonArgs = @($pythonCommand | Select-Object -Skip 1)
+$serverEnvSnapshot = Get-ProcessEnvironmentSnapshot
+try {
+Import-DotEnv  # secretos disponibles para el proceso servidor y restaurados al salir
 $env:IPV_HOST = '0.0.0.0'
 $env:PORT = "$Port"
 $env:IPV_DB_PATH = Join-Path $dataDir 'ipv.db'
@@ -841,4 +1096,7 @@ if ($Open) {
 
 Set-Location $repoRoot
 $pythonArgs += (Join-Path $repoRoot 'server.py')
-& $python.Source @pythonArgs
+& $pythonExe @pythonArgs
+} finally {
+    Restore-ProcessEnvironment $serverEnvSnapshot
+}
