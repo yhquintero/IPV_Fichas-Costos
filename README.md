@@ -435,11 +435,12 @@ npx playwright install chromium
 IPV_PORT=8011 IPV_DB_PATH=/tmp/ipv-e2e.db IPV_ADMIN_EMAIL=admin-e2e@ipv.local IPV_ADMIN_PASSWORD='E2E-solo-CI-password-2026' IPV_JWT_SECRET='e2e-only-jwt-secret-not-for-production-2026-abcdef0123456789' python server.py
 ```
 
-En otra terminal, dentro del repositorio:
+En otra terminal, dentro del repositorio (el bootstrap activa una licencia efímera propia para que el modal de licencia no tape el inicio de sesión):
 
 ```bash
 export IPV_ADMIN_EMAIL=admin-e2e@ipv.local IPV_ADMIN_PASSWORD='E2E-solo-CI-password-2026'
 export IPV_E2E_REQUEST_CODE="$(python -c 'import licencia; print(licencia.request_code(licencia.APP_WEB, "browser-e2e-client"))')"
+python tests/e2e/bootstrap.py
 npm run test:e2e
 ```
 

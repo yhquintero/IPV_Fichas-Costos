@@ -171,6 +171,8 @@ jobs:
           done
           cat e2e-server.log
           exit 1
+      - name: Preparar licencia efímera del servidor para pasar el bloqueo inicial
+        run: python tests/e2e/bootstrap.py
       - name: Ejecutar el flujo completo PX en Chromium
         run: npm run test:e2e
       - name: Guardar trazas y capturas si falla

@@ -8,6 +8,8 @@ test('administra una licencia PX desde el Creador web', async ({ page }) => {
   expect(password, 'IPV_ADMIN_PASSWORD debe apuntar a una contraseña temporal de pruebas').toBeTruthy();
   expect(requestCode, 'IPV_E2E_REQUEST_CODE debe ser un código web válido de pruebas').toMatch(/^IPVW-/);
 
+  // Saltar la guía de bienvenida para que sus controles no intercepten las acciones del test.
+  await page.addInitScript(() => localStorage.setItem('ipv.tour.done', '1'));
   await page.goto('/');
   const login = page.locator('form.login-card');
   await expect(login).toBeVisible();
@@ -18,14 +20,9 @@ test('administra una licencia PX desde el Creador web', async ({ page }) => {
 
   await page.locator('#nav-creator').click();
   await expect(page.getByRole('heading', { name: 'Creador de Licencias' })).toBeVisible();
-  await expect(page.locator('#creator-body')).toContainText('Licencias desactivadas');
+  await expect(page.locator('#creator-body')).toContainText('Licencias activadas');
 
-  // Crear una clave efímera de CI; el servidor y el checkout de este job se descartan al terminar.
-  await page.locator('#creator-pass2').fill('E2E-clave-firma-solo-CI-2026');
-  await page.locator('#creator-pass2b').fill('E2E-clave-firma-solo-CI-2026');
-  await page.locator('#creator-init2-btn').click();
-  await expect(page.locator('#creator-body')).toContainText('Licencias activadas', { timeout: 30_000 });
-
+  // La clave y licencia propias ya fueron preparadas por bootstrap.py. Aquí se prueba la emisión PX.
   await page.locator('#creator-user').fill('Cliente de prueba E2E');
   await page.locator('#creator-code').fill(requestCode);
   await page.locator('#creator-pass').fill('E2E-clave-firma-solo-CI-2026');
