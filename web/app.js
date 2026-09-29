@@ -779,7 +779,7 @@ async function loadCreatorInto(box) {
       <div class="panel-heading"><div><h2 class="panel-title">📜 Historial (${st.ledger_count} emitidas)</h2>
         <p class="panel-subtitle">keygen/registro_licencias.csv</p></div>
         <button class="secondary-btn" data-action="creator-ledger">↻ Cargar</button></div>
-      <div class="table-wrap"><table id="creator-ledger"><thead><tr>${idTh()}<th>Fecha</th><th>Serie</th><th>Usuario</th><th>App</th><th>Plan</th><th>Vence</th><th style="text-align:right">USD</th><th style="text-align:right">CUP</th></tr></thead>
+      <div class="table-wrap"><table id="creator-ledger"><thead><tr>${idTh()}<th>Fecha</th><th>Serie</th><th>Usuario</th><th>App</th><th>Plan</th><th>Vigencia / vence</th><th style="text-align:right">USD</th><th style="text-align:right">CUP</th></tr></thead>
       <tbody><tr><td colspan="9" class="small-note">Pulse «Cargar» para ver las últimas licencias emitidas.</td></tr></tbody></table></div>
     </div>`;
 
@@ -858,7 +858,7 @@ async function loadCreatorLedger() {
     const { items } = await api('/api/keygen/ledger?limit=100');
     const tb = $('#creator-ledger tbody'); if (!tb) return;
     tb.innerHTML = items.length ? items.map((r, i) => `<tr>${idTd(i, r.serie)}<td>${esc(r.fecha || '')}</td><td>${esc(r.serie || '')}</td><td>${esc(r.usuario || '')}</td>
-      <td>${r.app === 'A' ? '📱 Móvil' : '💻 Web'}</td><td>${esc(r.plan || '')}</td><td>${esc(r.vence || '')}</td>
+      <td>${r.app === 'A' ? '📱 Móvil' : '💻 Web'}</td><td>${esc(r.plan || '')}</td><td>${esc(r.desde && r.hasta ? `${r.desde} a ${r.hasta}` : (r.vence || ''))}</td>
       <td class="amount">${r.precio_usd ?? ''}</td><td class="amount">${money(r.precio_cup || 0).replace(' CUP', '')}</td></tr>`).join('')
       : '<tr><td colspan="9" class="small-note">Aún no se ha emitido ninguna licencia.</td></tr>';
   } catch (e) { toast(e.message, 'error'); }
