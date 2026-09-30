@@ -492,32 +492,93 @@ function Import-DotEnv {
     }
 }
 
+function Test-PythonExecutable {
+    # Sondea un intérprete con 'python -V' usando System.Diagnostics.Process.
+    # No usa el operador & ni $LASTEXITCODE porque, al lanzar el script con
+    # 'powershell -File', esas construcciones pueden fallar silenciosamente
+    # con la ruta del .venv y descartar intérpretes válidos.
+    param([string]$Exe, [string[]]$BaseArgs)
+    if ([string]::IsNullOrWhiteSpace($Exe)) { return $null }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $argParts = @()
+    foreach ($a in @($BaseArgs)) {
+        if ($null -eq $a) { continue }
+        $s = [string]$a
+        if ($s -match '[\s"]') { $argParts += '"' + ($s -replace '"', '\"') + '"' }
+        else { $argParts += $s }
+    }
+    $argParts += '-V'
+    $psi.Arguments = ($argParts -join ' ')
+    $proc = $null
+    try {
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $stdout = $proc.StandardOutput.ReadToEnd()
+        $stderr = $proc.StandardError.ReadToEnd()
+        if (-not $proc.WaitForExit(10000)) {
+            try { $proc.Kill() } catch { }
+            return $null
+        }
+        if ($proc.ExitCode -ne 0) { return $null }
+        $text = ($stdout + "`n" + $stderr)
+        if ($text -match 'Python\s+(\d+)\.(\d+)\.(\d+)') {
+            return [pscustomobject]@{
+                Version = "$($Matches[1]).$($Matches[2]).$($Matches[3])"
+                Major   = [int]$Matches[1]
+                Minor   = [int]$Matches[2]
+            }
+        }
+        return $null
+    } catch {
+        return $null
+    } finally {
+        if ($null -ne $proc) { $proc.Dispose() }
+    }
+}
+
 function Get-PythonCommand {
-    $candidates = [System.Collections.Generic.List[object]]::new()
+    # Devuelve un [string[]] donde el primer elemento es el ejecutable y los
+    # siguientes son argumentos base (por ejemplo, 'py -3'). La verificación
+    # se hace con Test-PythonExecutable (Process), no con '& $exe ...'.
+    $candidates = [System.Collections.Generic.List[string[]]]::new()
+
     $venvPython = Join-Path $repoRoot '.venv\Scripts\python.exe'
-    if (Test-Path $venvPython) { $candidates.Add([string[]]@($venvPython)) }
-    $python = Get-Command python -ErrorAction SilentlyContinue
-    if ($python) { $candidates.Add([string[]]@($python.Source)) }
-    $python3 = Get-Command python3 -ErrorAction SilentlyContinue
-    if ($python3) { $candidates.Add([string[]]@($python3.Source)) }
-    $launcher = Get-Command py -ErrorAction SilentlyContinue
-    if ($launcher) { $candidates.Add([string[]]@($launcher.Source, '-3')) }
+    if (Test-Path -LiteralPath $venvPython) { $candidates.Add([string[]]@($venvPython)) }
+
+    $launcher = Get-Command 'py' -ErrorAction SilentlyContinue -CommandType Application | Select-Object -First 1
+    if ($launcher -and $launcher.Source) { $candidates.Add([string[]]@([string]$launcher.Source, '-3')) }
+
+    foreach ($name in @('python', 'python3')) {
+        $found = Get-Command $name -ErrorAction SilentlyContinue -CommandType Application | Select-Object -First 1
+        if ($found -and $found.Source) { $candidates.Add([string[]]@([string]$found.Source)) }
+    }
 
     foreach ($candidate in $candidates) {
-        try {
-            $versionText = & $candidate[0] @($candidate | Select-Object -Skip 1) -c 'import sys;print("%d.%d.%d" % sys.version_info[:3])' 2>$null
-            if ($LASTEXITCODE -ne 0 -or $versionText -notmatch '^(\d+)\.(\d+)\.(\d+)$') { continue }
-            $version = [version]("$($Matches[1]).$($Matches[2]).$($Matches[3])")
-            if ($version -ge [version]'3.10') { return ,$candidate }
-        } catch { }
+        if ($null -eq $candidate -or $candidate.Length -eq 0) { continue }
+        $exe = [string]$candidate[0]
+        if ([string]::IsNullOrWhiteSpace($exe)) { continue }
+        $baseArgs = @()
+        if ($candidate.Length -gt 1) { $baseArgs = [string[]]$candidate[1..($candidate.Length - 1)] }
+        $info = Test-PythonExecutable -Exe $exe -BaseArgs $baseArgs
+        if ($null -eq $info) { continue }
+        if ($info.Major -gt 3 -or ($info.Major -eq 3 -and $info.Minor -ge 10)) { return ,$candidate }
     }
-    throw 'No se encontró una instalación funcional de Python 3.10 o superior. Instálela y vuelva a ejecutar este script.'
+    throw "No se encontró una instalación funcional de Python 3.10 o superior. Verifique '$venvPython' o instale Python y asegúrese de que 'python' esté en el PATH."
 }
 
 function Get-PythonVersion {
     try {
         $cmd = Get-PythonCommand
-        return (& $cmd[0] @($cmd | Select-Object -Skip 1) -c 'import sys;print("%d.%d.%d" % sys.version_info[:3])').Trim()
+        $exe = [string]$cmd[0]
+        $baseArgs = @()
+        if ($cmd.Length -gt 1) { $baseArgs = [string[]]$cmd[1..($cmd.Length - 1)] }
+        $info = Test-PythonExecutable -Exe $exe -BaseArgs $baseArgs
+        if ($info) { return $info.Version }
+        return ''
     } catch { return '' }
 }
 
@@ -526,9 +587,12 @@ function Invoke-Py([string]$Code) {
     try {
         Import-DotEnv  # carga secretos solo mientras vive el proceso Python
         $cmd = Get-PythonCommand
+        $exe = [string]$cmd[0]
+        $baseArgs = @()
+        if ($cmd.Length -gt 1) { $baseArgs = [string[]]$cmd[1..($cmd.Length - 1)] }
         $env:IPV_DB_PATH = Join-Path $repoRoot 'data\ipv.db'
         Push-Location $repoRoot
-        try { & $cmd[0] @($cmd | Select-Object -Skip 1) -c $Code } finally { Pop-Location }
+        try { & $exe @baseArgs '-c' $Code } finally { Pop-Location }
     } finally {
         Restore-ProcessEnvironment $snapshot
     }
@@ -607,12 +671,15 @@ function Protect-Database {
         }
         if (-not (Test-Path $envFile)) { throw 'Primero ejecute -InitSecurity para crear .env y proteger las credenciales.' }
         $cmd = Get-PythonCommand
-        & $cmd[0] @($cmd | Select-Object -Skip 1) -c 'import sqlcipher3' 2>$null
+        $exe = [string]$cmd[0]
+        $baseArgs = @()
+        if ($cmd.Length -gt 1) { $baseArgs = [string[]]$cmd[1..($cmd.Length - 1)] }
+        & $exe @baseArgs '-c' 'import sqlcipher3' 2>$null
         if ($LASTEXITCODE -ne 0) {
             Write-Host 'Instalando el motor SQLCipher (sqlcipher3-wheels) para el Python seleccionado…' -ForegroundColor Cyan
-            & $cmd[0] @($cmd | Select-Object -Skip 1) -m pip install sqlcipher3-wheels
+            & $exe @baseArgs '-m' 'pip' 'install' 'sqlcipher3-wheels'
             if ($LASTEXITCODE -ne 0) { throw 'No se pudo instalar sqlcipher3-wheels en el Python seleccionado.' }
-            & $cmd[0] @($cmd | Select-Object -Skip 1) -c 'import sqlcipher3' 2>$null
+            & $exe @baseArgs '-c' 'import sqlcipher3' 2>$null
             if ($LASTEXITCODE -ne 0) { throw 'SQLCipher se instaló, pero no se puede importar con este Python.' }
         }
         if (-not $env:IPV_DB_KEY) {
@@ -640,7 +707,7 @@ function Protect-Database {
         }
         $env:IPV_DB_PATH = $dbPath
         Push-Location $repoRoot
-        try { & $cmd[0] @($cmd | Select-Object -Skip 1) dbcrypt.py encrypt } finally { Pop-Location }
+        try { & $exe @baseArgs 'dbcrypt.py' 'encrypt' } finally { Pop-Location }
         if ($LASTEXITCODE -ne 0) { throw 'Falló el cifrado. Revise el mensaje anterior y no borre la copia en claro.' }
         Write-Aviso 'IMPORTANTE: guarde una copia de IPV_DB_KEY (archivo .env) fuera de este equipo.'
         Write-Detalle 'Sin esa clave la base de datos y sus copias de seguridad NO se pueden recuperar.'
@@ -1051,8 +1118,9 @@ if ($reason) {
 
 # --- Variables de entorno del servidor -------------------------------------
 $pythonCommand = Get-PythonCommand
-$pythonExe = $pythonCommand[0]
-$pythonArgs = @($pythonCommand | Select-Object -Skip 1)
+$pythonExe = [string]$pythonCommand[0]
+$pythonArgs = @()
+if ($pythonCommand.Length -gt 1) { $pythonArgs = [string[]]$pythonCommand[1..($pythonCommand.Length - 1)] }
 $serverEnvSnapshot = Get-ProcessEnvironmentSnapshot
 try {
 Import-DotEnv  # secretos disponibles para el proceso servidor y restaurados al salir
