@@ -11,7 +11,7 @@ trabajo del día a día. Sin salir de la aplicación permite:
      keygen/clave_privada.json (mismo formato que el Keygen de escritorio, son
      intercambiables) y la clave pública se escribe en licencia.py y License.kt.
   2. Emitir licencias firmadas para cualquier código de solicitud IPVW-… (PC) o
-     IPVA-… (móvil), con registro en keygen/registro_licencias.csv.
+     IPVA-… (móvil), con registro en el historial keygen/licencias.db (SQLite).
   3. Verificar licencias, consultar el historial y actualizar las tasas de cambio.
 
 Rutas (todas solo para administradores, auditarlas en el visor de auditoría):
@@ -30,7 +30,6 @@ vencido; siguen exigiendo autenticación y rol admin.
 """
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
 import re
@@ -41,12 +40,16 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import licencia as L
+from keygen import historial as H
 from keygen import keygen as kg
 
 ROOT = Path(L.__file__).resolve().parent
-# Clave, tasas e historial se comparten con el Keygen de escritorio (keygen/keygen.py:
-# kg.KEY_FILE, kg.RATES_FILE y kg.LEDGER son la única fuente de verdad; las pruebas
-# los redirigen a un directorio temporal).
+# Clave, tasas e historial se comparten con el Keygen Web y el de escritorio (keygen/keygen.py:
+# kg.KEY_FILE, kg.RATES_FILE y keygen.historial.DB_FILE son la única fuente de verdad; las
+# pruebas los redirigen a un directorio temporal).
+#
+# Para dar un servicio completo al proveedor (usuarios, roles, 2FA, historial con filtros,
+# anulaciones y pagos) use el Keygen Web:  python keygen/keygen.py
 LICENCIA_PY = ROOT / "licencia.py"
 LICENSE_KT = ROOT / "android" / "app" / "src" / "main" / "java" / "cu" / "ipvcostos" / "app" / "License.kt"
 
@@ -117,10 +120,17 @@ def status() -> dict:
     plans = {k: {"name": v[0], "days": v[1], "usd_web": v[2], "usd_android": v[3],
                  "cup_web": round(v[2] * usd, 2), "cup_android": round(v[3] * usd, 2)}
              for k, v in L.PLANS.items()}
-    try:
-        count = sum(1 for _ in csv.DictReader(kg.LEDGER.open(encoding="utf-8"))) if kg.LEDGER.exists() else 0
-    except OSError:
-        count = 0
+    count = 0
+    if H.DB_FILE.exists():  # consultar el estado nunca debe crear el historial como efecto secundario
+        try:
+            conn = H.connect()
+            try:
+                H.init(conn)
+                count = H.count(conn)
+            finally:
+                conn.close()
+        except Exception:  # un historial ilegible no debe impedir ver el estado
+            count = 0
     return {"configured": bool(pub), "fingerprint": fingerprint(pub) if pub else "",
             "has_key_file": kg.KEY_FILE.exists(), "whatsapp": L.WHATSAPP_NUMBER or "",
             "plans": plans, "rates": rates, "ledger_count": count, "license": lic}
@@ -146,7 +156,7 @@ def init_key(passphrase: str, whatsapp: str, force: bool = False) -> dict:
 
 def emit_license(user: str, code: str, plan: str, passphrase: str,
                  start_date: str | None = None, end_date: str | None = None,
-                 custom_price_usd: str | int | float | None = None) -> dict:
+                 custom_price_usd: str | int | float | None = None, actor: str = "") -> dict:
     """Emite una licencia firmada; PX usa fechas inclusivas UTC y precio manual."""
     app, _body = L.parse_request_code(str(code or ""))
     plan = str(plan or "").upper()
@@ -163,7 +173,8 @@ def emit_license(user: str, code: str, plan: str, passphrase: str,
         except SystemExit as exc:
             raise ValueError("Aún no existe la clave de firma: cree primero la clave en este panel.") from exc
         token, reply = kg.emit(d, str(user or ""), str(code or ""), plan,
-                               start_date, end_date, custom_price_usd)
+                               start_date, end_date, custom_price_usd,
+                               created_by=actor, source="embebido")
     data = L.decode(token, L.public_from_private(d))
     usd = kg.price_usd(app, plan, custom_price_usd)
     cup = round(usd * kg.rates()["USD"], 2)
@@ -187,14 +198,20 @@ def verify_license(token: str) -> dict:
 
 
 def ledger_rows(limit: int = 100) -> list[dict]:
-    """Licencias emitidas, la más reciente primero."""
-    if not kg.LEDGER.exists():
-        return []
-    limit = max(1, min(int(limit), 500))
-    with kg.LEDGER.open(encoding="utf-8", newline="") as fh:
-        rows = list(csv.DictReader(fh))
-    rows.reverse()
-    return rows[:limit]
+    """Licencias emitidas, la más reciente primero (mismos campos que el antiguo registro CSV)."""
+    conn = H.connect()
+    try:
+        H.init(conn)
+        with H.LOCK, conn:
+            kg.import_legacy(conn)  # primera vez: incorpora el registro_licencias.csv antiguo
+        items = H.recent(conn, limit)
+    finally:
+        conn.close()
+    return [{"fecha": i["created_at"][:16].replace("T", " "), "serie": i["serial"], "usuario": i["customer"],
+             "app": i["app"], "plan": i["plan"], "desde": i["valid_from"], "hasta": i["valid_until"],
+             "vence": i["valid_until"] or time.strftime("%Y-%m-%d", time.gmtime(i["expires_at"])),
+             "codigo_solicitud": i["request_code"], "precio_usd": i["price_usd"], "precio_cup": i["price_cup"],
+             "estado": i["state_label"], "emitida_por": i["created_by"]} for i in items]
 
 
 def save_rates(rates: dict) -> dict:
@@ -279,7 +296,8 @@ def install(srv) -> None:
                 result = emit_license(data.get("user", ""), data.get("code", ""),
                                       data.get("plan", ""), data.get("passphrase", ""),
                                       data.get("start_date"), data.get("end_date"),
-                                      data.get("custom_price_usd"))
+                                      data.get("custom_price_usd"),
+                                      actor=(getattr(self, "user", None) or {}).get("username", ""))
                 srv.audit_log("LICENSE_ISSUED", f"usuario={result['user']} app={result['app']} "
                               f"plan={result['plan']} serie={result['serial']}", self.client_ip())
                 return self.send_json(result)

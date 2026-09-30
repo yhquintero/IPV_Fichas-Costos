@@ -3,8 +3,9 @@ IPV Fichas y Costos - Integración Enterprise para server.py (solo librería est
 Autor: Ing. Yosvany Hernández Quintero
 
 Añade al servidor, sin dependencias externas:
-  * Autenticación JWT con roles (admin / editor / viewer), bloqueo por intentos
-    fallidos, rotación y revocación de refresh tokens.
+  * Autenticación JWT con usuario y contraseña (+2FA) y roles ADMINISTRADOR / JEFE /
+    ECONOMICO / ALMACENERO, bloqueo por intentos fallidos, rotación y revocación de
+    refresh tokens.
   * Sistema de Seguridad por Usuarios: permisos finos por módulo (ver / editar /
     ver costos) que rigen la entrada «Valores del IPV» —con sus pestañas Valores
     e Inventario— y el resto de apartados. Se filtran también los datos enviados.
@@ -38,6 +39,7 @@ import email_notifications
 import offsite
 import permisos
 import rate_limiter
+import roles
 import security
 
 API_VERSION = "1.1.0"
@@ -58,6 +60,7 @@ CSP = ("default-src 'self'; script-src 'self'; script-src-attr 'none'; style-src
        "base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
 
 PUBLIC_API = {"/api/health", "/api/auth/login", "/api/auth/refresh", "/api/auth/maintenance-login", "/api/auth/maintenance-refresh", "/api/openapi.yaml", "/api/version"}
+# Rutas administrativas: `roles.ROUTE_ROLES` dice qué roles entran en cada una (por defecto, solo ADMINISTRADOR)
 ADMIN_ONLY = ("/api/users", "/api/backup", "/api/audit", "/api/keygen")
 # Rutas permitidas con la contraseña caducada (solo para poder cambiarla o salir)
 PASSWORD_EXPIRED_ALLOWED = ("/api/auth/password", "/api/auth/me", "/api/auth/logout", "/api/auth/sessions",
@@ -264,7 +267,7 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
         # Token de integración heredado: nunca puede administrar usuarios, licencias
         # ni claves de firma. Las funciones administrativas exigen una sesión real.
         if srv.API_TOKEN and static and srv.hmac.compare_digest(static, srv.API_TOKEN) and not path.startswith(ADMIN_ONLY):
-            self.user = {"email": "api-token", "role": "viewer", "permissions": permisos.defaults_for("viewer")}
+            self.user = {"username": "api-token", "role": "API", "permissions": permisos.solo_lectura()}
         # 2) JWT de usuario
         elif auth.JWT_ENABLED:
             token = bearer
@@ -284,11 +287,12 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
                 # petición, así que un cambio del administrador surte efecto al
                 # instante, sin cerrar sesiones ni pedir un nuevo inicio.
                 row = conn.execute("SELECT * FROM users WHERE id=?", (payload["sub"],)).fetchone()
-                if not row or row["role"] != payload.get("role") or row["email"] != payload.get("email"):
+                if not row or row["role"] != payload.get("role") or row["username"] != payload.get("usr"):
                     raise srv.APIError("La sesión fue modificada. Inicie sesión de nuevo.", 401)
                 password_expired = auth.password_status(row)["expired"]
                 permisos_usuario = permisos.effective(conn, payload["sub"], row["role"])
-            self.user = {"id": payload["sub"], "email": payload["email"], "role": payload["role"],
+            self.user = {"id": payload["sub"], "username": payload["usr"], "email": row["email"],
+                         "role": payload["role"],
                          "mfa": bool(row["totp_enabled"]), "sid": payload.get("sid", ""),
                          "permissions": permisos_usuario}
             if (payload.get("pwx") or password_expired) and not path.startswith(PASSWORD_EXPIRED_ALLOWED):
@@ -305,14 +309,17 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
             return
         # Autorización por rol
         role = self.user["role"]
-        if path.startswith(ADMIN_ONLY) and role != "admin":
-            raise srv.APIError("Permisos insuficientes.", 403)
-        if self.command not in ("GET", "HEAD", "OPTIONS") and role == "viewer" \
+        if path.startswith(ADMIN_ONLY):
+            permitidos = next((r for prefijo, r in roles.ROUTE_ROLES.items() if path.startswith(prefijo)),
+                              frozenset({roles.ADMINISTRADOR}))
+            if role not in permitidos:
+                raise srv.APIError("Permisos insuficientes.", 403)
+        if self.command not in ("GET", "HEAD", "OPTIONS") and role not in roles.ROLES \
                 and not path.startswith("/api/auth/"):
-            raise srv.APIError("Su rol solo permite consultar.", 403)
+            raise srv.APIError("Su acceso solo permite consultar.", 403)
         # Autorización por usuario (permisos finos por módulo)
         self._check_module_permission(path)
-        audit.set_current_user(self.user.get("email", ""))
+        audit.set_current_user(self.user.get("username", ""))
 
     def _check_module_permission(self, path):
         """Sistema de Seguridad por Usuarios: permiso del módulo para esta ruta.
@@ -436,7 +443,8 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
         with srv.WRITE_LOCK, srv.connect() as conn:
             if path in ("/api/auth/login", "/api/auth/maintenance-login"):
                 try:
-                    result = auth.login(conn, str(data.get("email", "")), str(data.get("password", "")),
+                    ident = str(data.get("username") or data.get("email") or "")
+                    result = auth.login(conn, ident, str(data.get("password", "")),
                                         srv.now_iso, str(data.get("otp", ""))[:20], ip,
                                         self.headers.get("User-Agent", "")[:300])
                 except auth.MFARequired:
@@ -444,24 +452,25 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
                     raise
                 except auth.AuthError as exc:
                     conn.commit()  # conserva el contador de intentos fallidos
-                    srv.audit_log("LOGIN_FAILED", f"email={str(data.get('email', ''))[:120]}", ip)
-                    _on_login_failure(exc, str(data.get("email", ""))[:120], ip)
+                    ident = str(data.get("username") or data.get("email") or "")[:120]
+                    srv.audit_log("LOGIN_FAILED", f"user={ident}", ip)
+                    _on_login_failure(exc, ident, ip)
                     raise
-                if path == "/api/auth/maintenance-login" and result["user"]["role"] != "admin":
+                if path == "/api/auth/maintenance-login" and result["user"]["role"] not in roles.ADMINS:
                     # El rollback elimina la sesión recién creada. Nunca devolver
                     # tokens de mantenimiento a un usuario de otro rol.
-                    raise srv.APIError("Solo administradores pueden recuperar la licencia.", 403)
-                audit.set_current_user(result["user"]["email"])
+                    raise srv.APIError("Solo el Administrador o el Jefe pueden recuperar la licencia.", 403)
+                audit.set_current_user(result["user"]["username"])
                 device = auth.device_label(self.headers.get("User-Agent", ""))
-                srv.audit_log("LOGIN", f"user={result['user']['email']} device={device}", ip)
+                srv.audit_log("LOGIN", f"user={result['user']['username']} device={device}", ip)
                 if result.get("new_ip"):
-                    _alert_new_ip(result["user"]["email"], ip, device)
+                    _alert_new_ip(result["user"]["username"], result["user"].get("email", ""), ip, device)
                 if result.get("password_expired"):
-                    srv.audit_log("PASSWORD_EXPIRED", f"user={result['user']['email']}", ip)
+                    srv.audit_log("PASSWORD_EXPIRED", f"user={result['user']['username']}", ip)
             elif path in ("/api/auth/refresh", "/api/auth/maintenance-refresh"):
                 result = auth.refresh(conn, str(data.get("refresh_token", "")), ip)
-                if path == "/api/auth/maintenance-refresh" and result["user"]["role"] != "admin":
-                    raise srv.APIError("Solo administradores pueden recuperar la licencia.", 403)
+                if path == "/api/auth/maintenance-refresh" and result["user"]["role"] not in roles.ADMINS:
+                    raise srv.APIError("Solo el Administrador o el Jefe pueden recuperar la licencia.", 403)
             elif path in ("/api/auth/2fa/setup", "/api/auth/2fa/enable", "/api/auth/2fa/disable", "/api/auth/password"):
                 uid = (self.user or {}).get("id")
                 if not uid:
@@ -470,20 +479,20 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
                     result = auth.mfa_setup(conn, uid)
                 elif path.endswith("/enable"):
                     result = auth.mfa_enable(conn, uid, str(data.get("code", "")))
-                    srv.audit_log("MFA_ENABLED", f"user={self.user['email']}", ip)
+                    srv.audit_log("MFA_ENABLED", f"user={self.user['username']}", ip)
                 elif path.endswith("/disable"):
                     result = auth.mfa_disable(conn, uid, str(data.get("password", "")), str(data.get("code", "")))
-                    srv.audit_log("MFA_DISABLED", f"user={self.user['email']}", ip)
+                    srv.audit_log("MFA_DISABLED", f"user={self.user['username']}", ip)
                 else:
                     result = auth.change_password(conn, uid, str(data.get("current", "")), str(data.get("new", "")),
                                                   srv.now_iso, self.user.get("sid", ""))
-                    srv.audit_log("PASSWORD_CHANGED", f"user={self.user['email']}", ip)
+                    srv.audit_log("PASSWORD_CHANGED", f"user={self.user['username']}", ip)
             elif path == "/api/auth/sessions/revoke-others":
                 uid = (self.user or {}).get("id")
                 if not uid:
                     raise srv.APIError("Requiere una sesión de usuario (JWT).", 401)
                 closed = auth.revoke_other_sessions(conn, uid, self.user.get("sid", ""))
-                srv.audit_log("SESSIONS_REVOKED", f"user={self.user['email']} cerradas={closed}", ip)
+                srv.audit_log("SESSIONS_REVOKED", f"user={self.user['username']} cerradas={closed}", ip)
                 result = {"ok": True, "closed": closed}
             elif path == "/api/auth/logout":
                 auth.revoke(conn, str(data.get("refresh_token", "")))
@@ -502,20 +511,21 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
     spray_hits: dict = {}      # ip -> [(momento, correo)]
     spray_alerted: dict = {}   # ip -> momento de la última alerta
 
-    def _on_login_failure(exc, email: str, ip: str) -> None:
+    def _on_login_failure(exc, account: str, ip: str) -> None:
         """Alertas de intentos fallidos: por cuenta (umbral y bloqueo) y por IP (rociado)."""
         when = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         try:
             if isinstance(exc, auth.LoginFailed):
                 if exc.locked:
-                    srv.audit_log("ACCOUNT_LOCKED", f"user={exc.email} intentos={exc.attempts}", ip)
+                    srv.audit_log("ACCOUNT_LOCKED", f"user={exc.username} intentos={exc.attempts}", ip)
                 if exc.locked or (auth.FAILED_ALERT_AT and exc.attempts == auth.FAILED_ALERT_AT):
-                    srv.audit_log("LOGIN_FAILED_ALERT", f"user={exc.email} intentos={exc.attempts}", ip)
+                    srv.audit_log("LOGIN_FAILED_ALERT", f"user={exc.username} intentos={exc.attempts}", ip)
+                    # Avisa al correo de contacto de la cuenta (si lo tiene) y al de la empresa
                     for to in {exc.email.lower(), NOTIFY_EMAIL.lower()} - {""}:
-                        email_notifications.notify_failed_logins(to, exc.email, ip, exc.attempts, exc.locked, when)
+                        email_notifications.notify_failed_logins(to, exc.username, ip, exc.attempts, exc.locked, when)
             now = time.time()
             with spray_lock:
-                hits = [h for h in spray_hits.get(ip, []) if now - h[0] < SPRAY_WINDOW] + [(now, email.lower())]
+                hits = [h for h in spray_hits.get(ip, []) if now - h[0] < SPRAY_WINDOW] + [(now, account.lower())]
                 spray_hits[ip] = hits[-200:]
                 accounts = {h[1] for h in hits}
                 suspicious = (len(accounts) >= SPRAY_ACCOUNTS or len(hits) >= SPRAY_FAILURES) \
@@ -532,13 +542,14 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
         except Exception as err:  # una alerta nunca debe alterar la respuesta del login
             print("Alerta de intentos fallidos no enviada:", err)
 
-    def _alert_new_ip(email: str, ip: str, device: str) -> None:
+    def _alert_new_ip(username: str, email: str, ip: str, device: str) -> None:
         when = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        srv.audit_log("LOGIN_NEW_IP", f"user={email} device={device}", ip)
+        srv.audit_log("LOGIN_NEW_IP", f"user={username} device={device}", ip)
         try:
-            email_notifications.notify_new_login(email, email, ip, device, when)
+            if email:
+                email_notifications.notify_new_login(email, username, ip, device, when)
             if NOTIFY_EMAIL and NOTIFY_EMAIL.lower() != email.lower():
-                email_notifications.notify_new_login(NOTIFY_EMAIL, email, ip, device, when)
+                email_notifications.notify_new_login(NOTIFY_EMAIL, username, ip, device, when)
         except Exception as exc:  # la alerta nunca impide el inicio de sesión
             print("Alerta de nuevo acceso no enviada:", exc)
 
@@ -561,11 +572,11 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
                 if not auth.session_valid(conn, payload):
                     return False
                 row = conn.execute("SELECT * FROM users WHERE id=?", (payload["sub"],)).fetchone()
-                if not row or row["role"] != payload.get("role") or row["email"] != payload.get("email") or auth.password_status(row)["expired"]:
+                if not row or row["role"] != payload.get("role") or row["username"] != payload.get("usr") or auth.password_status(row)["expired"]:
                     return False
-                if event and row["role"] != "admin":
+                if event and row["role"] != roles.ADMINISTRADOR:
                     user["permissions"] = permisos.effective(conn, row["id"], row["role"])
-        if event and user.get("role") != "admin":
+        if event and user.get("role") != roles.ADMINISTRADOR:
             action = event.get("action", "")
             module = next((m for keyword, m in (("MATERIAL", "materials"), ("BULK", "materials"),
                 ("PRODUCT", "products"), ("FICHA", "fichas"), ("CONTROL", "controls"))
@@ -596,7 +607,7 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
                     break  # revocado, token vencido o licencia invalidada
                 if event and allowed:
                     # Los detalles del registro de auditoría no son públicos.
-                    visible = event if (self.user or {}).get("role") == "admin" else {
+                    visible = event if (self.user or {}).get("role") in roles.ADMINS else {
                         "action": event.get("action"), "time": event.get("time")}
                     payload = json.dumps(visible, ensure_ascii=False)
                     self.wfile.write(f"event: change\ndata: {payload}\n\n".encode("utf-8"))
@@ -652,14 +663,15 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
                           "password_max_age_days": auth.PASSWORD_MAX_AGE_DAYS,
                           "password_history": auth.PASSWORD_HISTORY, "new_ip_alerts": True,
                           "failed_login_alert_at": auth.FAILED_ALERT_AT,
-                          "offsite_backup": offsite.status() if self.user and self.user.get("role") == "admin"
+                          "offsite_backup": offsite.status() if self.user and self.user.get("role") in roles.ADMINS
                           else {"configured": offsite.configured()},
                           "permissions": (self.user or {}).get("permissions"),
-                          "modules": permisos.MODULES, "module_perms": permisos.PERMS}
+                          "modules": permisos.MODULES, "module_perms": permisos.PERMS,
+                          "roles": roles.catalog()}
             elif path == "/api/auth/me":
                 result = {"user": self.user, "jwt": auth.JWT_ENABLED,
                           "permissions": (self.user or {}).get("permissions"),
-                          "modules": permisos.MODULES}
+                          "modules": permisos.MODULES, "roles": roles.catalog()}
             elif path == "/api/auth/sessions":
                 if not (self.user or {}).get("id"):
                     raise srv.APIError("Requiere una sesión de usuario (JWT).", 401)
@@ -673,8 +685,9 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
                 with srv.db_session() as conn:
                     result = []
                     for r in conn.execute(
-                            "SELECT id,email,name,role,active,created_at,last_login,totp_enabled AS mfa,must_change_password,"
-                            "(locked_until > strftime('%s','now')) AS locked FROM users ORDER BY email"):
+                            "SELECT id,username,email,name,role,active,created_at,last_login,totp_enabled AS mfa,"
+                            "must_change_password,(locked_until > strftime('%s','now')) AS locked "
+                            "FROM users ORDER BY username"):
                         usuario = dict(r)
                         # Permisos por módulo del Sistema de Seguridad por Usuarios
                         usuario["permissions"] = permisos.effective(conn, usuario["id"], usuario["role"])
@@ -723,11 +736,11 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
                 data = self.body_json()
                 ajustes = data.pop("permissions", None)
                 with srv.WRITE_LOCK, srv.connect() as conn:
-                    result = auth.create_user(conn, data, srv.now_iso)
+                    result = auth.create_user(conn, data, srv.now_iso, (self.user or {}).get("role", roles.ADMINISTRADOR))
                     if ajustes is not None:
                         result["permissions"] = permisos.set_permissions(conn, result["id"], result["role"],
                                                                         ajustes, srv.now_iso)
-                srv.audit_log("CREATE_USER", f"email={result['email']} role={result['role']}", self.client_ip())
+                srv.audit_log("CREATE_USER", f"user={result['username']} role={result['role']}", self.client_ip())
                 return self.send_json(result, 201)
             self.send_json(_auth_route(self, path))
         except auth.MFARequired as exc:
@@ -751,7 +764,7 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
                 sid = path.rsplit("/", 1)[-1][:64]
                 with srv.WRITE_LOCK, srv.connect() as conn:
                     auth.revoke_session(conn, self.user["id"], sid)
-                srv.audit_log("SESSION_REVOKED", f"user={self.user['email']}", self.client_ip())
+                srv.audit_log("SESSION_REVOKED", f"user={self.user['username']}", self.client_ip())
                 return self.send_json({"ok": True, "current": sid == self.user.get("sid")})
             except auth.AuthError as exc:
                 return self.send_json({"error": exc.message}, exc.status)
@@ -780,12 +793,16 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
                 if fila is None:
                     raise srv.APIError("Usuario no encontrado.", 404)
                 rol = fila["role"]
+                actor_rol = (self.user or {}).get("role", roles.ADMINISTRADOR)
+                if not roles.can_manage(actor_rol, rol):
+                    raise srv.APIError(f"Su rol ({roles.label(actor_rol)}) no puede administrar a un usuario "
+                                       f"{roles.label(rol)}.", 403)
                 if ajustes is not None:
                     permisos.set_permissions(conn, user_id, rol, ajustes, srv.now_iso)
                 elif restablecer:
                     permisos.reset_permissions(conn, user_id)
                 if data:
-                    result = auth.update_user(conn, actor, user_id, data)
+                    result = auth.update_user(conn, actor, user_id, data, actor_rol)
                 else:
                     result = auth.public_user(conn.execute("SELECT * FROM users WHERE id=?",
                                                            (user_id,)).fetchone())
@@ -794,8 +811,8 @@ def install(srv) -> None:  # noqa: C901 - punto único de integración
                 detalle = "restablecidos por rol" if restablecer else ",".join(sorted(ajustes or {}))
                 srv.audit_log("UPDATE_USER_PERMISSIONS", f"id={user_id} modulos={detalle}", self.client_ip())
             if data:
-                changes = ",".join(k for k in ("role", "active", "unlock", "reset_mfa", "revoke_sessions",
-                                               "force_password_change") if k in data)
+                changes = ",".join(k for k in ("role", "name", "email", "active", "unlock", "reset_mfa",
+                                               "revoke_sessions", "force_password_change", "password") if k in data)
                 srv.audit_log("UPDATE_USER", f"id={user_id} cambios={changes}", self.client_ip())
             self.send_json(result)
         except ValueError:

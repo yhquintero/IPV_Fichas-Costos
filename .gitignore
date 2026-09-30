@@ -27,10 +27,13 @@ android/.idea/
 data/exports/
 zap-openapi.yaml
 
-# Keygen: clave de firma y registro de ventas (NUNCA al repositorio)
+# Keygen: clave de firma, historial de ventas y secretos del panel (NUNCA al repositorio)
 keygen/clave_privada.json
 keygen/registro_licencias.csv
 keygen/tasas.json
+keygen/licencias.db
+keygen/licencias.db-*
+keygen/web_secret.key
 data/licencia.*
 
 # Local Python virtual environments

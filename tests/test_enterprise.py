@@ -22,9 +22,9 @@ class EnterpriseTest(unittest.TestCase):
         auth.JWT_SECRET = "test-secret-" + "x" * 32
         auth.JWT_ENABLED = True
         with server.connect() as conn:
-            auth.create_user(conn, {"email": "admin@ipv.cu", "name": "Admin", "role": "admin",
+            auth.create_user(conn, {"email": "admin@ipv.cu", "name": "Admin", "role": "ADMINISTRADOR",
                                     "password": "Admin#2026seguro"}, server.now_iso)
-            auth.create_user(conn, {"email": "lector@ipv.cu", "name": "Lector", "role": "viewer",
+            auth.create_user(conn, {"email": "lector@ipv.cu", "name": "Lector", "role": "ALMACENERO",
                                     "password": "Lector#2026seguro"}, server.now_iso)
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
@@ -83,7 +83,7 @@ class EnterpriseTest(unittest.TestCase):
 
     def test_lockout_after_failed_attempts(self):
         with server.connect() as conn:
-            auth.create_user(conn, {"email": "bloq@ipv.cu", "name": "B", "role": "editor",
+            auth.create_user(conn, {"email": "bloq@ipv.cu", "name": "B", "role": "ALMACENERO",
                                     "password": "Bloqueo#2026x"}, server.now_iso)
         for _ in range(auth.MAX_FAILED):
             self.assertEqual(self.login("bloq@ipv.cu", "mala")[0], 401)

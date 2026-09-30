@@ -609,11 +609,18 @@ function Initialize-Security {
     $secret = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
     [Array]::Clear($bytes, 0, $bytes.Length)
 
-    $email = (Read-Host 'Correo del administrador').Trim()
-    try {
-        $mail = [System.Net.Mail.MailAddress]::new($email)
-        if ($mail.Address -ne $email) { throw 'Formato no válido.' }
-    } catch { throw 'Escriba un correo electrónico válido para el administrador.' }
+    $usuario = (Read-Host 'Usuario del administrador [admin]').Trim()
+    if ([string]::IsNullOrWhiteSpace($usuario)) { $usuario = 'admin' }
+    if ($usuario -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{2,39}$') {
+        throw 'El usuario debe tener de 3 a 40 caracteres: letras, números, punto, guion o guion bajo.'
+    }
+    $email = (Read-Host 'Correo de contacto del administrador (opcional, Enter para omitir)').Trim()
+    if ($email) {
+        try {
+            $mail = [System.Net.Mail.MailAddress]::new($email)
+            if ($mail.Address -ne $email) { throw 'Formato no válido.' }
+        } catch { throw 'El correo de contacto no es válido; déjelo vacío si no desea indicarlo.' }
+    }
 
     $securePassword = Read-Host 'Contraseña del administrador (mín. 10; minúscula, mayúscula, número y símbolo)' -AsSecureString
     $passwordPtr = [IntPtr]::Zero
@@ -628,6 +635,7 @@ function Initialize-Security {
 
         $template = Get-Content -Path $templatePath -Raw -ErrorAction Stop
         $template = [regex]::Replace($template, '(?m)^IPV_JWT_SECRET=.*$', [System.Text.RegularExpressions.MatchEvaluator]{ param($m) "IPV_JWT_SECRET=$secret" })
+        $template = [regex]::Replace($template, '(?m)^IPV_ADMIN_USER=.*$', [System.Text.RegularExpressions.MatchEvaluator]{ param($m) "IPV_ADMIN_USER=$usuario" })
         $template = [regex]::Replace($template, '(?m)^IPV_ADMIN_EMAIL=.*$', [System.Text.RegularExpressions.MatchEvaluator]{ param($m) "IPV_ADMIN_EMAIL=$email" })
         # MatchEvaluator evita que caracteres como $, # o comillas en la contraseña
         # sean tratados como referencias de reemplazo de una expresión regular.
@@ -643,7 +651,7 @@ function Initialize-Security {
         } finally {
             if (Test-Path $tempEnv) { Remove-Item -LiteralPath $tempEnv -Force -ErrorAction SilentlyContinue }
         }
-        Write-Exito '.env creado con secreto JWT de 384 bits y permisos restringidos al usuario actual.'
+        Write-Exito ".env creado con secreto JWT de 384 bits y permisos restringidos al usuario actual. Usuario administrador: $usuario"
         Write-Aviso 'Tras verificar el primer inicio de sesión, elimine IPV_ADMIN_PASSWORD de .env y conserve la contraseña en un gestor seguro.'
     } finally {
         if ($passwordPtr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPtr) }
@@ -1161,8 +1169,8 @@ if ([string]::IsNullOrWhiteSpace($env:IPV_JWT_SECRET)) {
     if (-not (Test-Path $envFile)) { Write-Detalle "(no se encontró el archivo $envFile)" }
     else { Write-Detalle 'El archivo .env existe pero no define IPV_JWT_SECRET (o está vacío).' }
 }
-elseif ([string]::IsNullOrWhiteSpace($env:IPV_ADMIN_EMAIL) -or [string]::IsNullOrWhiteSpace($env:IPV_ADMIN_PASSWORD)) {
-    Write-Detalle 'IPV_ADMIN_EMAIL / IPV_ADMIN_PASSWORD no definidos: correcto si el administrador ya existe.'
+elseif ([string]::IsNullOrWhiteSpace($env:IPV_ADMIN_USER) -or [string]::IsNullOrWhiteSpace($env:IPV_ADMIN_PASSWORD)) {
+    Write-Detalle 'IPV_ADMIN_USER / IPV_ADMIN_PASSWORD no definidos: correcto si el administrador ya existe.'
     Write-Detalle 'Si es la primera instalación, créelo con:  .\iniciar-https.ps1 -InitSecurity'
 }
 $encrypted = Test-DatabaseEncrypted

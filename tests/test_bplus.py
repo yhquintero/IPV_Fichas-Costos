@@ -28,8 +28,8 @@ class SessionsApiTest(unittest.TestCase):
         auth.JWT_SECRET = "test-secret-" + "y" * 32
         auth.JWT_ENABLED = True
         with server.connect() as conn:
-            auth.create_user(conn, {"email": "jefe@ipv.cu", "name": "Jefe", "role": "admin", "password": PW}, server.now_iso)
-            auth.create_user(conn, {"email": "ana@ipv.cu", "name": "Ana", "role": "editor", "password": PW}, server.now_iso)
+            auth.create_user(conn, {"email": "jefe@ipv.cu", "name": "Jefe", "role": "ADMINISTRADOR", "password": PW}, server.now_iso)
+            auth.create_user(conn, {"email": "ana@ipv.cu", "name": "Ana", "role": "ALMACENERO", "password": PW}, server.now_iso)
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
         cls.base = f"http://127.0.0.1:{cls.httpd.server_port}"
@@ -100,7 +100,7 @@ class SessionsApiTest(unittest.TestCase):
 
     def test_forced_password_change_and_history(self):
         with server.connect() as conn:
-            auth.create_user(conn, {"email": "nuevo@ipv.cu", "name": "Nuevo", "role": "editor", "password": PW,
+            auth.create_user(conn, {"email": "nuevo@ipv.cu", "name": "Nuevo", "role": "ALMACENERO", "password": PW,
                                     "must_change_password": True}, server.now_iso)
         d = self.login("nuevo@ipv.cu")
         self.assertTrue(d["password_expired"])
@@ -132,7 +132,7 @@ class SessionsApiTest(unittest.TestCase):
     def test_failed_login_alerts_and_summary(self):
         import enterprise  # noqa: F401
         with server.connect() as conn:
-            auth.create_user(conn, {"email": "pepe@ipv.cu", "name": "Pepe", "role": "viewer", "password": PW}, server.now_iso)
+            auth.create_user(conn, {"email": "pepe@ipv.cu", "name": "Pepe", "role": "ALMACENERO", "password": PW}, server.now_iso)
         with mock.patch.dict(rate_limiter.PROFILES, {"auth": (100, 60)}), \
                 mock.patch("email_notifications.notify_failed_logins") as alert:
             for _ in range(2):
@@ -198,7 +198,7 @@ class AuthUnitTest(unittest.TestCase):
         self.conn = dbcrypt.connect(":memory:")
         self.conn.row_factory = sqlite3.Row
         auth.init_auth(self.conn, server.now_iso)
-        auth.create_user(self.conn, {"email": "u@ipv.cu", "name": "U", "role": "viewer", "password": PW}, server.now_iso)
+        auth.create_user(self.conn, {"email": "u@ipv.cu", "name": "U", "role": "ALMACENERO", "password": PW}, server.now_iso)
         self.uid = self.conn.execute("SELECT id FROM users").fetchone()[0]
 
     def test_new_ip_detection(self):

@@ -5,7 +5,10 @@ Autor: Ing. Yosvany Hernández Quintero
 - Tokens JWT HS256 firmados con HMAC-SHA256 (access + refresh).
 - Contraseñas con PBKDF2-HMAC-SHA256 (310 000 iteraciones) y sal aleatoria.
 - Revocación de refresh tokens (logout) mediante tabla `revoked_tokens`.
-- Roles: admin, editor, viewer.
+- Inicio de sesión con USUARIO + contraseña (+ 2FA opcional o exigida), como en el
+  repositorio «inventario». El correo es un dato de contacto opcional; por compatibilidad
+  también se acepta como identificador al iniciar sesión.
+- Roles: ADMINISTRADOR, JEFE, ECONOMICO, ALMACENERO (ver `roles.py`).
 """
 from __future__ import annotations
 
@@ -14,10 +17,13 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
+import sqlite3
 import time
 from datetime import datetime, timezone
 
+import roles
 import security
 
 JWT_SECRET = os.environ.get("IPV_JWT_SECRET", "").strip()
@@ -28,7 +34,8 @@ PASSWORD_MAX_AGE_DAYS = int(os.environ.get("IPV_PASSWORD_MAX_AGE_DAYS", "0") or 
 PASSWORD_HISTORY = int(os.environ.get("IPV_PASSWORD_HISTORY", "5") or 0)
 PASSWORD_WARN_DAYS = 7
 FAILED_ALERT_AT = int(os.environ.get("IPV_FAILED_LOGIN_ALERT", "3") or 0)  # 0 = sin alertas
-ROLES = ("admin", "editor", "viewer")
+ROLES = roles.ROLES
+USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,39}$")
 JWT_ENABLED = bool(JWT_SECRET)
 
 
@@ -56,7 +63,7 @@ def _secret() -> bytes:
 def encode_token(user: dict, token_type: str = "access", sid: str = "", pwx: bool = False) -> str:
     now = int(time.time())
     payload = {
-        "sub": user["id"], "email": user["email"], "role": user["role"], "ver": user.get("ver", 0), "mfa": bool(user.get("mfa")),
+        "sub": user["id"], "usr": user["username"], "role": user["role"], "ver": user.get("ver", 0), "mfa": bool(user.get("mfa")),
         "type": token_type, "iat": now,
         "exp": now + (ACCESS_TTL if token_type == "access" else REFRESH_TTL),
         "jti": secrets.token_urlsafe(16),
@@ -123,19 +130,24 @@ def validate_password_strength(password: str) -> None:
         raise AuthError("La contraseña debe combinar mayúsculas, minúsculas, números o símbolos.", 400)
 
 
-SCHEMA = """
+USERS_DDL = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    email TEXT NOT NULL DEFAULT '' COLLATE NOCASE,
     name TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'viewer' CHECK(role IN ('admin','editor','viewer')),
+    role TEXT NOT NULL DEFAULT 'ALMACENERO'
+        CHECK(role IN ('ADMINISTRADOR','JEFE','ECONOMICO','ALMACENERO')),
     password_hash TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 1,
     failed_attempts INTEGER NOT NULL DEFAULT 0,
     locked_until REAL NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     last_login TEXT
-);
+)"""
+
+SCHEMA = USERS_DDL + """;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email <> '';
 CREATE TABLE IF NOT EXISTS revoked_tokens (
     jti TEXT PRIMARY KEY,
     expires_at INTEGER NOT NULL
@@ -181,9 +193,11 @@ MIGRATIONS = {
 class LoginFailed(AuthError):
     """Credenciales o segundo factor incorrectos sobre una cuenta existente.
     Lleva los datos necesarios para las alertas (nunca se envían al cliente)."""
-    def __init__(self, message: str, email: str, attempts: int, locked: bool, status: int = 401):
+    def __init__(self, message: str, username: str, attempts: int, locked: bool, status: int = 401,
+                 email: str = ""):
         super().__init__(message, status)
-        self.email = email
+        self.username = username
+        self.email = email  # correo de contacto de la cuenta (puede estar vacío)
         self.attempts = attempts
         self.locked = locked
 
@@ -193,25 +207,110 @@ class MFARequired(AuthError):
         super().__init__("Introduzca el código de verificación de su aplicación autenticadora.", 401)
 
 
-def init_auth(conn, now_iso) -> None:
+def username_from_email(email: str, taken=()) -> str:
+    """Nombre de usuario válido y único a partir de la parte local de un correo."""
+    base = re.sub(r"[^A-Za-z0-9._-]", "_", str(email).split("@")[0]).strip("._-") or "usuario"
+    base = base[:36]
+    if len(base) < 3:
+        base = (base + "usuario")[:12]
+    lowered = {t.lower() for t in taken}
+    candidate, n = base, 1
+    while candidate.lower() in lowered:
+        n += 1
+        candidate = f"{base[:36]}{n}"
+    return candidate
+
+
+def validate_username(username: str) -> str:
+    username = str(username or "").strip()
+    if not USERNAME_RE.match(username):
+        raise AuthError("El usuario debe tener de 3 a 40 caracteres: letras, números, punto, guion o guion bajo "
+                        "(y empezar por una letra o un número).", 400)
+    return username
+
+
+def _migrate_legacy_users(conn) -> int:
+    """Convierte la tabla `users` de versiones anteriores (correo + admin/editor/viewer) al
+    esquema actual (usuario + ADMINISTRADOR/JEFE/ECONOMICO/ALMACENERO).
+
+    · El usuario se toma de la parte local del correo (único y válido); el correo se conserva.
+    · admin → ADMINISTRADOR; editor y viewer → ALMACENERO. Sus permisos exactos se conservan
+      (ver `permisos.apply_legacy_migration`): actualizar nunca da más privilegios a nadie.
+    · Se invalidan las sesiones abiertas: todos vuelven a iniciar con el nuevo esquema.
+    Devuelve el número de usuarios migrados (0 si la base ya estaba actualizada o es nueva).
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(users)")]
+    if not cols or "username" in cols:
+        return 0
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")  # todo o nada: si algo falla, la tabla antigua sigue intacta
+    conn.execute("ALTER TABLE users RENAME TO users_legacy")
+    conn.execute(USERS_DDL)
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email <> ''")
+    for name, ddl in MIGRATIONS.items():
+        conn.execute(f"ALTER TABLE users ADD COLUMN {name} {ddl}")
+    conn.execute("CREATE TABLE IF NOT EXISTS legacy_role_map (user_id INTEGER PRIMARY KEY, old_role TEXT NOT NULL)")
+    new_cols = [r[1] for r in conn.execute("PRAGMA table_info(users)")]
+    cur = conn.execute("SELECT * FROM users_legacy ORDER BY id")
+    names = [d[0] for d in cur.description]
+    rows = [dict(zip(names, raw)) for raw in cur.fetchall()]
+    # Nombres de columna tomados de PRAGMA (nunca de datos del usuario); valores parametrizados.
+    copy = [c for c in new_cols if c in names and c not in ("username", "email", "role", "token_version")]
+    taken: list[str] = []
+    for rec in rows:
+        username = username_from_email(rec.get("email") or f"usuario{rec['id']}", taken)
+        taken.append(username)
+        old_role = str(rec.get("role") or "")
+        new_role = old_role if old_role in ROLES else roles.LEGACY_ROLES.get(old_role, roles.ALMACENERO)
+        values = [rec[c] for c in copy]
+        conn.execute(
+            f"INSERT INTO users(username,email,role,token_version,{','.join(copy)}) "  # nosec B608
+            f"VALUES(?,?,?,?,{','.join('?' * len(copy))})",
+            (username, rec.get("email") or "", new_role, int(rec.get("token_version") or 0) + 1, *values))
+        if new_role != roles.ADMINISTRADOR and old_role in roles.LEGACY_ROLES:
+            conn.execute("INSERT OR REPLACE INTO legacy_role_map(user_id,old_role) VALUES(?,?)",
+                         (rec["id"], old_role))
+    try:
+        conn.execute("UPDATE sessions SET revoked=1")
+    except sqlite3.Error:
+        pass  # la tabla de sesiones aún no existe (base muy antigua)
+    conn.execute("DROP TABLE users_legacy")
+    return len(rows)
+
+
+def init_auth(conn, now_iso, admin_user: str | None = None, admin_email: str | None = None,
+              admin_password: str | None = None) -> None:
+    """Crea el esquema, migra bases antiguas y da de alta al administrador inicial.
+
+    Sin argumentos usa IPV_ADMIN_USER / IPV_ADMIN_EMAIL / IPV_ADMIN_PASSWORD; otras aplicaciones
+    (p. ej. el Keygen Web) pasan sus propios valores, y «» desactiva el alta automática.
+    """
+    _migrate_legacy_users(conn)
     conn.executescript(SCHEMA)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(users)")}
     for name, ddl in MIGRATIONS.items():
         if name not in cols:
             conn.execute(f"ALTER TABLE users ADD COLUMN {name} {ddl}")
-    email = os.environ.get("IPV_ADMIN_EMAIL", "").strip()
-    password = os.environ.get("IPV_ADMIN_PASSWORD", "").strip()
-    if email and password and not conn.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone():
+    email = (os.environ.get("IPV_ADMIN_EMAIL", "") if admin_email is None else admin_email).strip()
+    password = (os.environ.get("IPV_ADMIN_PASSWORD", "") if admin_password is None else admin_password).strip()
+    username = (os.environ.get("IPV_ADMIN_USER", "") if admin_user is None else admin_user).strip()
+    if not username:
+        username = username_from_email(email) if email else ("admin" if password else "")
+    if username and password and not conn.execute(
+            "SELECT 1 FROM users WHERE username=? OR (email<>'' AND email=?)", (username, email)).fetchone():
+        validate_username(username)
         validate_password_strength(password)
         conn.execute(
-            "INSERT INTO users(email,name,role,password_hash,created_at) VALUES(?,?,?,?,?)",
-            (email, "Administrador", "admin", hash_password(password), now_iso()),
+            "INSERT INTO users(username,email,name,role,password_hash,created_at,password_changed_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (username, email, "Administrador", roles.ADMINISTRADOR, hash_password(password), now_iso(), now_iso()),
         )
 
 
 def public_user(row) -> dict:
     keys = row.keys()
-    return {"id": row["id"], "email": row["email"], "name": row["name"], "role": row["role"],
+    return {"id": row["id"], "username": row["username"], "email": row["email"], "name": row["name"],
+            "role": row["role"],
             "mfa": bool(row["totp_enabled"]) if "totp_enabled" in keys else False,
             "ver": row["token_version"] if "token_version" in keys else 0}
 
@@ -235,8 +334,18 @@ def _check_second_factor(conn, row, otp: str) -> None:
     raise AuthError("Código de verificación incorrecto.")
 
 
-def login(conn, email: str, password: str, now_iso, otp: str = "", ip: str = "", user_agent: str = "") -> dict:
-    row = conn.execute("SELECT * FROM users WHERE email=?", (email.strip(),)).fetchone()
+def find_user(conn, identifier: str):
+    """Busca por nombre de usuario; por compatibilidad también acepta el correo de contacto.
+    Un usuario no puede contener «@», así que ambas búsquedas nunca se confunden."""
+    ident = str(identifier or "").strip()
+    if not ident:
+        return None
+    return conn.execute("SELECT * FROM users WHERE username=? OR (email<>'' AND email=?)",
+                        (ident, ident)).fetchone()
+
+
+def login(conn, username: str, password: str, now_iso, otp: str = "", ip: str = "", user_agent: str = "") -> dict:
+    row = find_user(conn, username)
     now = time.time()
     if row and row["locked_until"] > now:
         raise AuthError("Cuenta bloqueada temporalmente por intentos fallidos.", 423)
@@ -268,7 +377,7 @@ def _record_failure(conn, row, now: float, ip: str, message: str):
     conn.execute("UPDATE users SET failed_attempts=?, locked_until=?, failed_since_login=failed_since_login+1, "
                  "last_failed_ip=? WHERE id=?",
                  (0 if locked else attempts, now + LOCK_SECONDS if locked else 0, ip[:64], row["id"]))
-    raise LoginFailed(message, row["email"], attempts, locked)
+    raise LoginFailed(message, row["username"], attempts, locked, email=row["email"])
 
 
 def _issue(user: dict, sid: str, row) -> dict:
@@ -312,25 +421,31 @@ def revoke(conn, refresh_token: str) -> None:
                  (int(time.time()), _now(-30 * 86400)))
 
 
-def create_user(conn, data: dict, now_iso) -> dict:
+def create_user(conn, data: dict, now_iso, actor_role: str = roles.ADMINISTRADOR) -> dict:
     email = str(data.get("email", "")).strip()
-    name = str(data.get("name", "")).strip()[:120]
-    role = str(data.get("role", "viewer"))
+    username = str(data.get("username", "")).strip()
+    if not username and email:  # compatibilidad: clientes antiguos que solo enviaban el correo
+        username = username_from_email(email, [r[0] for r in conn.execute("SELECT username FROM users")])
+    username = validate_username(username)
+    name = str(data.get("name", "")).strip()[:120] or username
+    role = str(data.get("role", roles.ALMACENERO))
     password = str(data.get("password", ""))
-    if "@" not in email or len(email) > 200:
+    if email and ("@" not in email or len(email) > 200):
         raise AuthError("Correo electrónico no válido.", 400)
-    if not name:
-        raise AuthError("El nombre es obligatorio.", 400)
     if role not in ROLES:
-        raise AuthError("Rol no válido.", 400)
+        raise AuthError(f"Rol no válido. Use: {', '.join(ROLES)}.", 400)
+    if not roles.can_manage(actor_role, role):
+        raise AuthError(f"Su rol ({roles.label(actor_role)}) no puede crear usuarios con el rol {roles.label(role)}.", 403)
     validate_password_strength(password)
-    if conn.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone():
+    if conn.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
+        raise AuthError("Ya existe un usuario con ese nombre.", 409)
+    if email and conn.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone():
         raise AuthError("Ya existe un usuario con ese correo.", 409)
-    cur = conn.execute("INSERT INTO users(email,name,role,password_hash,created_at,password_changed_at,"
-                       "must_change_password) VALUES(?,?,?,?,?,?,?)",
-                       (email, name, role, hash_password(password), now_iso(), now_iso(),
+    cur = conn.execute("INSERT INTO users(username,email,name,role,password_hash,created_at,password_changed_at,"
+                       "must_change_password) VALUES(?,?,?,?,?,?,?,?)",
+                       (username, email, name, role, hash_password(password), now_iso(), now_iso(),
                         1 if data.get("must_change_password") else 0))
-    return {"id": cur.lastrowid, "email": email, "name": name, "role": role}
+    return {"id": cur.lastrowid, "username": username, "email": email, "name": name, "role": role}
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +475,7 @@ def mfa_setup(conn, user_id) -> dict:
         raise AuthError("La verificación en dos pasos ya está activa.", 409)
     secret = security.new_totp_secret()
     conn.execute("UPDATE users SET totp_secret=?, totp_last_step=-1 WHERE id=?", (secret, user_id))
-    return {"secret": secret, "otpauth_uri": security.otpauth_uri(secret, row["email"])}
+    return {"secret": secret, "otpauth_uri": security.otpauth_uri(secret, row["username"])}
 
 
 def mfa_enable(conn, user_id, code: str) -> dict:
@@ -412,30 +527,60 @@ def change_password(conn, user_id, current: str, new: str, now_iso, sid: str = "
     return {"ok": True, **_issue(public_user(row), sid, row)}
 
 
-def update_user(conn, actor_id, user_id, data: dict) -> dict:
+def update_user(conn, actor_id, user_id, data: dict, actor_role: str = roles.ADMINISTRADOR) -> dict:
     row = _user(conn, user_id)
+    # Jerarquía: el JEFE solo administra ECONOMICO y ALMACENERO; nadie gestiona roles superiores al suyo.
+    if not roles.can_manage(actor_role, row["role"]):
+        raise AuthError(f"Su rol ({roles.label(actor_role)}) no puede administrar a un usuario "
+                        f"{roles.label(row['role'])}.", 403)
     fields, params = [], []
     if "role" in data:
         if data["role"] not in ROLES:
-            raise AuthError("Rol no válido.", 400)
+            raise AuthError(f"Rol no válido. Use: {', '.join(ROLES)}.", 400)
+        if not roles.can_manage(actor_role, data["role"]):
+            raise AuthError(f"Su rol ({roles.label(actor_role)}) no puede asignar el rol {roles.label(data['role'])}.", 403)
         fields.append("role=?"); params.append(data["role"])
+    if "name" in data:
+        name = str(data["name"]).strip()[:120]
+        if not name:
+            raise AuthError("El nombre no puede quedar vacío.", 400)
+        fields.append("name=?"); params.append(name)
+    if "email" in data:
+        email = str(data["email"] or "").strip()
+        if email and ("@" not in email or len(email) > 200):
+            raise AuthError("Correo electrónico no válido.", 400)
+        if email and conn.execute("SELECT 1 FROM users WHERE email=? AND id<>?", (email, user_id)).fetchone():
+            raise AuthError("Ya existe un usuario con ese correo.", 409)
+        fields.append("email=?"); params.append(email)
     if "active" in data:
         fields.append("active=?"); params.append(1 if data["active"] else 0)
     if data.get("unlock"):
         fields += ["failed_attempts=0", "locked_until=0"]
     if data.get("reset_mfa"):
         fields += ["totp_enabled=0", "totp_secret=''", "recovery_codes=''"]
-    if data.get("force_password_change"):
+    if data.get("password"):
+        # Restablecimiento por el administrador (sin correo de recuperación): contraseña
+        # temporal que el usuario está obligado a cambiar en su próximo acceso.
+        temporal = str(data["password"])
+        validate_password_strength(temporal)
+        fields += ["password_hash=?", "password_changed_at=?", "must_change_password=1",
+                   "failed_attempts=0", "locked_until=0"]
+        params += [hash_password(temporal), _now()]
+    elif data.get("force_password_change"):
         fields.append("must_change_password=1")
-    revoke_all = data.get("revoke_sessions") or "role" in data or data.get("active") is False or data.get("reset_mfa")
+    revoke_all = (data.get("revoke_sessions") or "role" in data or data.get("active") is False
+                  or data.get("reset_mfa") or data.get("password"))
     if revoke_all:
         fields.append("token_version=token_version+1")
     if not fields:
         raise AuthError("No hay cambios que aplicar.", 400)
-    if int(user_id) == int(actor_id) and (data.get("role", "admin") != "admin" or data.get("active") is False):
+    if int(user_id) == int(actor_id) and (
+            data.get("role", roles.ADMINISTRADOR) != roles.ADMINISTRADOR or data.get("active") is False):
         raise AuthError("No puede quitarse a sí mismo el rol de administrador ni desactivarse.", 400)
-    if row["role"] == "admin" and (data.get("role", "admin") != "admin" or data.get("active") is False):
-        admins = conn.execute("SELECT COUNT(*) FROM users WHERE role='admin' AND active=1").fetchone()[0]
+    if row["role"] == roles.ADMINISTRADOR and (
+            data.get("role", roles.ADMINISTRADOR) != roles.ADMINISTRADOR or data.get("active") is False):
+        admins = conn.execute("SELECT COUNT(*) FROM users WHERE role=? AND active=1",
+                              (roles.ADMINISTRADOR,)).fetchone()[0]
         if admins <= 1:
             raise AuthError("Debe existir al menos un administrador activo.", 400)
     # `fields` solo contiene fragmentos literales definidos arriba; los valores van parametrizados.

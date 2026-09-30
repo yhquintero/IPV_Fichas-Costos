@@ -27,6 +27,7 @@ import sqlite3
 
 import dbcrypt
 import permisos
+import roles
 import threading
 import tls_seguro
 import time
@@ -1607,9 +1608,9 @@ def main():
             "  secreto JWT de 384 bits.",
             "O hágalo a mano: copie .env.example como .env y rellene\n"
             "    IPV_JWT_SECRET       python -c \"import secrets; print(secrets.token_urlsafe(48))\"\n"
-            "    IPV_ADMIN_EMAIL      correo del administrador (p. ej. admin@empresa.cu)\n"
+            "    IPV_ADMIN_USER       usuario del administrador (p. ej. admin)\n"
             "    IPV_ADMIN_PASSWORD   mín. 10: mayúscula, minúscula, número y símbolo",
-            "Vuelva a iniciar con  .\\iniciar-https.ps1  y entre con ese correo:\n"
+            "Vuelva a iniciar con  .\\iniciar-https.ps1  y entre con ese usuario:\n"
             "  el menú «Creador de Licencias» y la gestión de usuarios\n"
             "  (Ctrl+Shift+P → Gestionar usuarios y permisos) solo salen al administrador.",
         ])
@@ -1623,15 +1624,15 @@ def main():
     REQUIRE_LICENSE = True
     init_db()
     with db_session() as conn:
-        if not conn.execute("SELECT 1 FROM users WHERE role='admin' AND active=1").fetchone():
+        if not conn.execute("SELECT 1 FROM users WHERE role=? AND active=1", (roles.ADMINISTRADOR,)).fetchone():
             _abortar("la base de datos no tiene ningún administrador activo", [
-                "Defina IPV_ADMIN_EMAIL e IPV_ADMIN_PASSWORD en .env: el administrador\n"
+                "Defina IPV_ADMIN_USER e IPV_ADMIN_PASSWORD en .env: el administrador\n"
                 "  se crea solo en el primer arranque. Si ya los definió, el usuario fue\n"
                 "  desactivado o se le cambió el rol desde «Gestionar usuarios y permisos».",
                 "Para reactivar al administrador sin interfaz (servidor detenido):\n"
                 "    python -c \"import sqlite3; c = sqlite3.connect('data/ipv.db'); "
-                "c.execute('UPDATE users SET active=1, role=char(97,100,109,105,110) "
-                "WHERE lower(email)=lower(?)', ('admin@empresa.cu',)); c.commit()\"",
+                "c.execute('UPDATE users SET active=1, role=? WHERE username=?', "
+                "('ADMINISTRADOR', 'admin')); c.commit()\"",
                 "Si la base de datos aún no tiene datos que conservar, borre .env\n"
                 "  y repita  .\\iniciar-https.ps1 -InitSecurity",
             ], nota=("Sin un administrador no se pueden gestionar los Roles de Usuarios\n"

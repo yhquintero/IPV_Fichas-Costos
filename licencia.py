@@ -427,6 +427,7 @@ LICENSE_FREE = ("/api/health", "/api/version", "/api/openapi.yaml", "/api/licens
 
 def install(srv) -> LicenseStore:
     """Exige licencia válida para toda la API salvo salud/versión y la propia activación."""
+    import roles  # solo el servidor lo necesita: este módulo también lo usa el Keygen de forma autónoma
     store = LicenseStore(Path(srv.DB_PATH).parent)
     srv.LICENSE = store
     handler = srv.Handler
@@ -453,7 +454,7 @@ def install(srv) -> LicenseStore:
                          "/api/auth/2fa/setup", "/api/auth/2fa/enable",
                          "/api/security/status")
         recovery = path in ("/api/auth/maintenance-login", "/api/auth/maintenance-refresh") or (
-            path in admin_account and (getattr(self, "user", None) or {}).get("role") == "admin")
+            path in admin_account and (getattr(self, "user", None) or {}).get("role") in roles.ADMINS)
         if store.enforced and path.startswith("/api") and path not in LICENSE_FREE and not recovery and not path.startswith("/api/keygen/"):
             st = store.status()
             if not st["valid"]:
@@ -498,8 +499,8 @@ def install(srv) -> LicenseStore:
         if store.status(use_cache=False)["valid"]:
             try:
                 self._check_auth()
-                if (self.user or {}).get("role") != "admin":
-                    raise srv.APIError("Solo un administrador puede renovar la licencia.", 403)
+                if (self.user or {}).get("role") not in roles.ADMINS:
+                    raise srv.APIError("Solo el Administrador o el Jefe pueden renovar la licencia.", 403)
             except srv.APIError as exc:
                 return self.send_json({"error": exc.message}, exc.status)
         ip = self.client_ip()

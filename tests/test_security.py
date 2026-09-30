@@ -28,7 +28,7 @@ class SecurityTest(unittest.TestCase):
         auth.JWT_SECRET = "sec-test-" + "y" * 32
         auth.JWT_ENABLED = True
         with server.connect() as conn:
-            for email, role in (("root@ipv.cu", "admin"), ("ana@ipv.cu", "editor"), ("mfa@ipv.cu", "editor")):
+            for email, role in (("root@ipv.cu", "ADMINISTRADOR"), ("ana@ipv.cu", "ALMACENERO"), ("mfa@ipv.cu", "ALMACENERO")):
                 auth.create_user(conn, {"email": email, "name": email, "role": role, "password": PWD}, server.now_iso)
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
@@ -90,7 +90,7 @@ class SecurityTest(unittest.TestCase):
 
     def test_password_change_revokes_other_sessions(self):
         with server.connect() as conn:
-            auth.create_user(conn, {"email": "pw@ipv.cu", "name": "P", "role": "editor", "password": PWD}, server.now_iso)
+            auth.create_user(conn, {"email": "pw@ipv.cu", "name": "P", "role": "ALMACENERO", "password": PWD}, server.now_iso)
         old = self.login("pw@ipv.cu")[1]
         self.assertEqual(self.req("POST", "/api/auth/password", {"current": PWD, "new": "Nueva#Clave2027"},
                                   old["access_token"])[0], 200)
@@ -101,11 +101,11 @@ class SecurityTest(unittest.TestCase):
         admin = self.login("root@ipv.cu")[1]["access_token"]
         ana = self.login("ana@ipv.cu")[1]["access_token"]
         users = {u["email"]: u for u in self.req("GET", "/api/users", token=admin)[1]}
-        self.assertEqual(self.req("PUT", f"/api/users/{users['ana@ipv.cu']['id']}", {"role": "viewer"}, ana)[0], 403)
+        self.assertEqual(self.req("PUT", f"/api/users/{users['ana@ipv.cu']['id']}", {"role": "ECONOMICO"}, ana)[0], 403)
         self.assertEqual(self.req("PUT", f"/api/users/{users['ana@ipv.cu']['id']}", {"active": False}, admin)[0], 200)
         self.assertEqual(self.req("GET", "/api/products", token=ana)[0], 401)
         # Protección: el último administrador no puede degradarse
-        self.assertEqual(self.req("PUT", f"/api/users/{users['root@ipv.cu']['id']}", {"role": "editor"}, admin)[0], 400)
+        self.assertEqual(self.req("PUT", f"/api/users/{users['root@ipv.cu']['id']}", {"role": "JEFE"}, admin)[0], 400)
         self.req("PUT", f"/api/users/{users['ana@ipv.cu']['id']}", {"active": True}, admin)
 
     def test_forwarded_for_spoofing_is_ignored(self):

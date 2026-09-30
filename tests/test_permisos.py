@@ -25,6 +25,11 @@ LECTOR = ("lector@ipv.cu", "Lector#2026seguro")
 ALMACEN = ("almacen@ipv.cu", "Almacen#2026seguro")
 
 
+def ajustes_lector() -> dict:
+    """Consulta (el antiguo «viewer»): ve todo, no modifica nada y no ve los precios de los valores."""
+    return {m: {"view": True, "edit": False, "costs": m != "materials"} for m in permisos.MODULES}
+
+
 def ajustes_almacen() -> dict:
     """Almacén: solo Valores del IPV, con existencias pero sin precios."""
     sin_acceso = {m: {"view": False, "edit": False, "costs": False} for m in permisos.MODULES}
@@ -42,15 +47,17 @@ class PermisosAPITest(unittest.TestCase):
         auth.JWT_ENABLED = True
         with server.connect() as conn:
             for email, nombre, rol, clave in (
-                (ADMIN[0], "Jefe", "admin", ADMIN[1]),
-                (EDITOR[0], "Editor", "editor", EDITOR[1]),
-                (LECTOR[0], "Lector", "viewer", LECTOR[1]),
-                (ALMACEN[0], "Almacén", "editor", ALMACEN[1]),
+                (ADMIN[0], "Jefe", "ADMINISTRADOR", ADMIN[1]),
+                (EDITOR[0], "Editor", "JEFE", EDITOR[1]),
+                (LECTOR[0], "Lector", "ALMACENERO", LECTOR[1]),
+                (ALMACEN[0], "Almacén", "ALMACENERO", ALMACEN[1]),
             ):
                 auth.create_user(conn, {"email": email, "name": nombre, "role": rol,
                                         "password": clave}, server.now_iso)
             uid = conn.execute("SELECT id FROM users WHERE email=?", (ALMACEN[0],)).fetchone()[0]
-            permisos.set_permissions(conn, uid, "editor", ajustes_almacen(), server.now_iso)
+            permisos.set_permissions(conn, uid, "ALMACENERO", ajustes_almacen(), server.now_iso)
+            uid = conn.execute("SELECT id FROM users WHERE email=?", (LECTOR[0],)).fetchone()[0]
+            permisos.set_permissions(conn, uid, "ALMACENERO", ajustes_lector(), server.now_iso)
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
         cls.thread.start()
@@ -398,7 +405,7 @@ class PermisosAPITest(unittest.TestCase):
     def test_usuario_nuevo_con_permisos_de_almacen(self):
         jefe = self.token(ADMIN)
         status, creado = self.req("POST", "/api/users", {
-            "email": "nuevo@ipv.cu", "name": "Nuevo", "role": "editor", "password": "Nuevo#2026seguro",
+            "email": "nuevo@ipv.cu", "name": "Nuevo", "role": "ALMACENERO", "password": "Nuevo#2026seguro",
             "permissions": {"materials": {"view": True, "edit": True, "costs": False},
                             "products": {"view": False}},
         }, token=jefe)[:2]
@@ -418,7 +425,7 @@ class PermisosUnitTest(unittest.TestCase):
         self.conn = dbcrypt.connect(":memory:")
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript("""CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, role TEXT);
-                                   INSERT INTO users(id,email,role) VALUES(7,'u@ipv.cu','editor');""")
+                                   INSERT INTO users(id,email,role) VALUES(7,'u@ipv.cu','JEFE');""")
         permisos.init_permissions(self.conn)
 
     def test_reglas_por_ruta_y_metodo(self):
@@ -447,23 +454,23 @@ class PermisosUnitTest(unittest.TestCase):
             self.assertEqual(permisos.rule_for(ruta, metodo), esperado, f"{metodo} {ruta}")
 
     def test_editar_y_costos_implican_ver(self):
-        permisos.set_permissions(self.conn, 7, "editor",
+        permisos.set_permissions(self.conn, 7, "JEFE",
                                  {"materials": {"view": False, "edit": True, "costs": True}}, server.now_iso)
-        self.assertEqual(permisos.effective(self.conn, 7, "editor")["materials"],
+        self.assertEqual(permisos.effective(self.conn, 7, "JEFE")["materials"],
                          {"view": False, "edit": False, "costs": False})
 
     def test_modulos_y_permisos_desconocidos_se_rechazan(self):
         with self.assertRaises(permisos.PermisoError):
-            permisos.set_permissions(self.conn, 7, "editor", {"inventario": {"view": True}}, server.now_iso)
+            permisos.set_permissions(self.conn, 7, "JEFE", {"inventario": {"view": True}}, server.now_iso)
         with self.assertRaises(permisos.PermisoError):
-            permisos.set_permissions(self.conn, 7, "editor", {"materials": {"borrar": True}}, server.now_iso)
+            permisos.set_permissions(self.conn, 7, "JEFE", {"materials": {"borrar": True}}, server.now_iso)
         with self.assertRaises(permisos.PermisoError):
-            permisos.set_permissions(self.conn, 7, "admin", {"materials": {"view": True}}, server.now_iso)
+            permisos.set_permissions(self.conn, 7, "ADMINISTRADOR", {"materials": {"view": True}}, server.now_iso)
 
     def test_filtrado_de_respuestas(self):
         sin_session = {"materials": [{"id": 1, "unit_price": "10.00"}]}
         self.assertEqual(permisos.filter_response("/api/materials", sin_session, None), sin_session)
-        usuario = {"permissions": permisos.defaults_for("viewer")}
+        usuario = {"permissions": permisos.solo_lectura()}
         filtrado = permisos.filter_response("/api/materials", [{"id": 1, "unit_price": "10.00", "stock": "3"}], usuario)
         self.assertIsNone(filtrado[0]["unit_price"])
         self.assertEqual(filtrado[0]["stock"], "3")

@@ -107,8 +107,8 @@ class LicenciaServidorTest(unittest.TestCase):
         auth.JWT_SECRET = "lic-test-" + "z" * 32
         auth.JWT_ENABLED = True
         with server.connect() as conn:
-            auth.create_user(conn, {"email": "jefe@ipv.cu", "name": "Jefe", "role": "admin", "password": PWD}, server.now_iso)
-            auth.create_user(conn, {"email": "ana@ipv.cu", "name": "Ana", "role": "editor", "password": PWD}, server.now_iso)
+            auth.create_user(conn, {"email": "jefe@ipv.cu", "name": "Jefe", "role": "ADMINISTRADOR", "password": PWD}, server.now_iso)
+            auth.create_user(conn, {"email": "ana@ipv.cu", "name": "Ana", "role": "ALMACENERO", "password": PWD}, server.now_iso)
         cls.d, pub = L.generate_keypair()
         cls.store = server.LICENSE
         cls.saved = (cls.store.pub, cls.store.dir)
@@ -190,7 +190,7 @@ class KeygenCliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
             (work / "keygen").mkdir()
-            for rel in ("licencia.py", "keygen/keygen.py"):
+            for rel in ("licencia.py", "keygen/keygen.py", "keygen/historial.py"):
                 (work / rel).write_text((ROOT / rel).read_text(encoding="utf-8"), encoding="utf-8")
             kt = work / "android/app/src/main/java/cu/ipvcostos/app/License.kt"
             kt.parent.mkdir(parents=True)
@@ -223,7 +223,14 @@ class KeygenCliTest(unittest.TestCase):
             bad = run("emitir", "--usuario", "x", "--codigo", code, "--plan", "1M", e={**env, "IPV_KEYGEN_PASS": "mala"})
             self.assertNotEqual(bad.returncode, 0)
             self.assertIn("Contraseña incorrecta", bad.stderr)
-            self.assertEqual(len((work / "keygen/registro_licencias.csv").read_text(encoding="utf-8").splitlines()), 3)
+            # Todo queda en el historial SQLite (no en el CSV antiguo), con quién emitió y por qué canal
+            hist = run("historial", "--csv", str(work / "salida.csv"))
+            self.assertEqual(hist.returncode, 0, hist.stderr)
+            filas = (work / "salida.csv").read_text(encoding="utf-8-sig").splitlines()
+            self.assertEqual(len(filas), 3)  # cabecera + 2 licencias (la de contraseña incorrecta no se registra)
+            self.assertFalse((work / "keygen/registro_licencias.csv").exists())
+            self.assertIn("Luis", run("historial", "--buscar", "luis").stdout)
+            self.assertIn("2 licencia(s)", run("historial").stdout)
 
 
 if __name__ == "__main__":

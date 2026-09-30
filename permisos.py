@@ -9,8 +9,8 @@ Permisos finos por módulo, aplicados a las dos pestañas de la entrada
   * edit  — puede crear, modificar, ajustar existencias, restaurar y enviar a la papelera
   * costs — puede ver y administrar precios, importes y valores en dinero (se ocultan del API y de la web)
 
-Los permisos efectivos salen del rol (admin / editor / viewer) y se ajustan por
-usuario en la tabla `user_permissions`. El administrador los cambia desde
+Los permisos efectivos salen del rol (ADMINISTRADOR / JEFE / ECONOMICO / ALMACENERO,
+ver `roles.py`) y se ajustan por usuario en la tabla `user_permissions`. El administrador los cambia desde
 Web → Usuarios → 🔐 Permisos y tienen efecto inmediato: se leen en cada petición,
 así que no hace falta cerrar sesiones ni volver a iniciar.
 
@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import re
 import sqlite3
+
+from roles import ADMINISTRADOR, ALMACENERO, ECONOMICO, JEFE
 
 # ---------------------------------------------------------------------------
 #  Módulos y permisos
@@ -75,15 +77,50 @@ def _perms(view: bool = True, edit: bool = False, costs: bool = True) -> dict:
     return {"view": bool(view), "edit": bool(edit and view), "costs": bool(costs and view)}
 
 
-def defaults_for(role: str) -> dict:
-    """Permisos que hereda un usuario de su rol (base del sistema)."""
-    completo = {m: _perms(True, True, True) for m in MODULES}
-    if role in ("admin", "editor"):
-        return completo
-    # Consulta: ve todo, no modifica nada y no ve los precios de los valores del IPV
+def solo_lectura() -> dict:
+    """Consulta: ve todo, no modifica nada y no ve los precios de los valores del IPV."""
     lectura = {m: _perms(True, False, True) for m in MODULES}
     lectura["materials"] = _perms(True, False, False)
     return lectura
+
+
+def defaults_for(role: str) -> dict:
+    """Permisos que hereda un usuario de su rol (base del sistema).
+
+    ADMINISTRADOR y JEFE   todo: ver, editar y costos en cada módulo.
+    ECONOMICO              costos y finanzas: ve y administra precios, edita fichas y
+                           controles; no modifica existencias, productos ni papelera.
+    ALMACENERO             almacén: edita valores del IPV y existencias (sin importes) y
+                           restaura de la papelera; solo consulta el resto, sin costos.
+    Cualquier rol desconocido recibe el mínimo privilegio (solo lectura, sin precios).
+    """
+    completo = {m: _perms(True, True, True) for m in MODULES}
+    if role in (ADMINISTRADOR, JEFE):
+        return completo
+    if role == ECONOMICO:
+        return {
+            "materials": _perms(True, False, True),
+            "products": _perms(True, False, True),
+            "fichas": _perms(True, True, True),
+            "controls": _perms(True, True, True),
+            "trash": _perms(True, False, True),
+        }
+    if role == ALMACENERO:
+        return {
+            "materials": _perms(True, True, False),
+            "products": _perms(True, False, False),
+            "fichas": _perms(True, False, False),
+            "controls": _perms(True, False, False),
+            "trash": _perms(True, True, False),
+        }
+    return solo_lectura()
+
+
+def _legacy_defaults(role: str) -> dict:
+    """Permisos de los roles de versiones anteriores (solo para migrar sin cambiar privilegios)."""
+    if role in ("admin", "editor"):
+        return {m: _perms(True, True, True) for m in MODULES}
+    return solo_lectura()
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +128,7 @@ def defaults_for(role: str) -> dict:
 # ---------------------------------------------------------------------------
 def init_permissions(conn) -> None:
     conn.executescript(SCHEMA)
+    apply_legacy_migration(conn)  # antes de limpiar huérfanos: necesita los ajustes existentes
     # Borra ajustes huérfanos de usuarios que ya no existen
     conn.execute("DELETE FROM user_permissions WHERE user_id NOT IN (SELECT id FROM users)")
 
@@ -98,7 +136,7 @@ def init_permissions(conn) -> None:
 def effective(conn, user_id, role: str) -> dict:
     """Permisos efectivos: los del rol, con los ajustes guardados para el usuario."""
     perms = defaults_for(role)
-    if role == "admin" or not user_id:
+    if role == ADMINISTRADOR or not user_id:
         return perms  # el administrador siempre tiene acceso completo
     try:
         uid = int(user_id)
@@ -136,7 +174,7 @@ def set_permissions(conn, user_id, role: str, data, now_iso) -> dict:
     del rol (así `{"fichas": {"costs": false}}` quita los importes sin cerrar el
     apartado). `edit` y `costs` siempre se descuentan de `view`.
     """
-    if role == "admin":
+    if role == ADMINISTRADOR:
         raise PermisoError("Los administradores siempre tienen todos los permisos; "
                            "cámbiele el rol si necesita limitarlo.")
     if not isinstance(data, dict) or not data:
@@ -164,6 +202,38 @@ def set_permissions(conn, user_id, role: str, data, now_iso) -> dict:
                      (int(user_id), module, 1 if limpio["view"] else 0, 1 if limpio["edit"] else 0,
                       1 if limpio["costs"] else 0, now_iso()))
     return effective(conn, user_id, role)
+
+
+def apply_legacy_migration(conn) -> int:
+    """Conserva los permisos de los usuarios migrados desde admin/editor/viewer.
+
+    `auth.init_auth` deja en `legacy_role_map` el rol antiguo de cada usuario convertido.
+    Aquí se guardan, por módulo, los permisos que tenía solo si difieren de los del rol
+    nuevo: el usuario sigue pudiendo exactamente lo mismo (ni más ni menos). Los ajustes
+    propios que ya existieran no se tocan. Devuelve cuántos usuarios se procesaron.
+    """
+    try:
+        pendientes = conn.execute("SELECT user_id, old_role FROM legacy_role_map").fetchall()
+    except sqlite3.Error:
+        return 0  # no hay nada que migrar
+    hechos = 0
+    for fila in pendientes:
+        uid, antiguo = (fila["user_id"], fila["old_role"]) if hasattr(fila, "keys") else (fila[0], fila[1])
+        usuario = conn.execute("SELECT role FROM users WHERE id=?", (uid,)).fetchone()
+        if not usuario:
+            continue
+        rol_nuevo = usuario["role"] if hasattr(usuario, "keys") else usuario[0]
+        base = defaults_for(rol_nuevo)
+        con_ajuste = {r[0] for r in conn.execute("SELECT module FROM user_permissions WHERE user_id=?", (uid,))}
+        for modulo, perms in _legacy_defaults(antiguo).items():
+            if modulo in con_ajuste or perms == base[modulo]:
+                continue
+            conn.execute("INSERT INTO user_permissions(user_id,module,can_view,can_edit,can_costs,updated_at) "
+                         "VALUES(?,?,?,?,?,?)",
+                         (uid, modulo, int(perms["view"]), int(perms["edit"]), int(perms["costs"]), "migración"))
+        hechos += 1
+    conn.execute("DROP TABLE IF EXISTS legacy_role_map")
+    return hechos
 
 
 def reset_permissions(conn, user_id) -> None:

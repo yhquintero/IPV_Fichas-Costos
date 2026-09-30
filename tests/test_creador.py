@@ -16,6 +16,7 @@ import auth
 import licencia as L
 import rate_limiter
 import server
+from keygen import historial as H
 from keygen import keygen as kg
 import creador_licencias as C
 
@@ -42,10 +43,12 @@ class CreadorLicenciasTest(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         work = Path(cls.tmp.name)
-        # Redirige clave, registro, tasas y ficheros parcheables a un directorio temporal
+        # Redirige clave, historial, tasas y ficheros parcheables a un directorio temporal
+        cls.saved_paths = (kg.KEY_FILE, kg.LEDGER, kg.RATES_FILE, H.DB_FILE)
         kg.KEY_FILE = work / "clave_privada.json"
         kg.LEDGER = work / "registro_licencias.csv"
         kg.RATES_FILE = work / "tasas.json"
+        H.DB_FILE = work / "licencias.db"
         cls.lic_py = work / "licencia.py"
         cls.lic_kt = work / "License.kt"
         cls.lic_py.write_text('PUBLIC_KEY_HEX = ""\nWHATSAPP_NUMBER = ""\n', encoding="utf-8")
@@ -58,8 +61,8 @@ class CreadorLicenciasTest(unittest.TestCase):
         auth.JWT_SECRET = "creador-test-" + "z" * 32
         auth.JWT_ENABLED = True
         with server.connect() as conn:
-            auth.create_user(conn, {"email": "jefe@ipv.cu", "name": "Jefe", "role": "admin", "password": PWD}, server.now_iso)
-            auth.create_user(conn, {"email": "ana@ipv.cu", "name": "Ana", "role": "editor", "password": PWD}, server.now_iso)
+            auth.create_user(conn, {"email": "jefe@ipv.cu", "name": "Jefe", "role": "ADMINISTRADOR", "password": PWD}, server.now_iso)
+            auth.create_user(conn, {"email": "ana@ipv.cu", "name": "Ana", "role": "ALMACENERO", "password": PWD}, server.now_iso)
         cls.store = server.LICENSE
         cls.saved_store = (cls.store.pub, cls.store.dir)
         cls.store.pub, cls.store.dir, cls.store._cache = "", work, None
@@ -79,6 +82,7 @@ class CreadorLicenciasTest(unittest.TestCase):
         L.PUBLIC_KEY_HEX, L.WHATSAPP_NUMBER = cls.saved
         C.LICENCIA_PY = ROOT / "licencia.py"
         C.LICENSE_KT = ROOT / "android/app/src/main/java/cu/ipvcostos/app/License.kt"
+        kg.KEY_FILE, kg.LEDGER, kg.RATES_FILE, H.DB_FILE = cls.saved_paths
         auth.JWT_ENABLED = False
         cls.httpd.shutdown()
         cls.httpd.server_close()
@@ -187,6 +191,8 @@ class CreadorLicenciasTest(unittest.TestCase):
         st, items = self.req("GET", "/api/keygen/ledger", token=self.token)
         self.assertEqual(st, 200)
         self.assertEqual(items["items"][0]["usuario"], "Luis Pérez")
+        self.assertEqual(items["items"][0]["emitida_por"], "jefe")   # queda quién la emitió
+        self.assertEqual(items["items"][0]["estado"], "Programada")
         self.assertEqual((items["items"][0]["plan"], items["items"][0]["desde"], items["items"][0]["hasta"]),
                          ("PX", start.isoformat(), end.isoformat()))
         bad_limit_status, bad_limit = self.req("GET", "/api/keygen/ledger?limit=..%2F..%2Fetc%2Fpasswd", token=self.token)

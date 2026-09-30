@@ -52,7 +52,7 @@ class PruebaInyeccion(unittest.TestCase):
         auth.JWT_SECRET = "test-secret-" + "z" * 32
         auth.JWT_ENABLED = True
         with server.connect() as conn:
-            auth.create_user(conn, {"email": EMAIL, "name": "Auditor", "role": "admin", "password": PW},
+            auth.create_user(conn, {"email": EMAIL, "name": "Auditor", "role": "ADMINISTRADOR", "password": PW},
                              server.now_iso)
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
         threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()

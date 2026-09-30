@@ -27,7 +27,7 @@ class AccesoIntegradoTest(unittest.TestCase):
         server.REQUIRE_USERS = server.REQUIRE_LICENSE = True
         server.init_db()
         with server.connect() as conn:
-            for email, role in [('admin@test.cu', 'admin'), ('editor@test.cu', 'editor')]:
+            for email, role in [('admin@test.cu', 'ADMINISTRADOR'), ('editor@test.cu', 'ALMACENERO')]:
                 auth.create_user(conn, {'email': email, 'name': email, 'role': role,
                                         'password': 'Clave-Segura#2026'}, server.now_iso)
         cls.store = server.LICENSE
@@ -179,7 +179,7 @@ class AccesoIntegradoTest(unittest.TestCase):
             payload = auth.decode_token(editor)
             import permisos
             with server.connect() as conn:
-                permisos.set_permissions(conn, payload['sub'], 'editor',
+                permisos.set_permissions(conn, payload['sub'], 'ALMACENERO',
                     {'materials': {'view': False}}, server.now_iso)
             enterprise.bus.publish({'action': 'UPDATE_MATERIAL', 'details': 'oculto'})
             self.assertEqual(stream.readline(), b': ping\n')
@@ -200,7 +200,7 @@ class AccesoIntegradoTest(unittest.TestCase):
 
     def test_costos_y_fichas_no_se_filtran_solo_en_el_cliente(self):
         import permisos
-        limited = permisos.defaults_for('editor')
+        limited = permisos.defaults_for('JEFE')
         limited['fichas'] = {'view': True, 'edit': False, 'costs': False}
         user = {'permissions': limited}
         ficha = permisos.filter_response('/api/fichas/3',
