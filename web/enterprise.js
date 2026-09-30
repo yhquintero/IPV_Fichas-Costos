@@ -15,12 +15,13 @@
    ========================================================================== */
 (() => {
   const S = sessionStorage;
-  const K = { access: 'ipv.access', refresh: 'ipv.refresh', user: 'ipv.user', perms: 'ipv.perms' };
+  const K = { access: 'ipv.access', refresh: 'ipv.refresh', user: 'ipv.user', perms: 'ipv.perms', maintenance: 'ipv.maintenance' };
   const NOTIF_KEY = 'ipv.notifications';
   const THEME_KEY = 'ipv.theme.custom';
 
   /* ───────────── Sesión JWT ───────────── */
   let pendingLogin = null;
+  let pendingRefresh = null;
   const Auth = {
     get user() { try { return JSON.parse(S.getItem(K.user) || 'null'); } catch { return null; } },
     /* Sistema de Seguridad por Usuarios: permisos por módulo (view / edit / costs)
@@ -39,7 +40,7 @@
       if (permisos) S.setItem(K.perms, JSON.stringify(permisos)); else S.removeItem(K.perms);
       renderUserBadge(); connectEvents(); try { document.dispatchEvent(new CustomEvent('ipv:auth')); } catch {}
     },
-    clear() { Object.values(K).forEach(k => S.removeItem(k)); renderUserBadge(); try { document.dispatchEvent(new CustomEvent('ipv:auth')); } catch {} },
+    clear() { Object.values(K).forEach(k => S.removeItem(k)); closeEvents(); renderUserBadge(); try { document.dispatchEvent(new CustomEvent('ipv:auth')); } catch {} },
     /** Refresca los permisos guardados (los cambia el administrador en caliente). */
     async reloadPermissions() {
       if (!Auth.user) { S.removeItem(K.perms); return null; }
@@ -52,16 +53,31 @@
       } catch { return Auth.permissions(); }
     },
     async tryRefresh() {
-      const rt = S.getItem(K.refresh);
-      if (!rt) return false;
-      const r = await fetch('/api/auth/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: rt }) });
-      if (!r.ok) { Auth.clear(); return false; }
-      Auth.save(await r.json());
-      return true;
+      // La rotación de refresh es de un solo uso: compartir la misma promesa
+      // entre peticiones simultáneas evita revocar accidentalmente la sesión.
+      if (pendingRefresh) return pendingRefresh;
+      pendingRefresh = (async () => {
+        const rt = S.getItem(K.refresh);
+        if (!rt) return false;
+        try {
+          const url = S.getItem(K.maintenance) ? '/api/auth/maintenance-refresh' : '/api/auth/refresh';
+          const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: rt }) });
+          if (!r.ok) { Auth.clear(); return false; }
+          Auth.save(await r.json());
+          return true;
+        } catch { return false; } // sin red no borrar tokens válidos
+      })();
+      try { return await pendingRefresh; } finally { pendingRefresh = null; }
     },
     async recover() {
+      const maintenance = !!S.getItem(K.maintenance);
       if (await Auth.tryRefresh()) return true;
-      if (!pendingLogin) pendingLogin = showLogin().finally(() => { pendingLogin = null; });
+      if (!pendingLogin) pendingLogin = showLogin(maintenance).finally(() => { pendingLogin = null; });
+      return pendingLogin;
+    },
+    async maintenanceLogin() {
+      if (Auth.user?.role === 'admin' && S.getItem(K.access)) { S.setItem(K.maintenance, '1'); return true; }
+      if (!pendingLogin) pendingLogin = showLogin(true).finally(() => { pendingLogin = null; });
       return pendingLogin;
     },
     async logout() {
@@ -134,13 +150,13 @@
     bar.style.background = ['#ef4444', '#ef4444', '#f59e0b', '#f59e0b', '#10b981', '#10b981'][n];
   }
 
-  function showLogin() {
+  function showLogin(maintenance = false) {
     return new Promise(resolve => {
       const layer = document.createElement('div');
       layer.className = 'login-layer';
       layer.innerHTML = `
         <form class="login-card" autocomplete="on" novalidate>
-          <div class="login-brand"><span class="login-logo">IPV</span><div><h1>Fichas y Costos</h1><p>Acceso seguro al sistema</p></div></div>
+          <div class="login-brand"><span class="login-logo">IPV</span><div><h1>Fichas y Costos</h1><p>${maintenance ? 'Acceso administrativo para recuperar la licencia' : 'Acceso seguro al sistema'}</p></div></div>
           <label>Correo electrónico<input name="email" type="email" required autocomplete="username" maxlength="200"></label>
           <label>Contraseña<input name="password" type="password" required autocomplete="current-password" maxlength="200"></label>
           <label class="otp-field" hidden>Código de verificación<input name="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="20" placeholder="123456 o código de recuperación"></label>
@@ -158,7 +174,7 @@
         const btn = form.querySelector('button');
         btn.disabled = true; btn.textContent = 'Verificando…';
         try {
-          const r = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: form.elements.email.value.trim(), password: form.elements.password.value, otp: form.elements.otp.value.trim() }) });
+          const r = await fetch(maintenance ? '/api/auth/maintenance-login' : '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: form.elements.email.value.trim(), password: form.elements.password.value, otp: form.elements.otp.value.trim() }) });
           const d = await r.json().catch(() => ({}));
           if (d.mfa_required) {
             const f = layer.querySelector('.otp-field');
@@ -167,6 +183,7 @@
           if (r.status === 402 && d.license_required && window.IPVLicense) { layer.remove(); window.IPVLicense.enter(); resolve(false); return; }
           if (!r.ok) throw new Error(d.error || 'No se pudo iniciar sesión.');
           Auth.save(d);
+          if (maintenance) S.setItem(K.maintenance, '1'); else S.removeItem(K.maintenance);
           layer.remove();
           toast(`Bienvenido, ${d.user.name}`, 'success');
           await afterLogin(d);
@@ -524,9 +541,11 @@
     document.getElementById('mfa-confirm').onclick = async () => {
       try {
         const r = await post('/api/auth/2fa/enable', { code: input.value });
-        await Auth.tryRefresh();
+        // La activación revoca los tokens anteriores a MFA. Conserve la sesión
+        // solo para mostrar los códigos y pida login (con OTP) al continuar.
         area.innerHTML = `<div class="recovery">
           <b>✅ Verificación en dos pasos activada</b>
+          <p>Al continuar deberá iniciar sesión de nuevo con su código de verificación.</p>
           <p>Guarde estos <b>códigos de recuperación</b> en un lugar seguro. Cada uno sirve <b>una sola vez</b> si pierde el teléfono. No se volverán a mostrar.</p>
           <div class="recovery-grid">${r.recovery_codes.map(c => `<code>${esc(c)}</code>`).join('')}</div>
           <div class="form-actions"><button class="ghost-btn" id="rc-download">Descargar .txt</button><button class="primary-btn" data-action="close-modal">Ya los guardé</button></div></div>`;

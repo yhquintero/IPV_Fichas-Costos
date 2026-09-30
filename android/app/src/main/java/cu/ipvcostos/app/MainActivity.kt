@@ -62,14 +62,16 @@ private data class DraftLine(val materialId: Int, val quantity: String)
 /**
  * Cliente HTTP de la API IPV.
  * · Envía el JWT en cada solicitud y lo renueva automáticamente (rotación de refresh token).
- * · Si no hay red, las consultas GET se sirven desde la caché offline cifrada.
+ * · Si no hay red, no se sirven datos antiguos: permisos y licencia exigen servidor.
  */
 private class IpvApi(private val activity: Activity) {
     private val preferences = activity.getSharedPreferences("ipv_settings", Activity.MODE_PRIVATE)
     val session = Session(activity)
-    val cache = OfflineCache(activity)
+    // Eliminar la caché de versiones anteriores: ya no se usan datos sin
+    // comprobar licencia y permisos con el servidor.
+    val cache = OfflineCache(activity).apply { clear() }
     val pinner = CertificatePinner(activity)
-    @Volatile var lastFromCacheMinutes: Long = -1
+    private val license = LicenseManager(activity)
 
     var baseUrl: String
         get() = preferences.getString("base_url", "https://10.0.2.2:8443")!!.trimEnd('/')
@@ -116,12 +118,13 @@ private class IpvApi(private val activity: Activity) {
     private fun renew(): Boolean {
         val refresh = session.refreshToken ?: return false
         val (code, text) = raw("POST", "/api/auth/refresh", JSONObject().put("refresh_token", refresh), false)
-        if (code != 200) { session.clear(); return false }
+        if (code != 200) { session.clear(); cache.clear(); return false }
         session.save(JSONObject(text))
         return true
     }
 
     fun login(email: String, password: String, otp: String = ""): JSONObject {
+        if (LicenseCore.enforced && !license.isValid()) throw IOException("La licencia del móvil no está vigente.")
         val (code, text) = raw("POST", "/api/auth/login",
             JSONObject().put("email", email).put("password", password).put("otp", otp), false)
         if (code == 401 && runCatching { JSONObject(text).optBoolean("mfa_required") }.getOrDefault(false)) {
@@ -129,6 +132,7 @@ private class IpvApi(private val activity: Activity) {
         }
         if (code != 200) throw IOException(errorOf(code, text))
         val data = JSONObject(text)
+        cache.clear() // Nunca reutilizar datos cifrados de otro usuario/rol.
         session.save(data)
         return data
     }
@@ -140,7 +144,7 @@ private class IpvApi(private val activity: Activity) {
         return data
     }
 
-    fun sessions(): JSONArray = request("GET", "/api/auth/sessions", cacheable = false) as JSONArray
+    fun sessions(): JSONArray = request("GET", "/api/auth/sessions") as JSONArray
 
     fun closeSession(id: String) {
         request("DELETE", "/api/auth/sessions/" + java.net.URLEncoder.encode(id, "UTF-8"))
@@ -156,28 +160,26 @@ private class IpvApi(private val activity: Activity) {
         cache.clear()
     }
 
-    fun request(method: String, path: String, body: JSONObject? = null, cacheable: Boolean = true): Any {
-        val result = try {
-            var (code, text) = raw(method, path, body, true)
-            if (code == 401 && renew()) {
-                val retry = raw(method, path, body, true)
-                code = retry.first; text = retry.second
-            }
-            if (code == 401) throw AuthRequiredException(errorOf(code, text))
-            if (code == 403 && runCatching { JSONObject(text).optBoolean("password_expired") }.getOrDefault(false)) {
-                throw PasswordExpiredException(errorOf(code, text))
-            }
-            if (code !in 200..299) throw IOException(errorOf(code, text))
-            if (method == "GET" && cacheable) cache.put(path, text)
-            text
-        } catch (error: IOException) {
-            if (error is AuthRequiredException || error is PinMismatchException || error is PasswordExpiredException ||
-                method != "GET" || !cacheable || error.message?.startsWith("Error HTTP") == true) throw error
-            val cached = cache.get(path) ?: throw error
-            lastFromCacheMinutes = if (lastFromCacheMinutes < 0) cached.second else maxOf(lastFromCacheMinutes, cached.second)
-            cached.first
+    fun request(method: String, path: String, body: JSONObject? = null): Any {
+        // Cada respuesta se obtiene del servidor: no se leen datos de la antigua
+        // caché cuando puedan haber cambiado el rol o la licencia.
+        if (LicenseCore.enforced && !license.isValid()) throw IOException("La licencia del móvil no está vigente.")
+        var (code, text) = raw(method, path, body, true)
+        if (code == 401 && renew()) {
+            val retry = raw(method, path, body, true)
+            code = retry.first; text = retry.second
         }
-        return JSONTokener(result).nextValue()
+        if (code == 401) { cache.clear(); throw AuthRequiredException(errorOf(code, text)) }
+        if (code == 403 && runCatching { JSONObject(text).optBoolean("password_expired") }.getOrDefault(false)) {
+            throw PasswordExpiredException(errorOf(code, text))
+        }
+        if (code !in 200..299) {
+            if (code == 402 || code == 403) cache.clear()
+            throw if (code == 402) LicenseServerException(errorOf(code, text))
+                  else if (code == 403) PermissionDeniedException(errorOf(code, text))
+                  else IOException(errorOf(code, text))
+        }
+        return JSONTokener(text).nextValue()
     }
 }
 
@@ -186,6 +188,7 @@ class MainActivity : Activity() {
     private lateinit var root: LinearLayout
     private lateinit var content: LinearLayout
     private lateinit var connectionLabel: TextView
+    private lateinit var statsButton: View
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
     private var currentTab = "Resumen"
     private var dashboard = JSONObject()
@@ -403,6 +406,7 @@ class MainActivity : Activity() {
             minWidth = dp(45)
             contentDescription = "Estadísticas"
         }
+        statsButton = statsBtn
         header.addView(statsBtn)
 
         val aboutBtn = makeButton("ℹ", false) { openAbout() }.apply {
@@ -463,14 +467,22 @@ class MainActivity : Activity() {
     }
 
     private fun updateTabStyle() {
+        if (::statsButton.isInitialized) statsButton.visibility = if (can("fichas")) View.VISIBLE else View.GONE
         val nav = (root.getChildAt(3) as HorizontalScrollView).getChildAt(0) as LinearLayout
+        val tabModule = mapOf("Productos" to "products", "Valores IPV" to "materials",
+            "Inventario" to "materials", "Fichas" to "fichas", "Controles" to "controls",
+            "Papelera" to "trash")
+        if (tabModule[currentTab]?.let { !can(it) } == true) currentTab = "Resumen"
         for (index in 0 until nav.childCount) {
             val item = nav.getChildAt(index) as TextView
+            item.visibility = if (tabModule[item.tag as String]?.let { can(it) } == false) View.GONE else View.VISIBLE
             val selected = item.tag == currentTab
             item.setTextColor(if (selected) Color.WHITE else MUTED)
             item.background = rounded(if (selected) GREEN else Color.WHITE, 8)
         }
     }
+
+    private fun can(module: String, permission: String = "view") = api.session.can(module, permission)
 
     private fun refresh(silent: Boolean = false) {
         updateTabStyle()
@@ -489,15 +501,16 @@ class MainActivity : Activity() {
             addText(content, "Cargando datos desde la base de datos…", 13f, MUTED)
         }
         executor.execute {
-            api.lastFromCacheMinutes = -1
             try {
                 val freshDashboard = api.request("GET", "/api/dashboard") as JSONObject
-                val freshProducts = api.request("GET", "/api/products") as JSONArray
-                val freshMaterials = api.request("GET", "/api/materials") as JSONArray
-                val freshFichas = api.request("GET", "/api/fichas") as JSONArray
-                val freshControls = api.request("GET", "/api/controls") as JSONArray
-                val freshInventory = api.request("GET", "/api/inventory") as JSONObject
-                val freshTrash = api.request("GET", "/api/trash") as JSONObject
+                // Permisos consultados del servidor al iniciar/renovar sesión. No pedir
+                // módulos bloqueados ni sustituir un 403 por datos de caché.
+                val freshProducts = if (can("products")) api.request("GET", "/api/products") as JSONArray else JSONArray()
+                val freshMaterials = if (can("materials")) api.request("GET", "/api/materials") as JSONArray else JSONArray()
+                val freshFichas = if (can("fichas")) api.request("GET", "/api/fichas") as JSONArray else JSONArray()
+                val freshControls = if (can("controls")) api.request("GET", "/api/controls") as JSONArray else JSONArray()
+                val freshInventory = if (can("materials")) api.request("GET", "/api/inventory") as JSONObject else JSONObject()
+                val freshTrash = if (can("trash")) api.request("GET", "/api/trash") as JSONObject else JSONObject().put("items", JSONArray())
                 runOnUiThread {
                     dashboard = freshDashboard
                     products = freshProducts
@@ -506,28 +519,10 @@ class MainActivity : Activity() {
                     controls = freshControls
                     inventory = freshInventory
                     trash = freshTrash.optJSONArray("items") ?: JSONArray()
-                    val offline = api.lastFromCacheMinutes
-                    if (offline >= 0) {
-                        connectionLabel.text = "●  Sin conexión · datos guardados hace $offline min"
-                        connectionLabel.setTextColor(WARNING)
-                    } else {
-                        val who = api.session.user?.optString("name")?.let { " · $it" } ?: ""
-                        connectionLabel.text = "●  Conectado en tiempo real$who"
-                        connectionLabel.setTextColor(SUCCESS)
-                    }
+                    val who = api.session.user?.optString("name")?.let { " · $it" } ?: ""
+                    connectionLabel.text = "●  Conectado en tiempo real$who"
+                    connectionLabel.setTextColor(SUCCESS)
                     renderPage()
-                    if (offline >= 0) {
-                        val notice = label(
-                            "Datos de caché · pueden estar desactualizados. Puede consultar; las modificaciones requieren conexión y confirmación del servidor.",
-                            11f, INK, true
-                        ).apply {
-                            setPadding(dp(12), dp(10), dp(12), dp(10))
-                            background = rounded(0xFFFFF3CD.toInt(), 9)
-                        }
-                        content.addView(notice, 0, LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-                        ).apply { bottomMargin = dp(10) })
-                    }
                 }
             } catch (error: PinMismatchException) {
                 runOnUiThread {
@@ -546,6 +541,19 @@ class MainActivity : Activity() {
                     addHeading(content, "Cambie su contraseña", error.message ?: "Su contraseña ha caducado.")
                     addButton(content, "Cambiar contraseña", true) { openPasswordChange(forced = true) }
                     openPasswordChange(forced = true)
+                }
+            } catch (error: LicenseServerException) {
+                runOnUiThread {
+                    content.removeAllViews()
+                    connectionLabel.text = "●  Licencia del servidor requerida"
+                    addHeading(content, "Acceso bloqueado", error.message ?: "Active la licencia del servidor.")
+                }
+            } catch (error: PermissionDeniedException) {
+                runOnUiThread {
+                    content.removeAllViews()
+                    connectionLabel.text = "●  Permiso denegado"
+                    addHeading(content, "Acceso restringido", error.message ?: "Consulte con el administrador.")
+                    addButton(content, "Reintentar", false) { refresh() }
                 }
             } catch (error: AuthRequiredException) {
                 runOnUiThread {
@@ -594,7 +602,7 @@ class MainActivity : Activity() {
         statRow(grid, "Controles pendientes", dashboard.optString("pending_controls", "0"), if (dashboard.optInt("pending_controls", 0) > 0) "Requieren revisión" else "Todos al día")
         statRow(grid, "Valores del IPV", dashboard.optString("materials", "0"),
             if (dashboard.optInt("low_stock", 0) > 0) "${dashboard.optInt("low_stock")} bajo mínimo"
-            else "Inventario ${formatAmount(dashboard.optString("stock_value", "0"))} CUP")
+            else if (can("materials", "costs")) "Inventario ${formatAmount(dashboard.optString("stock_value", "0"))} CUP" else "Inventario")
         content.addView(grid)
 
         addSpacer(content, 12)
@@ -610,19 +618,19 @@ class MainActivity : Activity() {
             addText(content, "${if (materialCount > 0) "✓" else "2."} Añada valores e insumos del IPV${if (materialCount > 0) " · Completado" else " · Pendiente"}.", 11f, MUTED, bottom = 3)
             addText(content, "3. Cree y revise una ficha de costo.", 11f, MUTED, bottom = 8)
             when {
-                productCount == 0 -> addButton(content, "Ir a Productos", true) { currentTab = "Productos"; refresh() }
-                materialCount == 0 -> addButton(content, "Ir a Valores IPV", true) { currentTab = "Valores IPV"; refresh() }
-                else -> addButton(content, "Ir a Fichas", true) { currentTab = "Fichas"; refresh() }
+                productCount == 0 && can("products") -> addButton(content, "Ir a Productos", true) { currentTab = "Productos"; refresh() }
+                materialCount == 0 && can("materials") -> addButton(content, "Ir a Valores IPV", true) { currentTab = "Valores IPV"; refresh() }
+                can("fichas") -> addButton(content, "Ir a Fichas", true) { currentTab = "Fichas"; refresh() }
             }
         } else if (recentFichas.length() == 0) {
             val fichaLabel = if (totalFichas == 1) "ficha" else "fichas"
             addText(content, "Hay $totalFichas $fichaLabel, pero no hay cambios recientes para mostrar.", 11f, MUTED, bottom = 4)
-            addButton(content, "Ver fichas", false) { currentTab = "Fichas"; refresh() }
+            if (can("fichas")) addButton(content, "Ver fichas", false) { currentTab = "Fichas"; refresh() }
         } else {
             addCount(content, recentFichas.length(), "fichas")
             for (i in 0 until recentFichas.length()) {
                 val f = recentFichas.getJSONObject(i)
-                val row = card(f.optString("product_name", ""), "${f.optString("status", "")} · ${formatAmount(f.optString("total_cost", "0"))} CUP", i + 1)
+                val row = card(f.optString("product_name", ""), "${f.optString("status", "")}${if (can("fichas", "costs")) " · ${formatAmount(f.optString("total_cost", "0"))} CUP" else ""}", i + 1)
                 row.setOnClickListener { openFichaDetail(f.optInt("id")) }
             }
         }
@@ -632,7 +640,7 @@ class MainActivity : Activity() {
 
     private fun renderProducts() {
         addHeading(content, "Productos y servicios", "Catálogo con ficha de costo y rendimiento (comensales / copas).")
-        addButton(content, "＋  Nuevo producto", true) { openProductForm() }
+        if (can("products", "edit")) addButton(content, "＋  Nuevo producto", true) { openProductForm() }
         addSpacer(content, 6)
         val active = products.toObjectList().filter { it.optInt("active", 1) == 1 }
         if (active.isEmpty()) {
@@ -652,7 +660,7 @@ class MainActivity : Activity() {
 
     private fun renderMaterials() {
         addHeading(content, "Valores del IPV", "Insumos, licores, bebidas y servicios. Pulse para editar, ajustar existencias o enviar a la papelera.")
-        addButton(content, "＋  Nuevo valor", true) { openMaterialForm() }
+        if (can("materials", "edit")) addButton(content, "＋  Nuevo valor", true) { openMaterialForm() }
         addSpacer(content, 6)
         val list = materials.toObjectList()
         if (list.isEmpty()) {
@@ -665,7 +673,7 @@ class MainActivity : Activity() {
                 val stockNote = if (low > 0 && stock <= low) "⚠ ${m.optString("stock")} ${m.optString("unit")} (mín. ${m.optString("min_stock")})"
                 else "${m.optString("stock", "0")} ${m.optString("unit")} en almacén"
                 val row = card(m.optString("name", ""),
-                    "${formatAmount(m.optString("unit_price", "0"))} CUP / ${m.optString("unit", "")} · ${m.optString("category", "Insumos")} · $stockNote", i + 1)
+                    "${if (can("materials", "costs")) formatAmount(m.optString("unit_price", "0")) + " CUP / " else ""}${m.optString("unit", "")} · ${m.optString("category", "Insumos")} · $stockNote", i + 1)
                 row.setOnClickListener { openMaterialDetail(m.optInt("id")) }
             }
         }
@@ -675,7 +683,7 @@ class MainActivity : Activity() {
 
     private fun renderFichas() {
         addHeading(content, "Fichas de costo", "Cada ficha rinde un número de comensales o copas. El inventario indica cuántas se pueden preparar.")
-        addButton(content, "＋  Nueva ficha", true) { openFichaForm() }
+        if (can("fichas", "edit")) addButton(content, "＋  Nueva ficha", true) { openFichaForm() }
         addSpacer(content, 6)
         val list = fichas.toObjectList()
         if (list.isEmpty()) {
@@ -689,7 +697,7 @@ class MainActivity : Activity() {
                 val stockNote = if (fromStock == null || fromStock.toString() == "null") ""
                 else " · inventario ≈ ${f.opt("servings_from_stock")} $yu"
                 val row = card("${f.optString("product_name", "")} · v${f.optInt("version", 0)}",
-                    "${f.optString("status", "")} · rinde $yq $yu · ${formatAmount(f.optString("total_cost", "0"))} CUP$stockNote", i + 1)
+                    "${f.optString("status", "")} · rinde $yq $yu${if (can("fichas", "costs")) " · ${formatAmount(f.optString("total_cost", "0"))} CUP" else ""}$stockNote", i + 1)
                 row.setOnClickListener { openFichaDetail(f.optInt("id")) }
             }
         }
@@ -700,11 +708,11 @@ class MainActivity : Activity() {
     private fun renderInventory() {
         val totals = inventory.optJSONObject("totals") ?: JSONObject()
         addHeading(content, "Inventario", "Existencias de cada valor del IPV y cuántas raciones o copas se pueden preparar.")
-        addButton(content, "＋  Nuevo valor", true) { openMaterialForm() }
+        if (can("materials", "edit")) addButton(content, "＋  Nuevo valor", true) { openMaterialForm() }
         statIndex = 0
         val grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         statRow(grid, "Valores", totals.optString("materials", "0"), "${totals.optString("categories", "0")} categorías")
-        statRow(grid, "Valor del almacén", formatAmount(totals.optString("stock_value", "0")) + " CUP", "existencias × precio")
+        if (can("materials", "costs")) statRow(grid, "Valor del almacén", formatAmount(totals.optString("stock_value", "0")) + " CUP", "existencias × precio")
         statRow(grid, "Bajo mínimo", totals.optString("low_stock", "0"), if (totals.optInt("low_stock", 0) > 0) "Requieren reposición" else "Todo en orden")
         content.addView(grid)
         addSpacer(content, 10)
@@ -720,7 +728,7 @@ class MainActivity : Activity() {
                     " · ${u.optString("product_name")} ≈ ${u.opt("servings")} ${u.optString("yield_unit")}"
                 } else ""
                 val row = card(m.optString("name", ""),
-                    "${m.optString("stock")} ${m.optString("unit")} · mín. ${m.optString("min_stock")} · ${formatAmount(m.optString("stock_value", "0"))} CUP$first", i + 1)
+                    "${m.optString("stock")} ${m.optString("unit")} · mín. ${m.optString("min_stock")}${if (can("materials", "costs")) " · ${formatAmount(m.optString("stock_value", "0"))} CUP" else ""}$first", i + 1)
                 row.setOnClickListener { openMaterialDetail(m.optInt("id")) }
             }
         }
@@ -732,12 +740,12 @@ class MainActivity : Activity() {
         if (list.isEmpty()) {
             addText(content, "La papelera está vacía.", 11f, MUTED)
         } else {
-            addButton(content, "Vaciar papelera", false) { emptyTrash() }
+            if (can("trash", "edit")) addButton(content, "Vaciar papelera", false) { emptyTrash() }
             addCount(content, list.size, "elementos")
             list.forEachIndexed { i, t ->
                 val row = card("${t.optString("kind_label")}: ${t.optString("name")}",
                     listOf(t.optString("code"), t.optString("detail"), t.optString("deleted_at")).filter { it.isNotBlank() }.joinToString(" · "), i + 1)
-                row.setOnClickListener {
+                if (can("trash", "edit") && can(t.optString("kind"), "edit")) row.setOnClickListener {
                     AlertDialog.Builder(this)
                         .setTitle(t.optString("name"))
                         .setMessage("¿Restaurar este elemento o eliminarlo para siempre?")
@@ -923,8 +931,9 @@ class MainActivity : Activity() {
         val name = field(form, "Nombre *", value = existing?.optString("name") ?: "")
         val category = field(form, "Categoría *", value = existing?.optString("category") ?: "Licores")
         val unit = field(form, "Unidad *", value = existing?.optString("unit") ?: "L")
-        val price = field(form, "Precio unitario *", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL,
-            existing?.optString("unit_price") ?: "")
+        val price = if (can("materials", "costs")) field(form, "Precio unitario *",
+            InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL,
+            existing?.optString("unit_price") ?: "") else null
         val stock = field(form, "Existencias en almacén", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL,
             existing?.optString("stock") ?: "0")
         val minStock = field(form, "Existencia mínima", InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL,
@@ -939,11 +948,11 @@ class MainActivity : Activity() {
             if (c.isEmpty() || n.isEmpty() || u.isEmpty()) { toast("Código, nombre y unidad son obligatorios."); return@showFormDialog }
             val body = JSONObject().put("code", c).put("name", n).put("unit", u)
                 .put("category", category.text.toString().ifBlank { "Insumos" })
-                .put("unit_price", price.text.toString().ifBlank { "0" })
                 .put("stock", stock.text.toString().ifBlank { "0" })
                 .put("min_stock", minStock.text.toString().ifBlank { "0" })
                 .put("supplier", supplier.text.toString())
                 .put("source", source.text.toString())
+            if (price != null) body.put("unit_price", price.text.toString().ifBlank { "0" })
             if (isEdit) runApi(dialog, "Valor del IPV actualizado.") { api.request("PUT", "/api/materials/${existing!!.optInt("id")}", body) }
             else runApi(dialog, "Valor del IPV registrado.") { api.request("POST", "/api/materials", body) }
         }
@@ -1030,8 +1039,10 @@ class MainActivity : Activity() {
                         append("${ficha.optString("product_name")} · versión ${ficha.optInt("version")}\n")
                         append("Estado: ${ficha.optString("status")}\nVigente desde: ${ficha.optString("valid_from")}\n")
                         append("Rinde: ${ficha.optString("yield_qty")} ${ficha.optString("yield_unit")}\n")
-                        append("Costo del lote: ${formatAmount(ficha.optString("total_cost"))} CUP\n")
-                        append("Costo por ${ficha.optString("yield_unit")}: ${formatAmount(ficha.optString("cost_per_serving"))} CUP\n")
+                        if (can("fichas", "costs")) {
+                            append("Costo del lote: ${formatAmount(ficha.optString("total_cost"))} CUP\n")
+                            append("Costo por ${ficha.optString("yield_unit")}: ${formatAmount(ficha.optString("cost_per_serving"))} CUP\n")
+                        }
                         val srv = ficha.opt("servings_from_stock")
                         if (srv != null && srv.toString() != "null") append("Con el inventario: ≈ $srv ${ficha.optString("yield_unit")}\n")
                         append("\n")
@@ -1039,19 +1050,21 @@ class MainActivity : Activity() {
                         append("Componentes: ${lines.length()}\n")
                         for (i in 0 until lines.length()) {
                             val line = lines.getJSONObject(i)
-                            append("${i + 1}. ${line.optString("description")} — ${line.optString("quantity")} ${line.optString("unit")} = ${formatAmount(line.optString("subtotal"))} CUP\n")
+                            append("${i + 1}. ${line.optString("description")} — ${line.optString("quantity")} ${line.optString("unit")}")
+                            if (can("fichas", "costs")) append(" = ${formatAmount(line.optString("subtotal"))} CUP")
+                            append("\n")
                         }
                         if (ficha.optString("observations").isNotBlank()) append("\n${ficha.optString("observations")}")
                     }
                     AlertDialog.Builder(this).setTitle("Ficha de Costo").setMessage(message)
                         .setPositiveButton("Cerrar", null)
-                        .setNegativeButton("Papelera") { _, _ -> trashItem("fichas", id, ficha.optString("product_name")) }
-                        .apply { if (ficha.optString("status") == "Borrador") setNeutralButton("Aprobar", null) }
-                        .apply { if (ficha.optString("status") == "Aprobada") setNeutralButton("Generar Control", null) }
+                        .apply { if (can("fichas", "edit")) setNegativeButton("Papelera") { _, _ -> trashItem("fichas", id, ficha.optString("product_name")) } }
+                        .apply { if (can("fichas", "edit") && ficha.optString("status") == "Borrador") setNeutralButton("Aprobar", null) }
+                        .apply { if (can("controls", "edit") && ficha.optString("status") == "Aprobada") setNeutralButton("Generar Control", null) }
                         .create().also { dialog ->
                             dialog.setOnShowListener {
-                                if (ficha.optString("status") == "Borrador") dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener { dialog.dismiss(); approveFicha(id) }
-                                if (ficha.optString("status") == "Aprobada") dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener { dialog.dismiss(); openGenerateControl(id) }
+                                if (can("fichas", "edit") && ficha.optString("status") == "Borrador") dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener { dialog.dismiss(); approveFicha(id) }
+                                if (can("controls", "edit") && ficha.optString("status") == "Aprobada") dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener { dialog.dismiss(); openGenerateControl(id) }
                             }
                             dialog.show()
                         }
@@ -1087,20 +1100,20 @@ class MainActivity : Activity() {
                 runOnUiThread {
                     val messages = control.optJSONArray("validation_messages") ?: JSONArray()
                     val lines = control.optJSONArray("items") ?: JSONArray()
-                    val verifiedTotal = if (control.optString("checked_at").isBlank()) "Sin validar" else formatAmount(control.optString("checked_total")) + " CUP"
+                    val verifiedTotal = if (!can("controls", "costs")) "Oculto" else if (control.optString("checked_at").isBlank()) "Sin validar" else formatAmount(control.optString("checked_total")) + " CUP"
                     val message = buildString {
                         append("${control.optString("product_name")} · ficha v${control.optInt("ficha_version")}\n")
                         append("Período: ${control.optString("period")}\nEstado: ${control.optString("status")}\n")
-                        append("Total registrado: ${formatAmount(control.optString("snapshot_total"))} CUP\n")
+                        if (can("controls", "costs")) append("Total registrado: ${formatAmount(control.optString("snapshot_total"))} CUP\n")
                         append("Total verificado: $verifiedTotal\n\nLíneas: ${lines.length()}\n")
                         for (i in 0 until messages.length()) append("\n${messages.getJSONObject(i).optString("text")}")
                     }
                     val dialog = AlertDialog.Builder(this).setTitle("Control IPV · ${control.optString("code")}")
                         .setMessage(message).setPositiveButton("Cerrar", null)
-                        .apply { if (control.optString("status") != "Validado") setNeutralButton("Validar", null) }
+                        .apply { if (can("controls", "edit") && control.optString("status") != "Validado") setNeutralButton("Validar", null) }
                         .create()
                     dialog.setOnShowListener {
-                        if (control.optString("status") != "Validado") dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener { dialog.dismiss(); validateControl(id) }
+                        if (can("controls", "edit") && control.optString("status") != "Validado") dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener { dialog.dismiss(); validateControl(id) }
                     }
                     dialog.show()
                 }
@@ -1146,14 +1159,16 @@ class MainActivity : Activity() {
                     }
                     val msg = buildString {
                         append("${m.optString("code")} · ${m.optString("category")}\n")
-                        append("Precio: ${formatAmount(m.optString("unit_price"))} ${m.optString("currency")} / ${m.optString("unit")}\n")
+                        if (can("materials", "costs")) append("Precio: ${formatAmount(m.optString("unit_price"))} ${m.optString("currency")} / ${m.optString("unit")}\n")
                         append("Existencias: ${m.optString("stock")} ${m.optString("unit")} (mín. ${m.optString("min_stock")})\n")
-                        append("Valor en almacén: ${formatAmount(m.optString("stock_value"))} CUP\n\n")
+                        if (can("materials", "costs")) append("Valor en almacén: ${formatAmount(m.optString("stock_value"))} CUP\n\n")
                         append(usage)
                     }
                     AlertDialog.Builder(this).setTitle(m.optString("name")).setMessage(msg)
-                        .setPositiveButton("Editar") { _, _ -> openMaterialForm(m) }
-                        .setNeutralButton("Papelera") { _, _ -> trashItem("materials", id, m.optString("name")) }
+                        .apply { if (can("materials", "edit")) {
+                            setPositiveButton("Editar") { _, _ -> openMaterialForm(m) }
+                            setNeutralButton("Papelera") { _, _ -> trashItem("materials", id, m.optString("name")) }
+                        } }
                         .setNegativeButton("Cerrar", null)
                         .show()
                 }
@@ -1174,8 +1189,10 @@ class MainActivity : Activity() {
                         if (p.optString("description").isNotBlank()) append("\n${p.optString("description")}")
                     }
                     AlertDialog.Builder(this).setTitle(p.optString("name")).setMessage(msg)
-                        .setPositiveButton("Editar") { _, _ -> openProductForm(p) }
-                        .setNeutralButton("Papelera") { _, _ -> trashItem("products", id, p.optString("name")) }
+                        .apply { if (can("products", "edit")) {
+                            setPositiveButton("Editar") { _, _ -> openProductForm(p) }
+                            setNeutralButton("Papelera") { _, _ -> trashItem("products", id, p.optString("name")) }
+                        } }
                         .setNegativeButton("Cerrar", null)
                         .show()
                 }
@@ -1755,7 +1772,7 @@ class MainActivity : Activity() {
 
                     // Top expensive products
                     val topExpensive = stats.optJSONArray("top_expensive") ?: JSONArray()
-                    if (topExpensive.length() > 0) {
+                    if (can("fichas", "costs") && topExpensive.length() > 0) {
                         layout.addView(label("PRODUCTOS MÁS COSTOSOS", 10f, MUTED, true).apply {
                             setPadding(0, 0, 0, dp(8))
                         })
@@ -1805,24 +1822,17 @@ class MainActivity : Activity() {
     }
 
     private fun showQuickActions() {
-        val actions = arrayOf(
-            "▦  Nuevo Producto",
-            "◈  Nuevo Valor IPV",
-            "▤  Nueva Ficha de Costo",
-            "📊  Ver Estadísticas",
-            "⚙  Configuración"
-        )
+        val actions = mutableListOf<Pair<String, () -> Unit>>()
+        if (can("products", "edit")) actions.add("▦  Nuevo Producto" to { openProductForm() })
+        if (can("materials", "edit")) actions.add("◈  Nuevo Valor IPV" to { openMaterialForm() })
+        if (can("fichas", "edit")) actions.add("▤  Nueva Ficha de Costo" to { openFichaForm() })
+        if (can("fichas")) actions.add("📊  Ver Estadísticas" to { openStatistics() })
+        actions.add("⚙  Configuración" to { openSettings() })
         AlertDialog.Builder(this)
             .setTitle("Acciones Rápidas")
-            .setItems(actions) { _, which ->
+            .setItems(actions.map { it.first }.toTypedArray()) { _, which ->
                 triggerHapticFeedback()
-                when (which) {
-                    0 -> openProductForm()
-                    1 -> openMaterialForm()
-                    2 -> openFichaForm()
-                    3 -> openStatistics()
-                    4 -> openSettings()
-                }
+                actions[which].second()
             }
             .show()
     }

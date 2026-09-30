@@ -73,6 +73,9 @@ function canDo(module, perm) {
 function canSee(module) { return canDo(module, 'view'); }
 function canEdit(module) { return canDo(module, 'edit'); }
 function canSeeCosts(module = 'materials') { return canDo(module, 'costs'); }
+function canSeedDemo() { return canSeeCosts('materials') && ['materials', 'products', 'fichas', 'controls'].every(canEdit); }
+function canEmptyTrash() { return canEdit('trash') && ['materials', 'products', 'fichas', 'controls'].every(canEdit); }
+function canTrashItem(kind) { return canEdit('trash') && canEdit(kind); }
 
 /* Oculta del menú (y de los accesos rápidos) los apartados sin permiso de view,
    y saca al usuario de una pantalla a la que ya no puede entrar. */
@@ -470,7 +473,7 @@ function inventoryBody() {
           ? `<div class="chips">${m.used_by.slice(0, 3).map(u => `<span class="used-chip" title="${esc(u.product_name)}: ${esc(u.per_serving)} ${esc(m.unit)} por ${esc(u.yield_unit || 'unidad')}">${esc(u.product_name)} <b>${esc(dec(u.servings))}</b></span>`).join('')}${m.used_by.length > 3 ? `<span class="used-chip">+${m.used_by.length - 3}</span>` : ''}</div>`
           : '<span style="color:var(--text-4)">Sin recetas</span>'}</td>
         <td>${rowActions('material', m)}</td></tr>`).join('')}</tbody></table></div>`
-      : `<div class="empty-state"><div class="empty-icon">▣</div><b>${q || category || low ? 'Sin resultados' : 'Inventario vacío'}</b><p>${q || category || low ? 'Ajusta los filtros.' : 'Cargue datos de prueba o registre valores del IPV.'}</p>${editar ? '<button class="primary-btn" data-action="seed-demo">🧪 Cargar datos de prueba</button>' : permPill('Solo consulta', 'Su usuario no puede cargar datos ni mover existencias.')}</div>`}</section>`;
+      : `<div class="empty-state"><div class="empty-icon">▣</div><b>${q || category || low ? 'Sin resultados' : 'Inventario vacío'}</b><p>${q || category || low ? 'Ajusta los filtros.' : 'Cargue datos de prueba o registre valores del IPV.'}</p>${canSeedDemo() ? '<button class="primary-btn" data-action="seed-demo">🧪 Cargar datos de prueba</button>' : permPill('Solo consulta', 'Su usuario no puede cargar datos ni mover existencias.')}</div>`}</section>`;
 }
 
 function bindValuesTab() {
@@ -511,7 +514,7 @@ function renderMaterialsModule(tab) {
     ? (inventario
       ? '<button class="primary-btn" data-action="create-material"><span class="plus">＋</span> Nuevo valor</button>'
       : `<div class="btn-row">
-        <button class="secondary-btn" data-action="seed-demo" title="Cargar más inventarios y fichas de ejemplo">🧪 Datos de prueba</button>
+        ${canSeedDemo() ? '<button class="secondary-btn" data-action="seed-demo" title="Cargar más inventarios y fichas de ejemplo">🧪 Datos de prueba</button>' : ''}
         <button class="primary-btn" data-action="create-material"><span class="plus">＋</span> Nuevo valor</button>
       </div>`)
     : permPill('Solo consulta', 'Su usuario puede ver estos datos, pero no crearlos ni modificarlos.');
@@ -536,7 +539,7 @@ function renderTrash() {
   const rows = state.trash.filter(t => `${t.name} ${t.code} ${t.kind_label}`.toLowerCase().includes(q));
   content.innerHTML = `
     ${heading('Recuperación', 'Papelera de reciclaje', 'Todo lo que elimina pasa aquí: puede restaurarlo o borrarlo definitivamente. Nada se pierde por accidente.', rows.length
-      ? `<button class="danger-btn" data-action="empty-trash">Vaciar papelera</button>` : '')}
+      && canEmptyTrash() ? `<button class="danger-btn" data-action="empty-trash">Vaciar papelera</button>` : '')}
     <div class="toolbar">${searchBox('Buscar en la papelera…')}${countPill(rows.length, state.trash.length, 'elementos')}</div>
     <section class="panel">
       ${rows.length ? rows.map((t, i) => `<div class="trash-item">
@@ -546,9 +549,9 @@ function renderTrash() {
           <b>${esc(t.name)}</b>
           <small>${esc(t.kind_label)}${t.code ? ` · ${esc(t.code)}` : ''}${t.period ? ` · ${esc(t.period)}` : ''}${t.detail ? ` · ${esc(t.detail)}` : ''} · eliminado el ${dateLabel(t.deleted_at)}</small>
         </div>
-        <div class="trash-actions">
+        <div class="trash-actions">${canTrashItem(t.kind) ? `
           <button class="secondary-btn" data-action="restore-trash" data-kind="${t.kind}" data-id="${t.id}">↶ Restaurar</button>
-          <button class="danger-btn" data-action="purge-trash" data-kind="${t.kind}" data-id="${t.id}" title="Borrado definitivo">Eliminar</button>
+          <button class="danger-btn" data-action="purge-trash" data-kind="${t.kind}" data-id="${t.id}" title="Borrado definitivo">Eliminar</button>` : permPill('Solo consulta', 'Necesita permiso de edición en la papelera y en el módulo del elemento.')}
         </div>
       </div>`).join('') : `<div class="trash-empty-note"><div style="font-size:34px;margin-bottom:10px">🗑</div><b>La papelera está vacía</b><p>Los elementos que elimine aparecerán aquí para poder recuperarlos.</p></div>`}
     </section>`;
@@ -569,12 +572,12 @@ function renderFichas() {
         const tone = f.servings_from_stock === null || f.servings_from_stock === undefined ? '' : short <= 0 ? 'red' : short < Number(f.yield_qty || 1) ? 'orange' : 'green';
         return `<tr>${idTd(i, f.id)}<td>${prodCell(f.product_name, f.product_code, f.category)}</td><td>v${f.version}</td><td>${dateLabel(f.valid_from)}</td>
         <td>${yieldBadge(f.yield_qty, f.yield_unit, f.category === 'Comidas' ? 'orange' : 'blue')}</td>
-        <td>${f.item_count || 0}</td><td class="amount">${money(f.total_cost)}</td>
-        <td class="amount">${money(f.cost_per_serving)} <small style="color:var(--text-4)">/ ${esc(f.yield_unit || '')}</small></td>
+        <td>${f.item_count || 0}</td><td class="amount">${moneyOrLock(f.total_cost, 'fichas')}</td>
+        <td class="amount">${moneyOrLock(f.cost_per_serving, 'fichas')} <small style="color:var(--text-4)">/ ${esc(f.yield_unit || '')}</small></td>
         <td>${f.servings_from_stock === null || f.servings_from_stock === undefined ? '—' : `<span class="yield-badge ${tone}">≈ ${dec(f.servings_from_stock)} ${esc(f.yield_unit || '')}</span>`}</td>
         <td>${stPill(f.status)}</td><td>${rowActions('ficha', f)}</td></tr>`;
       }).join('')}</tbody></table></div>`
-      : `<div class="empty-state"><div class="empty-icon">▤</div><b>${q || sf ? 'Sin resultados' : 'No hay fichas'}</b><p>${q || sf ? 'Ajusta los filtros.' : 'Cree la primera ficha de costo o cargue los datos de prueba.'}</p><button class="primary-btn" data-action="seed-demo">🧪 Cargar datos de prueba</button></div>`}</section>`;
+      : `<div class="empty-state"><div class="empty-icon">▤</div><b>${q || sf ? 'Sin resultados' : 'No hay fichas'}</b><p>${q || sf ? 'Ajusta los filtros.' : 'Cree la primera ficha de costo o cargue los datos de prueba.'}</p>${canSeedDemo() ? '<button class="primary-btn" data-action="seed-demo">🧪 Cargar datos de prueba</button>' : ''}</div>`}</section>`;
   $('#table-search')?.addEventListener('input', e => { state.search = e.target.value; renderFichas(); });
   $('#ficha-status')?.addEventListener('change', () => renderFichas());
 }
@@ -602,7 +605,7 @@ function loadLicenseInto(box) {
       state.license = lic;
       if (!box.isConnected) return;
       if (!lic.enforced) {
-        const canCreate = !window.IPVAuth?.user || window.IPVAuth.user.role === 'admin';
+        const canCreate = window.IPVAuth?.user?.role === 'admin';
         box.innerHTML = `<div class="lic-status-card off"><div class="lic-status-icon">🛡</div><div class="lic-status-copy">
           <h3>Licencias desactivadas</h3><p>Este servidor aún no tiene clave pública de licencias. Cree la clave de firma con el <b>Creador de Licencias</b> y el sistema quedará activado al instante, sin reiniciar.</p></div>
           <div style="display:flex;flex-direction:column;gap:8px">
@@ -623,6 +626,7 @@ function loadLicenseInto(box) {
           <div class="lic-status-copy"><h3>${lic.valid ? `Licencia vigente — ${esc(lic.plan_name || '')}` : (/venc/i.test(lic.reason || '') ? 'Licencia vencida' : 'Este equipo no tiene licencia')}</h3>
           <p>${lic.valid ? `A nombre de ${esc(lic.user || '')} · serie ${esc(lic.serial || '')}` : esc(lic.reason || '')}</p></div>
           ${lic.valid ? '<button class="primary-btn" data-action="open-license">Renovar</button>' : ''}</div>
+        ${!lic.valid ? '<div class="panel"><h3 class="panel-title">Recuperación administrativa</h3><p class="small-note">El administrador puede iniciar sesión para emitir una licencia nueva. Los datos de la aplicación seguirán bloqueados hasta activarla.</p><button class="secondary-btn" data-action="license-admin-login">🔐 Entrar como administrador</button></div>' : ''}
         ${lic.valid ? `<div class="lic-kv">
           <div><small>Plan</small><b>${esc(lic.plan_name)}</b></div>
           <div><small>Emitida</small><b>${fmtDate(lic.issued_at)}</b></div>
@@ -913,7 +917,7 @@ function renderControls() {
     ${heading('Verificación', 'Controles de IPV', 'Cada control es una instantánea vinculada a una versión específica de ficha. La validación compara totales y líneas.', '')}
     <div class="toolbar">${searchBox()}<select class="filter-select" id="control-status"><option value="">Todos los estados</option><option value="Pendiente" ${sf === 'Pendiente' ? 'selected' : ''}>Pendiente</option><option value="Validado" ${sf === 'Validado' ? 'selected' : ''}>Validado</option><option value="Con diferencias" ${sf === 'Con diferencias' ? 'selected' : ''}>Con diferencias</option></select><button class="secondary-btn" data-action="export-controls">⤓ Exportar CSV</button>${countPill(rows.length, state.controls.length, 'controles')}</div>
     <section class="panel table-panel">${rows.length
-      ? `<div class="table-wrap"><table><thead><tr>${idTh()}<th>Control</th><th>Producto</th><th>Período</th><th>Ficha</th><th>Total</th><th>Estado</th><th></th></tr></thead><tbody>${rows.map((c, i) => `<tr>${idTd(i, c.id)}<td><b style="color:var(--text);font-size:12px">${esc(c.code)}</b></td><td>${prodCell(c.product_name, c.product_code, c.category)}</td><td>${esc(c.period)}</td><td>v${c.ficha_version}</td><td class="amount">${money(c.snapshot_total)}</td><td>${stPill(c.status)}</td><td><button class="text-btn" data-action="view-control" data-id="${c.id}">Abrir ↗</button></td></tr>`).join('')}</tbody></table></div>`
+      ? `<div class="table-wrap"><table><thead><tr>${idTh()}<th>Control</th><th>Producto</th><th>Período</th><th>Ficha</th><th>Total</th><th>Estado</th><th></th></tr></thead><tbody>${rows.map((c, i) => `<tr>${idTd(i, c.id)}<td><b style="color:var(--text);font-size:12px">${esc(c.code)}</b></td><td>${prodCell(c.product_name, c.product_code, c.category)}</td><td>${esc(c.period)}</td><td>v${c.ficha_version}</td><td class="amount">${moneyOrLock(c.snapshot_total, 'controls')}</td><td>${stPill(c.status)}</td><td><button class="text-btn" data-action="view-control" data-id="${c.id}">Abrir ↗</button></td></tr>`).join('')}</tbody></table></div>`
       : `<div class="empty-state"><div class="empty-icon">✓</div><b>${q || sf ? 'Sin resultados' : 'No hay controles'}</b><p>${q || sf ? 'Ajusta los filtros.' : 'Genera un control desde una ficha aprobada.'}</p></div>`}</section>`;
   $('#table-search')?.addEventListener('input', e => { state.search = e.target.value; renderControls(); });
   $('#control-status')?.addEventListener('change', () => renderControls());
@@ -995,18 +999,19 @@ function openProductModal(existing = null) {
 function openMaterialModal(existing = null, afterCreate = false) {
   const isEdit = !!existing;
   const m = existing || {};
+  const costos = canSeeCosts('materials');
   const cats = state.categories.materials.length ? state.categories.materials
     : ['Licores', 'Cervezas', 'Vinos', 'Bebidas sin alcohol', 'Cafés y tés', 'Granos y básicos', 'Condimentos', 'Vegetales', 'Frutas', 'Carnes', 'Aves', 'Pescados', 'Mariscos', 'Lácteos', 'Panadería', 'Hierbas', 'Servicios', 'Insumos'];
   const today = new Date().toISOString().slice(0, 10);
-  showModal(isEdit ? 'Editar valor del IPV' : 'Nuevo valor del IPV', isEdit ? `Código ${m.code} · se actualizará en todas las fichas que lo usan` : 'Insumo, licor, bebida o servicio con precio y existencias.', `
+  showModal(isEdit ? 'Editar valor del IPV' : 'Nuevo valor del IPV', isEdit ? `Código ${m.code} · se actualizará en todas las fichas que lo usan` : 'Insumo, licor, bebida o servicio con existencias.', `
     <form id="mf"><div class="form-grid">
       <div class="form-field"><label>Código *</label><input id="m-code" required value="${esc(m.code || '')}" placeholder="Ej: LIC-025"></div>
       <div class="form-field"><label>Nombre *</label><input id="m-name" required value="${esc(m.name || '')}"></div>
       <div class="form-field"><label>Categoría *</label><input id="m-cat" required list="material-cats" value="${esc(m.category || '')}" placeholder="Licores, Insumos, Servicios">
         <datalist id="material-cats">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist></div>
       <div class="form-field"><label>Unidad *</label><input id="m-unit" required value="${esc(m.unit || '')}" placeholder="kg, L, unidad, hora"></div>
-      <div class="form-field"><label>Precio unitario *</label><input id="m-price" type="number" step="0.01" min="0" required value="${esc(m.unit_price ?? '0')}"></div>
-      <div class="form-field"><label>Moneda</label><select id="m-curr">${['CUP', 'MLC', 'USD', 'EUR'].map(c => `<option ${c === (m.currency || 'CUP') ? 'selected' : ''}>${c}</option>`).join('')}</select></div>
+      ${costos ? `<div class="form-field"><label>Precio unitario *</label><input id="m-price" type="number" step="0.01" min="0" required value="${esc(m.unit_price ?? '0')}"></div>
+      <div class="form-field"><label>Moneda</label><select id="m-curr">${['CUP', 'MLC', 'USD', 'EUR'].map(c => `<option ${c === (m.currency || 'CUP') ? 'selected' : ''}>${c}</option>`).join('')}</select></div>` : ''}
       <div class="form-field"><label>Existencias en almacén</label><input id="m-stock" type="number" step="0.001" min="0" value="${esc(m.stock ?? '0')}"><span class="form-hint">Cuánto queda ahora mismo.</span></div>
       <div class="form-field"><label>Existencia mínima</label><input id="m-min" type="number" step="0.001" min="0" value="${esc(m.min_stock ?? '0')}"><span class="form-hint">Por debajo de este valor se avisa.</span></div>
       <div class="form-field"><label>Proveedor</label><input id="m-sup" value="${esc(m.supplier || '')}"></div>
@@ -1020,10 +1025,11 @@ function openMaterialModal(existing = null, afterCreate = false) {
   $('#mf').addEventListener('submit', async e => {
     e.preventDefault();
     const payload = { code: $('#m-code').value, name: $('#m-name').value, unit: $('#m-unit').value,
-      category: $('#m-cat').value, unit_price: $('#m-price').value, currency: $('#m-curr').value,
+      category: $('#m-cat').value,
       stock: $('#m-stock').value, min_stock: $('#m-min').value, supplier: $('#m-sup').value,
       source: $('#m-src').value, status: $('#m-status').value,
       effective_from: $('#m-from').value, effective_to: $('#m-to').value };
+    if (costos) Object.assign(payload, { unit_price: $('#m-price').value, currency: $('#m-curr').value });
     try {
       let saved;
       if (isEdit) saved = await api(`/api/materials/${m.id}`, { method: 'PUT', body: JSON.stringify(payload) });
@@ -1067,7 +1073,7 @@ async function openProductDetail(id) {
     const p = await api(`/api/products/${id}`);
     const fichas = p.fichas.length
       ? `<div class="table-wrap"><table><thead><tr>${idTh()}<th>Versión</th><th>Rinde</th><th>Costo lote</th><th>Por unidad</th><th>Estado</th><th></th></tr></thead><tbody>
-        ${p.fichas.map((f, i) => `<tr>${idTd(i, f.id)}<td>v${f.version}</td><td>${yieldBadge(f.yield_qty, f.yield_unit)}</td><td class="amount">${money(f.total_cost)}</td><td class="amount">${money(f.cost_per_serving || '0')}</td><td>${stPill(f.status)}</td><td><button class="text-btn" data-action="view-ficha" data-id="${f.id}">Abrir ↗</button></td></tr>`).join('')}
+        ${p.fichas.map((f, i) => `<tr>${idTd(i, f.id)}<td>v${f.version}</td><td>${yieldBadge(f.yield_qty, f.yield_unit)}</td><td class="amount">${moneyOrLock(f.total_cost, 'fichas')}</td><td class="amount">${moneyOrLock(f.cost_per_serving, 'fichas')}</td><td>${stPill(f.status)}</td><td><button class="text-btn" data-action="view-ficha" data-id="${f.id}">Abrir ↗</button></td></tr>`).join('')}
         </tbody></table></div>`
       : '<div class="empty-state"><div class="empty-icon">▤</div><b>Sin fichas de costo</b><p>Cree la primera ficha para este producto.</p></div>';
     showModal(`Producto · ${p.name}`, `${p.code} · ${p.category}`, `
@@ -1180,7 +1186,7 @@ function openFichaModal(ficha = null, presetProductId = null) {
 async function openFichaDetail(id) {
   try {
     const f = await api(`/api/fichas/${id}`);
-    const lines = f.items.map((i, n) => `<tr>${idTd(n, i.material_id)}<td>${esc(i.description)}${i.material_code ? `<br><small style="color:var(--text-4)">${esc(i.material_code)}</small>` : ''}</td><td>${dec(i.quantity)} ${esc(i.unit)}</td><td>${i.per_serving ? `<span class="used-chip">${esc(i.per_serving)} ${esc(i.unit)} / ${esc(f.yield_unit)}</span>` : '—'}</td><td class="amount">${money(i.unit_cost)}</td><td class="amount">${money(i.subtotal)}</td></tr>`).join('');
+    const lines = f.items.map((i, n) => `<tr>${idTd(n, i.material_id)}<td>${esc(i.description)}${i.material_code ? `<br><small style="color:var(--text-4)">${esc(i.material_code)}</small>` : ''}</td><td>${dec(i.quantity)} ${esc(i.unit)}</td><td>${i.per_serving ? `<span class="used-chip">${esc(i.per_serving)} ${esc(i.unit)} / ${esc(f.yield_unit)}</span>` : '—'}</td><td class="amount">${moneyOrLock(i.unit_cost, 'fichas')}</td><td class="amount">${moneyOrLock(i.subtotal, 'fichas')}</td></tr>`).join('');
     const srv = f.servings_from_stock;
     const srvBox = `<div class="detail-box"><span>Con el inventario actual</span><b style="color:${srv === 0 ? 'var(--red)' : 'var(--green)'}">${srv === null || srv === undefined ? '—' : `≈ ${dec(srv)} ${esc(f.yield_unit || '')}`}</b>${f.limited_by ? `<small style="color:var(--text-4)">limitado por ${esc(f.limited_by)}</small>` : ''}</div>`;
     const shortages = (f.shortages || []).length
@@ -1192,8 +1198,8 @@ async function openFichaDetail(id) {
         <div class="detail-box"><span>Versión / estado</span><b>v${f.version} · ${esc(f.status)}</b></div>
         <div class="detail-box"><span>Vigente desde</span><b>${dateLabel(f.valid_from)}</b></div>
         <div class="detail-box"><span>Rinde</span><b>${yieldBadge(f.yield_qty, f.yield_unit)}</b></div>
-        <div class="detail-box"><span>Costo del lote</span><b>${money(f.total_cost)}</b></div>
-        <div class="detail-box"><span>Costo por ${esc((f.yield_unit || 'unidad').replace(/s$/, ''))}</span><b>${money(f.cost_per_serving)}</b></div>
+        <div class="detail-box"><span>Costo del lote</span><b>${moneyOrLock(f.total_cost, 'fichas')}</b></div>
+        <div class="detail-box"><span>Costo por ${esc((f.yield_unit || 'unidad').replace(/s$/, ''))}</span><b>${moneyOrLock(f.cost_per_serving, 'fichas')}</b></div>
         ${srvBox}
       </div>${shortages}
       <div class="table-wrap"><table style="min-width:700px"><thead><tr>${idTh()}<th>Componente</th><th>Lote</th><th>Por ${esc((f.yield_unit || 'unidad').replace(/s$/, ''))}</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${lines}</tbody></table></div>
@@ -1208,15 +1214,15 @@ async function openFichaDetail(id) {
 async function approveFicha(id) { try { await api(`/api/fichas/${id}/approve`, { method: 'POST', body: '{}' }); closeModal(); await refreshData(true); toast('Ficha aprobada.', 'success'); } catch (e) { toast(e.message, 'error'); } }
 async function openGenerateControl(id) {
   const f = await api(`/api/fichas/${id}`);
-  showModal('Generar Control de IPV', 'Vinculado a la versión exacta de esta ficha.', `<form id="cf"><div class="detail-grid"><div class="detail-box"><span>Producto</span><b>${esc(f.product_name)} · v${f.version}</b></div><div class="detail-box"><span>Total</span><b>${money(f.total_cost)}</b></div></div><div class="form-field"><label>Período *</label><input id="c-period" type="month" required value="${currentMonth()}"><span class="form-hint">Se creará una instantánea de las líneas y el total.</span></div><div class="form-field"><label>Observaciones</label><textarea id="c-notes"></textarea></div><div class="modal-actions"><button type="button" class="secondary-btn" data-action="close-modal">Cancelar</button><button class="primary-btn" type="submit">Crear Control IPV</button></div></form>`);
+  showModal('Generar Control de IPV', 'Vinculado a la versión exacta de esta ficha.', `<form id="cf"><div class="detail-grid"><div class="detail-box"><span>Producto</span><b>${esc(f.product_name)} · v${f.version}</b></div><div class="detail-box"><span>Total</span><b>${moneyOrLock(f.total_cost, 'fichas')}</b></div></div><div class="form-field"><label>Período *</label><input id="c-period" type="month" required value="${currentMonth()}"><span class="form-hint">Se creará una instantánea de las líneas y el total.</span></div><div class="form-field"><label>Observaciones</label><textarea id="c-notes"></textarea></div><div class="modal-actions"><button type="button" class="secondary-btn" data-action="close-modal">Cancelar</button><button class="primary-btn" type="submit">Crear Control IPV</button></div></form>`);
   $('#cf').addEventListener('submit', async e => { e.preventDefault(); try { await api('/api/controls', { method: 'POST', body: JSON.stringify({ ficha_id: id, period: $('#c-period').value, notes: $('#c-notes').value }) }); closeModal(); await refreshData(true); setView('controls'); toast('Control IPV creado.', 'success'); } catch (err) { toast(err.message, 'error'); } });
 }
 async function openControlDetail(id) {
   try {
     const c = await api(`/api/controls/${id}`);
-    const lines = c.items.map((i, n) => `<tr>${idTd(n)}<td>${esc(i.description)}</td><td>${dec(i.quantity)} ${esc(i.unit)}</td><td class="amount">${money(i.unit_cost)}</td><td class="amount">${money(i.subtotal)}</td></tr>`).join('');
+    const lines = c.items.map((i, n) => `<tr>${idTd(n)}<td>${esc(i.description)}</td><td>${dec(i.quantity)} ${esc(i.unit)}</td><td class="amount">${moneyOrLock(i.unit_cost, 'controls')}</td><td class="amount">${moneyOrLock(i.subtotal, 'controls')}</td></tr>`).join('');
     const msgs = (c.validation_messages || []).map(m => `<div class="small-note" style="margin-top:8px;color:${m.type === 'error' ? 'var(--red)' : m.type === 'success' ? 'var(--green)' : 'var(--text-3)'}">${m.type === 'error' ? '⚠ ' : m.type === 'success' ? '✓ ' : '• '}${esc(m.text)}</div>`).join('');
-    showModal(`Control IPV · ${c.code}`, `${c.product_code} · ${c.product_name}`, `<div class="detail-grid"><div class="detail-box"><span>Producto / ficha</span><b>${esc(c.product_name)} · v${c.ficha_version}</b></div><div class="detail-box"><span>Período / estado</span><b>${esc(c.period)} · ${esc(c.status)}</b></div><div class="detail-box"><span>Total del lote</span><b>${money(c.snapshot_total)}</b></div><div class="detail-box"><span>Costo por ${esc((c.yield_unit || 'unidad').replace(/s$/, ''))}</span><b>${money(c.cost_per_serving)}</b></div><div class="detail-box"><span>Verificado</span><b>${c.checked_at ? money(c.checked_total) : 'Sin validar'}</b></div></div><div class="table-wrap"><table><thead><tr>${idTh()}<th>Componente</th><th>Cantidad</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${lines}</tbody></table></div>${msgs}<div class="modal-actions"><button class="secondary-btn" data-action="close-modal">Cerrar</button><button class="danger-btn" data-action="trash-control" data-id="${c.id}">Mover a la papelera</button>${c.status !== 'Validado' ? `<button class="primary-btn" data-action="validate-control" data-id="${c.id}">Ejecutar validación</button>` : ''}</div>`);
+    showModal(`Control IPV · ${c.code}`, `${c.product_code} · ${c.product_name}`, `<div class="detail-grid"><div class="detail-box"><span>Producto / ficha</span><b>${esc(c.product_name)} · v${c.ficha_version}</b></div><div class="detail-box"><span>Período / estado</span><b>${esc(c.period)} · ${esc(c.status)}</b></div><div class="detail-box"><span>Total del lote</span><b>${moneyOrLock(c.snapshot_total, 'controls')}</b></div><div class="detail-box"><span>Costo por ${esc((c.yield_unit || 'unidad').replace(/s$/, ''))}</span><b>${moneyOrLock(c.cost_per_serving, 'controls')}</b></div><div class="detail-box"><span>Verificado</span><b>${c.checked_at ? moneyOrLock(c.checked_total, 'controls') : 'Sin validar'}</b></div></div><div class="table-wrap"><table><thead><tr>${idTh()}<th>Componente</th><th>Cantidad</th><th>Precio</th><th>Subtotal</th></tr></thead><tbody>${lines}</tbody></table></div>${msgs}<div class="modal-actions"><button class="secondary-btn" data-action="close-modal">Cerrar</button><button class="danger-btn" data-action="trash-control" data-id="${c.id}">Mover a la papelera</button>${c.status !== 'Validado' ? `<button class="primary-btn" data-action="validate-control" data-id="${c.id}">Ejecutar validación</button>` : ''}</div>`);
   } catch (e) { toast(e.message, 'error'); }
 }
 async function validateControl(id) { try { const c = await api(`/api/controls/${id}/validate`, { method: 'POST', body: '{}' }); await refreshData(true); openControlDetail(c.id); toast(c.status === 'Validado' ? 'Control validado.' : 'Se encontraron observaciones.', c.status === 'Validado' ? 'success' : 'error'); } catch (e) { toast(e.message, 'error'); } }
@@ -1245,7 +1251,7 @@ function globalSearch(query) {
   const q = query.toLowerCase();
   const results = [
     ...state.products.filter(p => `${p.name} ${p.code}`.toLowerCase().includes(q)).slice(0, 3).map(p => ({ type: 'Producto', name: p.name, sub: p.code, action: 'view-product', id: p.id })),
-    ...state.fichas.filter(f => `${f.product_name} ${f.product_code}`.toLowerCase().includes(q)).slice(0, 3).map(f => ({ type: 'Ficha', name: `${f.product_name} v${f.version}`, sub: `${f.status} · ${money(f.total_cost)}`, action: 'view-ficha', id: f.id })),
+    ...state.fichas.filter(f => `${f.product_name} ${f.product_code}`.toLowerCase().includes(q)).slice(0, 3).map(f => ({ type: 'Ficha', name: `${f.product_name} v${f.version}`, sub: `${f.status} · ${canSeeCosts('fichas') ? money(f.total_cost) : 'costos protegidos'}`, action: 'view-ficha', id: f.id })),
     ...state.materials.filter(m => `${m.name} ${m.code}`.toLowerCase().includes(q)).slice(0, 3).map(m => ({ type: 'Valor', name: m.name, sub: canSeeCosts() ? `${money(m.unit_price)} / ${m.unit}` : `${m.unit} · costos protegidos`, action: '', id: 0 })),
     ...state.controls.filter(c => `${c.code} ${c.product_name}`.toLowerCase().includes(q)).slice(0, 3).map(c => ({ type: 'Control', name: c.code, sub: `${c.product_name} · ${c.status}`, action: 'view-control', id: c.id })),
   ];
@@ -1404,6 +1410,9 @@ async function runAction(action, id, el, extra = {}) {
       } catch (ex) { fail(ex.message); }
       return;
     }
+    case 'license-admin-login':
+      if (await window.IPVAuth?.maintenanceLogin?.()) setView('creator');
+      return;
     case 'open-creator': return setView('creator');
     case 'creator-refresh': return loadCreatorInto($('#creator-body'));
     case 'creator-ledger': return loadCreatorLedger();
@@ -1511,11 +1520,11 @@ document.addEventListener('keydown', e => {
   }
 });
 
-/* El Creador de Licencias solo se muestra a administradores (o en modo abierto) */
+/* El Creador de Licencias solo se muestra a administradores autenticados. */
 function updateCreatorNav() {
   const u = window.IPVAuth ? window.IPVAuth.user : null;
   const btn = $('#nav-creator');
-  if (btn) btn.style.display = (!u || u.role === 'admin') ? '' : 'none';
+  if (btn) btn.style.display = (u?.role === 'admin') ? '' : 'none';
 }
 document.addEventListener('ipv:auth', async () => {
   updateCreatorNav();
@@ -1543,6 +1552,17 @@ window.IPVLicenseEnter = () => { if (state.view !== 'license') setView('license'
   if (window.IPVLicense) {
     try {
       const lic = await window.IPVLicense.status();
+      if (lic.setup_required) {
+        // Primera instalación: solo el administrador autenticado puede crear
+        // la clave de firma. No solicitar datos antes de configurar la licencia.
+        state.license = lic;
+        state.licenseBlocked = true;
+        if (await window.IPVAuth?.recover?.()) {
+          if (window.IPVAuth.user?.role === 'admin') setView('creator');
+          else { setView('license'); toast('Solo un administrador puede configurar las licencias.', 'error'); }
+        }
+        return;
+      }
       if (lic.enforced && !lic.valid) {
         state.license = lic;
         state.licenseBlocked = true;
@@ -1910,7 +1930,7 @@ async function renderStatisticsPanel() {
                 <td>${esc(p.name)}</td>
                 <td><code style="background:var(--surface-3);padding:2px 6px;border-radius:4px;font-size:10px">${esc(p.code)}</code></td>
                 <td>v${p.version}</td>
-                <td class="amount" style="text-align:right">${money(p.total_cost)}</td>
+                <td class="amount" style="text-align:right">${moneyOrLock(p.total_cost, 'fichas')}</td>
               </tr>
             `).join('')}
           </tbody>
@@ -1940,7 +1960,7 @@ function addFAB() {
           .map(([a, i, t, s]) => `<button class="quick-tile" data-action="${a}"><span>${i}</span><b>${t}</b><small>${s}</small></button>`).join('')}
         ${canSee('materials') ? '<button class="quick-tile" data-view="inventory"><span>▣</span><b>Ver inventario</b><small>Cuánto queda y para qué se usa</small></button>' : ''}
         ${canSee('trash') ? '<button class="quick-tile" data-view="trash"><span>🗑</span><b>Papelera</b><small>Restaurar o borrar definitivamente</small></button>' : ''}
-        ${canEdit('materials') ? '<button class="quick-tile" data-action="seed-demo"><span>🧪</span><b>Datos de prueba</b><small>Catálogo de ejemplo para aprender</small></button>' : ''}
+        ${canSeedDemo() ? '<button class="quick-tile" data-action="seed-demo"><span>🧪</span><b>Datos de prueba</b><small>Catálogo de ejemplo para aprender</small></button>' : ''}
       </div>
       <div class="modal-actions"><button class="secondary-btn" data-action="close-modal">Cerrar</button></div>`);
   });

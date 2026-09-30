@@ -26,6 +26,7 @@ import secrets
 import sqlite3
 
 import dbcrypt
+import permisos
 import threading
 import tls_seguro
 import time
@@ -1220,7 +1221,15 @@ class Handler(BaseHTTPRequestHandler):
              active_flag, now_iso(), product_id))
         return get_product(conn, product_id)
 
+    def _require_material_costs(self, data):
+        """Editar sin ver costos permite existencias, no precios ni moneda."""
+        user = getattr(self, "user", None)
+        if user and any(key in data for key in ("unit_price", "currency")) and not permisos.can(
+                user.get("permissions"), "materials", "costs"):
+            raise APIError("Su usuario no tiene permiso para modificar precios ni moneda.", 403)
+
     def _create_material(self, conn, data):
+        self._require_material_costs(data)
         code = sanitize_code(data.get("code", ""))
         name = sanitize_text(data.get("name", ""), 200)
         unit = sanitize_text(data.get("unit", ""), 30)
@@ -1251,6 +1260,7 @@ class Handler(BaseHTTPRequestHandler):
         return material_detail(conn, cur.lastrowid)
 
     def _update_material(self, conn, material_id, data):
+        self._require_material_costs(data)
         current = conn.execute("SELECT * FROM materials WHERE id=?", (material_id,)).fetchone()
         if not current:
             raise APIError("Valor del IPV no encontrado.", 404)
@@ -1382,6 +1392,14 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": True, "removed": sum(removed.values()), "by_kind": removed}
 
 
+    def _require_ficha_costs(self, items):
+        """Las líneas libres permiten fijar unit_cost; no así las vinculadas a materiales."""
+        user = getattr(self, "user", None)
+        if user and not permisos.can(user.get("permissions"), "fichas", "costs"):
+            if any(isinstance(item, dict) and item.get("material_id") in (None, "")
+                   for item in items):
+                raise APIError("Su usuario no tiene permiso para definir costos de fichas.", 403)
+
     def _create_ficha(self, conn, data):
         product_id = int(data.get("product_id"))
         product = get_product(conn, product_id)
@@ -1392,6 +1410,7 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("Añade al menos un insumo o componente.")
         if len(items) > 100:
             raise APIError("No se permiten más de 100 componentes por ficha.")
+        self._require_ficha_costs(items)
         version = conn.execute("SELECT COALESCE(MAX(version),0)+1 FROM fichas WHERE product_id=?", (product_id,)).fetchone()[0]
         yield_qty, yield_unit = self._clean_yield(data, product)
         stamp = now_iso()
@@ -1431,6 +1450,7 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("Añade al menos un insumo o componente.")
         if len(items) > 100:
             raise APIError("No se pueden añadir más de 100 componentes por ficha.")
+        self._require_ficha_costs(items)
         yield_qty, yield_unit = self._clean_yield(data, {"yield_qty": ficha["yield_qty"],
                                                          "yield_unit": ficha["yield_unit"]})
         conn.execute("DELETE FROM ficha_items WHERE ficha_id=?", (ficha_id,))
@@ -1545,8 +1565,24 @@ def auto_backup():
 #  MAIN
 # ==========================================================================
 
+REQUIRE_USERS = False
+REQUIRE_LICENSE = False
+
 def main():
+    # No permitir despliegues abiertos: las pruebas importan Handler directamente,
+    # pero una aplicación publicada exige usuarios y licencia.
+    global REQUIRE_USERS, REQUIRE_LICENSE
+    import auth
+    if not auth.JWT_ENABLED:
+        raise SystemExit("Configure IPV_JWT_SECRET e IPV_ADMIN_EMAIL/IPV_ADMIN_PASSWORD antes de iniciar el servidor.")
+    if len(auth.JWT_SECRET.encode("utf-8")) < 32:
+        raise SystemExit("IPV_JWT_SECRET debe tener al menos 32 bytes de entropía. Genérelo con secrets.token_urlsafe(48).")
+    REQUIRE_USERS = True
+    REQUIRE_LICENSE = True
     init_db()
+    with db_session() as conn:
+        if not conn.execute("SELECT 1 FROM users WHERE role='admin' AND active=1").fetchone():
+            raise SystemExit("No hay administrador activo. Configure IPV_ADMIN_EMAIL e IPV_ADMIN_PASSWORD para crearlo.")
     tls_seguro.validate_config(TLS_CERT, TLS_KEY, REQUIRE_TLS)
     # Auto-backup on startup
     auto_backup()

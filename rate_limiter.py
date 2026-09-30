@@ -26,7 +26,8 @@ _hits: dict[str, deque] = defaultdict(deque)
 
 
 def profile_for(method: str, path: str) -> str:
-    if path.startswith("/api/auth/login") or path.startswith("/api/auth/refresh"):
+    if path.startswith(("/api/auth/login", "/api/auth/refresh",
+                        "/api/auth/maintenance-login", "/api/auth/maintenance-refresh")):
         return "auth"
     if path in ("/api/backup",) or path.startswith("/api/report/"):
         return "export"

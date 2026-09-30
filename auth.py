@@ -77,15 +77,24 @@ def decode_token(token: str, token_type: str = "access") -> dict:
         head = json.loads(_b64d(header))
     except (ValueError, json.JSONDecodeError):
         raise AuthError("Token mal formado.")
-    if head.get("alg") != "HS256":
+    if not isinstance(head, dict) or head.get("alg") != "HS256":
         raise AuthError("Algoritmo de token no permitido.")
     expected = _b64e(hmac.new(_secret(), f"{header}.{body}".encode(), hashlib.sha256).digest())
     if not hmac.compare_digest(expected, sig):
         raise AuthError("Firma de token inválida.")
-    payload = json.loads(_b64d(body))
+    try:
+        payload = json.loads(_b64d(body))
+        if not isinstance(payload, dict):
+            raise ValueError("payload")
+    except (ValueError, json.JSONDecodeError, TypeError):
+        raise AuthError("Token mal formado.")
     if payload.get("type") != token_type:
         raise AuthError("Tipo de token incorrecto.")
-    if int(payload.get("exp", 0)) < int(time.time()):
+    try:
+        expires = int(payload.get("exp", 0))
+    except (ValueError, TypeError):
+        raise AuthError("Token mal formado.")
+    if expires <= int(time.time()):
         raise AuthError("El token ha expirado.")
     return payload
 
@@ -193,6 +202,7 @@ def init_auth(conn, now_iso) -> None:
     email = os.environ.get("IPV_ADMIN_EMAIL", "").strip()
     password = os.environ.get("IPV_ADMIN_PASSWORD", "").strip()
     if email and password and not conn.execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone():
+        validate_password_strength(password)
         conn.execute(
             "INSERT INTO users(email,name,role,password_hash,created_at) VALUES(?,?,?,?,?)",
             (email, "Administrador", "admin", hash_password(password), now_iso()),
@@ -279,7 +289,7 @@ def refresh(conn, refresh_token: str, ip: str = "") -> dict:
     if payload.get("ver", 0) != row["token_version"]:
         raise AuthError("La sesión fue invalidada. Inicie sesión de nuevo.")
     sid = payload.get("sid", "")
-    if sid and not _session_active(conn, sid, row["id"]):
+    if not sid or not _session_active(conn, sid, row["id"]):
         raise AuthError("La sesión de este dispositivo fue cerrada. Inicie sesión de nuevo.")
     # Rotación: el refresh usado queda revocado
     conn.execute("INSERT OR IGNORE INTO revoked_tokens(jti,expires_at) VALUES(?,?)", (payload["jti"], payload["exp"]))
@@ -331,7 +341,7 @@ def session_valid(conn, payload: dict) -> bool:
     if not (row and row["active"] and row["token_version"] == payload.get("ver", 0)):
         return False
     sid = payload.get("sid")
-    return not sid or _session_active(conn, sid, payload.get("sub"))
+    return bool(sid and _session_active(conn, sid, payload.get("sub")))
 
 
 def _user(conn, user_id):
@@ -361,8 +371,12 @@ def mfa_enable(conn, user_id, code: str) -> dict:
     if step < 0:
         raise AuthError("Código incorrecto. Revise la hora del teléfono e inténtelo de nuevo.", 400)
     codes = security.new_recovery_codes()
-    conn.execute("UPDATE users SET totp_enabled=1, totp_last_step=?, recovery_codes=? WHERE id=?",
+    conn.execute("UPDATE users SET totp_enabled=1, totp_last_step=?, recovery_codes=?, "
+                 "token_version=token_version+1 WHERE id=?",
                  (step, ",".join(security.hash_code(c) for c in codes), user_id))
+    # Los tokens anteriores a la activación de MFA no representan una sesión
+    # verificada con segundo factor; obligar a iniciar sesión de nuevo.
+    conn.execute("UPDATE sessions SET revoked=1 WHERE user_id=?", (user_id,))
     return {"enabled": True, "recovery_codes": codes}
 
 

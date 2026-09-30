@@ -1,0 +1,27 @@
+# No enviar secretos ni bases de datos al contexto de compilación.
+.git
+.env
+.env.*
+!.env.example
+data/
+certs/
+keygen/clave_privada.json
+keygen/registro_licencias.csv
+keygen/tasas.json
+*.db
+*.db-*
+*.pem
+*.key
+*.p12
+*.pfx
+android/local.properties
+android/.gradle/
+android/**/build/
+node_modules/
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+test-results/
+playwright-report/

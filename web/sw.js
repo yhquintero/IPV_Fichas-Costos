@@ -1,9 +1,9 @@
 // IPV · Fichas y Costos — Service Worker (modo sin conexión)
 // Autor: Ing. Yosvany Hernández Quintero
 // · Recursos estáticos: stale-while-revalidate.
-// · API: red primero; si no hay red se usa la última respuesta pública en caché.
+// · API: nunca se almacena; exige licencia y permisos actuales en el servidor.
 // · Nunca se almacenan respuestas autenticadas ni el flujo de eventos en tiempo real.
-const CACHE = 'ipv-fichas-costos-v10';
+const CACHE = 'ipv-fichas-costos-v11';
 const STATIC = ['/', '/index.html', '/styles.css', '/app.js', '/enterprise.js', '/qr.js', '/license.js', '/ux.js', '/manifest.json', '/fonts/dm-sans.woff2', '/fonts/manrope.woff2'];
 
 self.addEventListener('install', e => {
@@ -22,16 +22,9 @@ self.addEventListener('fetch', e => {
   if (req.method !== 'GET' || url.origin !== location.origin) return;
   if (url.pathname.startsWith('/api/events') || url.pathname.startsWith('/api/auth') || url.pathname.startsWith('/api/license')) return;
 
-  if (url.pathname.startsWith('/api/')) {
-    const cacheable = !req.headers.has('Authorization');
-    e.respondWith(fetch(req).then(res => {
-      if (cacheable && res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
-      return res;
-    }).catch(async () => (cacheable && await caches.match(req)) || new Response(
-      JSON.stringify({ error: 'Sin conexión con el servidor.' }),
-      { status: 503, headers: { 'Content-Type': 'application/json; charset=utf-8' } })));
-    return;
-  }
+  // Ninguna respuesta del API se almacena ni se sirve offline: puede haber
+  // caducado la licencia o cambiado el rol desde la última conexión.
+  if (url.pathname.startsWith('/api/')) return;
 
   e.respondWith(caches.match(req).then(cached => {
     const network = fetch(req).then(res => {

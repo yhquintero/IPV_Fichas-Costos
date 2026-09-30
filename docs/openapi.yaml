@@ -10,6 +10,13 @@ info:
     Authorization: Bearer <token>
     ```
     
+    ## Acceso y recuperación de licencia
+    Una licencia vencida responde 402 para toda la API de datos. El administrador
+    puede usar los endpoints de mantenimiento para autenticarse y emitir una licencia
+    nueva; los demás roles no pueden acceder al Creador ni usar el mantenimiento.
+    Las conexiones de eventos se revalidan en cada emisión y dejan de enviar datos
+    cuando caduca la licencia o se revoca la sesión.
+
     ## Rate Limiting
     Todos los endpoints tienen rate limiting. Los headers de respuesta incluyen:
     - `X-RateLimit-Limit`: Límite máximo de requests
@@ -108,6 +115,7 @@ paths:
                 properties:
                   enforced: {type: boolean, description: false si el servidor no tiene clave pública (modo desarrollo)}
                   valid: {type: boolean}
+                  setup_required: {type: boolean, description: Primera instalación sin clave pública (acceso a datos bloqueado)}
                   reason: {type: string, description: Motivo si no es válida}
                   request_code: {type: string, example: IPVW-ABCDE-FGHIJ-KLMNO-PQRST-XY, description: ID del equipo (SHA-256 con sal) para solicitar la licencia}
                   whatsapp: {type: string}
@@ -140,6 +148,49 @@ paths:
         '401': {description: Renovación sin sesión}
         '403': {description: Renovación sin rol admin}
         '409': {description: Licencias desactivadas en este servidor}
+
+  /api/auth/maintenance-login:
+    post:
+      tags: [Authentication, License]
+      summary: Iniciar sesión como administrador para recuperar una licencia vencida
+      description: No habilita la API de datos; exige rol admin y admite MFA si está activado. Comparte el límite de intentos con el login normal.
+      operationId: maintenanceLogin
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: {type: string, format: email}
+                password: {type: string, format: password}
+                otp: {type: string}
+      responses:
+        '200': {description: Tokens de administrador para recuperar la licencia}
+        '401': {description: Credenciales o segundo factor inválidos}
+        '403': {description: La cuenta no es administradora}
+
+  /api/auth/maintenance-refresh:
+    post:
+      tags: [Authentication, License]
+      summary: Renovar tokens de mantenimiento (solo administrador)
+      operationId: maintenanceRefresh
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: {type: string}
+      responses:
+        '200': {description: Tokens rotados}
+        '401': {description: Sesión inválida o revocada}
+        '403': {description: La cuenta no es administradora}
 
   /api/keygen/status:
     get:
@@ -661,6 +712,12 @@ paths:
         existencias (`POST /api/materials/{id}/stock`) exige `materials.edit`.
         Sin `materials.costs`, `unit_price`, `stock_value` y `totals.stock_value`
         llegan como null y la respuesta incluye `costs_hidden: true`.
+        Editar existencias o metadatos sin ver costos no autoriza fijar `unit_price`
+        o `currency`. La actualización masiva de precios exige `materials.costs`.
+        Las líneas libres de fichas con costo manual exigen `fichas.costs`.
+        Restaurar/purgar elementos exige `trash.edit` y `edit` de su módulo;
+        vaciar exige `edit` en todos los módulos además de `trash.edit`.
+        Los datos de prueba exigen `edit` en los cuatro módulos y `materials.costs`.
       operationId: getInventory
       parameters:
         - { name: category, in: query, schema: { type: string } }

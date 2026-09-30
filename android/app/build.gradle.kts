@@ -34,3 +34,15 @@ android {
         jvmTarget = "17"
     }
 }
+
+// No publicar APKs que permitan entrar sin licencia Android.
+tasks.configureEach {
+    if (name == "preReleaseBuild") {
+        doFirst {
+            val source = file("src/main/java/cu/ipvcostos/app/License.kt").readText()
+            check(!source.contains("const val PUBLIC_KEY_B64 = \"\"")) {
+                "Genere e integre la clave pública de licencia (keygen init) antes de publicar el APK."
+            }
+        }
+    }
+}
