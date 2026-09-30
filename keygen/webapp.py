@@ -28,7 +28,9 @@ Variables de entorno (todas opcionales)
   KEYGEN_REQUIRE_MFA=1     exige 2FA a todos los usuarios para poder trabajar
   KEYGEN_UNLOCK_MINUTES    minutos que permanece desbloqueada la clave de firma (1–120)
   KEYGEN_JWT_SECRET        secreto de las sesiones (si no, se genera en keygen/web_secret.key)
-  KEYGEN_ALLOWED_HOSTS     nombres de host adicionales aceptados (separados por comas)
+  KEYGEN_ALLOWED_HOSTS     nombres de host adicionales aceptados (separados por comas; «.ejemplo.com»
+                           admite también todos sus subdominios)
+  KEYGEN_HOME              carpeta de datos (clave, tasas, historial y secreto); por defecto keygen/
   KEYGEN_TLS_CERT / KEYGEN_TLS_KEY   sirven el panel por HTTPS
 """
 from __future__ import annotations
@@ -69,7 +71,7 @@ VERSION = "1.0.0"
 DEFAULT_PORT = 8500
 MAX_BODY = 2_000_000
 STATIC_DIR = HERE / "web"
-SECRET_FILE = HERE / "web_secret.key"
+SECRET_FILE = H.home() / "web_secret.key"
 STATIC = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
@@ -230,6 +232,9 @@ class KeygenApp:
         else:
             name = name.rsplit(":", 1)[0] if name.count(":") == 1 else name
         if name in ("localhost", "127.0.0.1", "::1") or name in self.extra_hosts:
+            return True
+        # Las entradas que empiezan por punto admiten cualquier subdominio (p. ej. «.ejemplo.com»)
+        if any(h.startswith(".") and (name.endswith(h) or name == h[1:]) for h in self.extra_hosts):
             return True
         try:
             ipaddress.ip_address(name)
@@ -583,18 +588,24 @@ def list_licenses(ctx):
 def license_detail(ctx):
     lic = _visible(ctx, H.get(ctx.conn, int(ctx.match["lid"])))
     verification = {"signature": "sin_token", "message": "Licencia importada del registro antiguo: no conserva el token."}
+    reply = whatsapp_url = warning = ""
     if lic.get("token"):
         pub = kg.current_public() if kg.KEY_FILE.exists() else (L.PUBLIC_KEY_HEX or "")
         if not pub:
             verification = {"signature": "sin_clave", "message": "No hay clave pública para verificarla."}
         else:
             try:
-                L.decode(lic["token"], pub)
+                data = L.decode(lic["token"], pub)
                 verification = {"signature": "valida", "message": "Firma válida con la clave actual."}
+                if lic["status"] != "revoked" and ctx.can("emit"):
+                    reply = kg.whatsapp_reply(data, lic["token"])
+                    whatsapp_url = _wa_link(lic["contact"], reply)
             except ValueError as exc:
                 verification = {"signature": "invalida", "message": str(exc)}
+                warning = ("La firma no corresponde a la clave de firma actual (¿se reemplazó la clave?): "
+                           "las apps ya no aceptarán esta licencia.")
     return 200, {"license": _public_license(ctx, lic), "events": H.events(ctx.conn, lic["id"]),
-                 "verification": verification,
+                 "verification": verification, "warning": warning, "reply": reply, "whatsapp_url": whatsapp_url,
                  "can": {"edit": ctx.can("emit") or ctx.can("prices"), "money": ctx.can("prices"),
                          "revoke": ctx.can("revoke"), "resend": ctx.can("emit")}}
 
@@ -905,6 +916,31 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         self._dispatch("DELETE")
+
+
+def reset_password(username: str, password: str, reset_mfa: bool = False, db_path=None) -> str:
+    """Recuperación por consola (con acceso al equipo): nueva contraseña, cuenta activa y
+    desbloqueada, sesiones cerradas y, opcionalmente, 2FA restablecida."""
+    app = KeygenApp(db_path=db_path)
+    app.apply_globals()  # la auditoría se sella con la clave de este panel: así la cadena sigue íntegra
+    app.init_db()
+    conn = app.connect()
+    try:
+        with H.LOCK, conn:
+            row = auth.find_user(conn, username)
+            if not row:
+                raise ValueError(f"No existe el usuario «{username}».")
+            auth.validate_password_strength(password)
+            extra = ", totp_enabled=0, totp_secret='', recovery_codes=''" if reset_mfa else ""
+            conn.execute("UPDATE users SET password_hash=?, password_changed_at=?, must_change_password=0, "  # nosec B608
+                         "failed_attempts=0, locked_until=0, active=1, token_version=token_version+1"
+                         f"{extra} WHERE id=?", (auth.hash_password(password), H.now_iso(), row["id"]))
+            conn.execute("UPDATE sessions SET revoked=1 WHERE user_id=?", (row["id"],))
+    finally:
+        conn.close()
+    audit.record(H.now_iso(), "PASSWORD_RESET_CONSOLE", f"user={row['username']} 2fa={'restablecida' if reset_mfa else 'intacta'}", "consola")
+    audit.flush()
+    return f"Contraseña de «{row['username']}» restablecida. Ya puede iniciar sesión."
 
 
 def make_server(host: str = "127.0.0.1", port: int = DEFAULT_PORT, app: KeygenApp | None = None,

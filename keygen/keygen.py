@@ -50,9 +50,10 @@ try:  # como paquete (servidor, pruebas) o ejecutado como script (python keygen/
 except ImportError:  # pragma: no cover - depende de cómo se ejecute
     import historial as H
 
-KEY_FILE = HERE / "clave_privada.json"
-LEDGER = HERE / "registro_licencias.csv"   # registro antiguo: solo se importa al historial SQLite
-RATES_FILE = HERE / "tasas.json"
+HOME = H.home()                            # keygen/ o la carpeta indicada en KEYGEN_HOME
+KEY_FILE = HOME / "clave_privada.json"
+LEDGER = HOME / "registro_licencias.csv"   # registro antiguo: solo se importa al historial SQLite
+RATES_FILE = HOME / "tasas.json"
 KOTLIN = ROOT / "android/app/src/main/java/cu/ipvcostos/app/License.kt"
 PBKDF2_ITER = 600_000
 DEFAULT_RATES = {"USD": 740.00, "EUR": 840.00, "MLC": 467.12, "CAD": 477.29, "MXN": 52.34,

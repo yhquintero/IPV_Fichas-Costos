@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 import sqlite3
 import threading
 import time
@@ -29,8 +30,17 @@ except ImportError:  # pragma: no cover - depende de cómo se distribuya el Keyg
     dbcrypt = None
 
 HERE = Path(__file__).resolve().parent
-DB_FILE = HERE / "licencias.db"            # las pruebas lo redirigen a un directorio temporal
-LEGACY_CSV = HERE / "registro_licencias.csv"
+
+
+def home() -> Path:
+    """Carpeta de datos del Keygen: por defecto keygen/; con KEYGEN_HOME se puede sacar del
+    repositorio (p. ej. a una unidad cifrada). Allí van clave_privada.json, tasas.json,
+    licencias.db y web_secret.key."""
+    return Path(os.environ.get("KEYGEN_HOME") or HERE)
+
+
+DB_FILE = home() / "licencias.db"          # las pruebas lo redirigen a un directorio temporal
+LEGACY_CSV = home() / "registro_licencias.csv"
 DAY = 86400
 EXPIRING_DAYS = 7                           # «por vencer»: igual que el aviso de la app
 STATES = ("vigente", "por_vencer", "programada", "vencida", "revocada")

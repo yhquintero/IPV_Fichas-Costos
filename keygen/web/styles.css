@@ -115,6 +115,10 @@ textarea { resize: vertical; min-height: 70px; }
 .pagehead { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
 .pagehead h1 { flex: 1; } .pagehead .sub { color: var(--muted); font-weight: 400; font-size: 13px; margin-top: 3px; }
 .topbar { display: none; }
+.hamb, .hamb::before, .hamb::after { display: block; width: 18px; height: 2px; background: currentColor; border-radius: 2px; }
+.hamb { position: relative; margin: 9px 1px; }
+.hamb::before, .hamb::after { content: ""; position: absolute; left: 0; }
+.hamb::before { top: -6px; } .hamb::after { top: 6px; }
 
 /* ---- panel ---- */
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; margin-bottom: 18px; }
@@ -155,6 +159,9 @@ td .cust { font-weight: 700; } td .sm { color: var(--muted); font-size: 12px; }
 .chip.on { background: var(--ok-bg); color: var(--accent2); border-color: transparent; }
 .chip .n { opacity: .75; margin-left: 5px; font-weight: 500; }
 .pager { display: flex; align-items: center; gap: 10px; justify-content: flex-end; margin-top: 12px; color: var(--muted); font-size: 12.5px; }
+.pager select { width: auto; flex: none; padding: 5px 28px 5px 10px; }
+.pager span { white-space: nowrap; margin-right: auto; }
+.acts { flex-wrap: wrap; gap: 6px; min-width: 210px; }
 
 /* ---- ventanas y panel lateral ---- */
 .overlay { position: fixed; inset: 0; background: rgba(2,6,16,.62); backdrop-filter: blur(3px); z-index: 50; display: grid; place-items: center; padding: 18px; animation: fade .15s; }
