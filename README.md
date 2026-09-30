@@ -25,7 +25,7 @@ Autor: **Ing. Yosvany Hernández Quintero**
 - **Animaciones avanzadas**: confetti, parallax, morphing shapes, ripple effects
 - **Gráficos interactivos**: barras, donuts, líneas de tiempo
 - **Búsqueda global** con API dedicada y debounce
-- **Atajos de teclado** completos (Ctrl+K, F5, 1-5, ?, s)
+- **Atajos de teclado** completos (Ctrl+K, F5, 6-9, ?, s) — las teclas `1`-`5` y cualquier otra tecla suelta quedan libres para escribir en los campos
 - **PWA ready** con manifest.json
 - **Responsive design** optimizado para móvil
 - **Skeleton loading** para mejor UX
@@ -182,6 +182,25 @@ El servidor y la app Android se activan con una **licencia firmada (ECDSA P-256)
 1. **La app entra primero en la vista de Licencia** (web y Android) cuando la licencia no está activada o está vencida, **antes del inicio de sesión** y del resto de pantallas. Allí se **genera la solicitud** con el *ID Dispositivo* cifrado (`IPVW-…` en PC, `IPVA-…` en móvil), usuario y plan, y se **envía por WhatsApp** con un botón único.
 2. El proveedor crea la licencia con el **Creador de Licencias** integrado (menú lateral, solo administradores): pega el código de solicitud, elige el plan y pulsa *Crear licencia*; después la **envía por WhatsApp** al cliente desde el propio botón *Enviar licencia por WhatsApp*. También puede usar el **Keygen** de escritorio (`python keygen\keygen.py`, GUI o CLI); ambos comparten clave y registro.
 3. El cliente pega la licencia en la misma vista de Licencia y pulsa **Activar**. Sin licencia vigente la API responde `402` y la app queda bloqueada; 7 días antes del vencimiento se avisa.
+
+#### ¿Dónde se hace la licencia? (resumen de un minuto)
+
+Los dos sitios comparten la misma clave privada (`keygen\clave_privada.json`) y el mismo registro
+(`keygen\registro_licencias.csv`), así que puede alternar entre ellos:
+
+| Dónde | Cómo se abre | Para qué sirve |
+|---|---|---|
+| **Creador de Licencias** (recomendado, dentro de la app) | Inicie sesión como **administrador** → menú lateral 🛠 **Creador de Licencias** (o `Ctrl+Shift+P` → *Creador de Licencias*) | Crear la clave de firma la primera vez, emitir licencias `IPVW-…` (servidor/PC) e `IPVA-…` (móvil), verificarlas, fijar tasas y ver el historial. **Activa las licencias al instante, sin reiniciar el servidor** |
+| **Keygen de escritorio** | `python keygen\keygen.py` (GUI) o `python keygen\keygen.py init` y luego `keygen.py emitir --usuario … --codigo IPV… --plan 1M` | Lo mismo por consola. Escribe la clave pública solo en disco (`licencia.py`, `License.kt`): **hay que reiniciar el servidor y recompilar el APK** |
+
+Y **dónde se pega**: en la vista 🔑 **Licencia** de cada aplicación — allí se genera el código de solicitud
+(`IPVW-…` en el servidor/PC, `IPVA-…` en cada teléfono) y allí mismo se pega la licencia `IPV1.…` para activarla.
+
+Orden correcto la primera vez: **1)** `.\iniciar-https.ps1 -InitSecurity` (crea `.env` con el JWT y el administrador)
+→ **2)** inicie el servidor y entre con ese correo → **3)** cree la clave en el **Creador de Licencias**
+→ **4)** emita una licencia para el código `IPVW-…` que muestra la vista Licencia y actívela
+→ **5)** para el móvil, emita una licencia con el código `IPVA-…` del teléfono; si creó la clave con el Keygen
+de escritorio, **recompile el APK** antes de instalarlo (la clave pública viaja dentro de `License.kt`).
 
 **Primera vez (activar el sistema de licencias):** genere la clave con `python keygen/keygen.py init --whatsapp 53XXXXXXXX` **antes de arrancar** (en Docker, antes de construir la imagen); alternativamente un administrador puede iniciar sesión y crear la clave desde la API `/api/keygen/init` durante el bootstrap. Las licencias quedan **activadas al instante**, sin reiniciar: la clave pública se escribe en `licencia.py` y `License.kt` (recompile el APK para el móvil). La clave privada se guarda cifrada en `keygen/clave_privada.json`; la contraseña **no** se guarda en el servidor. Si el propio servidor se queda sin licencia, las rutas `/api/keygen` siguen accesibles para que el administrador se la emita a sí mismo. Precios, estudio de mercado y guía completa: **[docs/precios-y-licencias.md](docs/precios-y-licencias.md)**.
 
@@ -353,7 +372,7 @@ docker compose up -d    # contenedor de solo lectura, sin privilegios, usuario n
 
 | Tecla | Acción |
 |-------|--------|
-| `1-9` | Navegar entre vistas (Resumen, Productos, **Valores del IPV** `3`, **su pestaña Inventario** `4`, Fichas, Controles, Papelera, Licencia, Creador de Licencias) |
+| `6-9` | Navegar entre vistas (Controles `6`, Papelera `7`, Licencia `8`, Creador de Licencias `9`). Las teclas `1`-`5` **no** son atajos: están libres para escribir números en los formularios |
 | `Ctrl+K` | Búsqueda global |
 | `F5` | Actualizar datos |
 | `Esc` | Cerrar modal |

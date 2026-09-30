@@ -1153,7 +1153,18 @@ Write-Host "  CA para instalar en móviles u otras PC: $rootCerPath" -Foreground
 if ($pin) { Write-Host "  Huella SHA-256 de la CA: $pin" -ForegroundColor DarkGray }
 Write-Host '  La clave privada certs\ipv-server-key.pem no debe copiarse ni compartirse.' -ForegroundColor Yellow
 Write-Host '  No publique este puerto en Internet. Detenga el servidor con Ctrl+C.' -ForegroundColor Yellow
-if (-not (Test-Path $envFile)) { Write-Aviso 'Sin .env: el servidor arrancará en modo abierto. Ejecute -InitSecurity para exigir inicio de sesión.' }
+# El servidor exige JWT: sin él se cierra al instante (no existe el «modo abierto»).
+if ([string]::IsNullOrWhiteSpace($env:IPV_JWT_SECRET)) {
+    Write-Fallo 'Falta IPV_JWT_SECRET: el servidor se negará a arrancar.'
+    Write-Detalle 'Sin JWT no hay inicio de sesión, ni Roles de Usuarios, ni Licencia.'
+    Write-Detalle 'Cree la configuración con:  .\iniciar-https.ps1 -InitSecurity'
+    if (-not (Test-Path $envFile)) { Write-Detalle "(no se encontró el archivo $envFile)" }
+    else { Write-Detalle 'El archivo .env existe pero no define IPV_JWT_SECRET (o está vacío).' }
+}
+elseif ([string]::IsNullOrWhiteSpace($env:IPV_ADMIN_EMAIL) -or [string]::IsNullOrWhiteSpace($env:IPV_ADMIN_PASSWORD)) {
+    Write-Detalle 'IPV_ADMIN_EMAIL / IPV_ADMIN_PASSWORD no definidos: correcto si el administrador ya existe.'
+    Write-Detalle 'Si es la primera instalación, créelo con:  .\iniciar-https.ps1 -InitSecurity'
+}
 $encrypted = Test-DatabaseEncrypted
 if ($encrypted -eq $false) { Write-Aviso 'La base de datos no está cifrada: ejecute -EncryptDb con el servidor detenido.' }
 Write-Host ''

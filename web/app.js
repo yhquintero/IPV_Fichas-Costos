@@ -1508,16 +1508,29 @@ $('#sidebar-overlay')?.addEventListener('click', () => { $('#sidebar').classList
 $('#global-search')?.addEventListener('input', e => globalSearch(e.target.value));
 $('#global-search')?.addEventListener('focus', e => { if (e.target.value.length >= 2) globalSearch(e.target.value); });
 
-/* ── Keyboard Shortcuts ── */
+/* ── Keyboard Shortcuts ──
+   Los atajos de una sola tecla (números, `?`, `s`) nunca se disparan mientras el
+   usuario escribe en un campo: así los números se teclean con normalidad en las
+   líneas de entrada (cantidades, precios, códigos, filtros…). */
+function typingInField(e) {
+  const t = e.target;
+  if (!t || typeof t !== 'object') return false;
+  if (t.isContentEditable) return true;
+  const tag = (t.tagName || '').toUpperCase();
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+    (typeof t.closest === 'function' && !!t.closest('input,textarea,select'));
+}
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') { if (!modalLayer.hidden) closeModal(); $('#search-overlay').hidden = true; }
   if ((e.ctrlKey || e.metaKey) && e.key === 'k') { e.preventDefault(); $('#global-search')?.focus(); }
   if (e.key === 'F5') { e.preventDefault(); refreshData(); }
-  if (!e.ctrlKey && !e.metaKey && !e.altKey && modalLayer.hidden && $('#search-overlay').hidden) {
-    const byKey = { '1': 'dashboard', '2': 'products', '3': 'materials', '4': 'inventory',
-      '5': 'fichas', '6': 'controls', '7': 'trash', '8': 'license', '9': 'creator' };
-    if (byKey[e.key]) setView(byKey[e.key]);
-  }
+  /* Sin atajos numéricos 1-5: las teclas de números quedan libres para escribir
+     en los formularios. Los que quedan (6-9) siguen exigiendo que no haya un
+     campo con el foco, un modal abierto ni la búsqueda desplegada. */
+  if (typingInField(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (!modalLayer.hidden || !$('#search-overlay').hidden) return;
+  const byKey = { '6': 'controls', '7': 'trash', '8': 'license', '9': 'creator' };
+  if (byKey[e.key]) setView(byKey[e.key]);
 });
 
 /* El Creador de Licencias solo se muestra a administradores autenticados. */
@@ -1744,11 +1757,6 @@ function animateValue(el, start, end, duration = 600) {
 function showShortcutsHelp() {
   showModal('Atajos de teclado', 'Navega más rápido por el sistema', `
     <div style="display:grid;gap:10px">
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Resumen</span><div class="kbd-hint"><kbd>1</kbd></div></div>
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Productos</span><div class="kbd-hint"><kbd>2</kbd></div></div>
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Valores del IPV (pestaña Valores)</span><div class="kbd-hint"><kbd>3</kbd></div></div>
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Valores del IPV (pestaña Inventario)</span><div class="kbd-hint"><kbd>4</kbd></div></div>
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Fichas</span><div class="kbd-hint"><kbd>5</kbd></div></div>
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Controles</span><div class="kbd-hint"><kbd>6</kbd></div></div>
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Papelera</span><div class="kbd-hint"><kbd>7</kbd></div></div>
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Ir a Licencia</span><div class="kbd-hint"><kbd>8</kbd></div></div>
@@ -1761,12 +1769,15 @@ function showShortcutsHelp() {
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)"><span style="font-size:12px">Filas de tabla</span><div class="kbd-hint"><kbd>↑</kbd><kbd>↓</kbd> · <kbd>Enter</kbd> abre</div></div>
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0"><span style="font-size:12px">Mostrar esta ayuda</span><div class="kbd-hint"><kbd>?</kbd></div></div>
     </div>
+    <p style="font-size:12px;opacity:.8;margin-top:12px">Los números <b>1</b>‑<b>5</b> ya no cambian de vista: puede teclearlos con normalidad
+    en cualquier línea de entrada. Ningún atajo de una sola tecla se dispara mientras
+    escribe en un campo, un área de texto o un selector.</p>
     <div class="modal-actions"><button class="primary-btn" data-action="close-modal">Entendido</button></div>`);
 }
 
 // Add '?' shortcut
 document.addEventListener('keydown', e => {
-  if (e.key === '?' && !e.ctrlKey && !e.metaKey && modalLayer.hidden && !e.target.closest('input,textarea,select')) {
+  if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey && modalLayer.hidden && !typingInField(e)) {
     e.preventDefault();
     showShortcutsHelp();
   }
@@ -2032,7 +2043,7 @@ async function exportReport(type) {
 /* ── Keyboard Shortcut: S for Statistics ── */
 document.addEventListener('keydown', e => {
   if (e.key === 's' && !e.ctrlKey && !e.metaKey && !e.altKey && 
-      modalLayer.hidden && !e.target.closest('input,textarea,select')) {
+      modalLayer.hidden && !typingInField(e)) {
     e.preventDefault();
     showStatisticsModal();
   }

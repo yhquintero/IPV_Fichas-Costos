@@ -1568,21 +1568,75 @@ def auto_backup():
 REQUIRE_USERS = False
 REQUIRE_LICENSE = False
 
+
+def _abortar(motivo: str, pasos, nota: str = "") -> None:
+    """Guía de arranque accionable: dice qué falta y cómo resolverlo, y termina."""
+    ancho = 66
+    nota = nota or ("Mientras falte, no hay sesiones ni Roles de Usuarios y la\n"
+                    "  Licencia no se puede crear, emitir ni activar.")
+    print("")
+    print("─" * ancho)
+    print(f"  El servidor no puede arrancar: {motivo}")
+    print("─" * ancho)
+    for linea in nota.splitlines():
+        print("  " + linea)
+    print("")
+    for paso in pasos:
+        lineas = str(paso).splitlines() or [""]
+        print("  ▸ " + lineas[0])
+        for extra in lineas[1:]:
+            print("    " + extra)
+    print("")
+    print("  Guía completa: README.md · docs/precios-y-licencias.md")
+    print("")
+    # El motivo también viaja en la excepción: así los diagnósticos automáticos
+    # y las pruebas pueden comprobar la causa sin leer la consola.
+    raise SystemExit("El servidor no puede arrancar: " + motivo)
+
+
 def main():
     # No permitir despliegues abiertos: las pruebas importan Handler directamente,
     # pero una aplicación publicada exige usuarios y licencia.
     global REQUIRE_USERS, REQUIRE_LICENSE
     import auth
     if not auth.JWT_ENABLED:
-        raise SystemExit("Configure IPV_JWT_SECRET e IPV_ADMIN_EMAIL/IPV_ADMIN_PASSWORD antes de iniciar el servidor.")
+        _abortar("falta IPV_JWT_SECRET (y con él el usuario administrador)", [
+            "Cree el archivo .env con toda la configuración:\n"
+            "    .\\iniciar-https.ps1 -InitSecurity\n"
+            "  Pide el correo y la contraseña del administrador y genera un\n"
+            "  secreto JWT de 384 bits.",
+            "O hágalo a mano: copie .env.example como .env y rellene\n"
+            "    IPV_JWT_SECRET       python -c \"import secrets; print(secrets.token_urlsafe(48))\"\n"
+            "    IPV_ADMIN_EMAIL      correo del administrador (p. ej. admin@empresa.cu)\n"
+            "    IPV_ADMIN_PASSWORD   mín. 10: mayúscula, minúscula, número y símbolo",
+            "Vuelva a iniciar con  .\\iniciar-https.ps1  y entre con ese correo:\n"
+            "  el menú «Creador de Licencias» y la gestión de usuarios\n"
+            "  (Ctrl+Shift+P → Gestionar usuarios y permisos) solo salen al administrador.",
+        ])
     if len(auth.JWT_SECRET.encode("utf-8")) < 32:
-        raise SystemExit("IPV_JWT_SECRET debe tener al menos 32 bytes de entropía. Genérelo con secrets.token_urlsafe(48).")
+        _abortar("IPV_JWT_SECRET es demasiado corto (menos de 32 bytes de entropía)", [
+            "Genérelo con al menos 32 bytes de entropía:\n"
+            "    python -c \"import secrets; print(secrets.token_urlsafe(48))\"\n"
+            "  Guárdelo en IPV_JWT_SECRET (archivo .env) y vuelva a iniciar.",
+        ])
     REQUIRE_USERS = True
     REQUIRE_LICENSE = True
     init_db()
     with db_session() as conn:
         if not conn.execute("SELECT 1 FROM users WHERE role='admin' AND active=1").fetchone():
-            raise SystemExit("No hay administrador activo. Configure IPV_ADMIN_EMAIL e IPV_ADMIN_PASSWORD para crearlo.")
+            _abortar("la base de datos no tiene ningún administrador activo", [
+                "Defina IPV_ADMIN_EMAIL e IPV_ADMIN_PASSWORD en .env: el administrador\n"
+                "  se crea solo en el primer arranque. Si ya los definió, el usuario fue\n"
+                "  desactivado o se le cambió el rol desde «Gestionar usuarios y permisos».",
+                "Para reactivar al administrador sin interfaz (servidor detenido):\n"
+                "    python -c \"import sqlite3; c = sqlite3.connect('data/ipv.db'); "
+                "c.execute('UPDATE users SET active=1, role=char(97,100,109,105,110) "
+                "WHERE lower(email)=lower(?)', ('admin@empresa.cu',)); c.commit()\"",
+                "Si la base de datos aún no tiene datos que conservar, borre .env\n"
+                "  y repita  .\\iniciar-https.ps1 -InitSecurity",
+            ], nota=("Sin un administrador no se pueden gestionar los Roles de Usuarios\n"
+                     "  ni abrir el Creador de Licencias: la aplicación se queda\n"
+                     "  en la pantalla de licencia y la API de datos responde 402."))
     tls_seguro.validate_config(TLS_CERT, TLS_KEY, REQUIRE_TLS)
     # Auto-backup on startup
     auto_backup()
