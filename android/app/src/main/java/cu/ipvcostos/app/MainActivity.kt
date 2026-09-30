@@ -195,13 +195,14 @@ class MainActivity : Activity() {
     private var controls = JSONArray()
     private var inventory = JSONObject()
     private var trash = JSONArray()
-    private val tabs = listOf("Resumen", "Productos", "Valores IPV", "Inventario", "Fichas", "Controles", "Papelera")
+    private val tabs = listOf("Resumen", "Productos", "Valores IPV", "Inventario", "Fichas", "Controles", "Papelera", "Licencia")
 
     private var realtime: RealtimeClient? = null
     private var unlocked = false
     private lateinit var license: LicenseManager
     private var licenseDialog: AlertDialog? = null
     private var licenseNoticeShown = false
+    private var licenseAction: (() -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -473,6 +474,14 @@ class MainActivity : Activity() {
 
     private fun refresh(silent: Boolean = false) {
         updateTabStyle()
+        // La vista de Licencia se dibuja con los datos locales del teléfono, sin API
+        if (currentTab == "Licencia") { renderPage(); return }
+        // Sin licencia activada o vencida, la app entra primero en la vista de Licencia
+        if (LicenseCore.enforced && !license.isValid()) {
+            if (!silent) toast("🔒 Sin licencia vigente: genere la solicitud y envíela por WhatsApp.")
+            openLicenseView()
+            return
+        }
         if (!silent) {
             connectionLabel.text = "Conectando a ${api.baseUrl} …"
             connectionLabel.setTextColor(WARNING)
@@ -570,6 +579,7 @@ class MainActivity : Activity() {
             "Fichas" -> renderFichas()
             "Controles" -> renderControls()
             "Papelera" -> renderTrash()
+            "Licencia" -> renderLicensePage()
         }
     }
 
@@ -1257,14 +1267,18 @@ class MainActivity : Activity() {
         }
         form.addView(resetPin)
         if (user != null) addButton(form, "🛡  Seguridad de la cuenta (dispositivos y contraseña)", true) { openAccountSecurity() }
-        addButton(form, "🔑  Licencia: estado y renovación", false) { openLicense(forced = false) {} }
+        var settingsDialog: AlertDialog? = null
+        addButton(form, "🔑  Licencia: estado y renovación", false) {
+            settingsDialog?.dismiss()
+            openLicenseView()
+        }
         if (user != null) addButton(form, "Cerrar sesión y borrar datos locales", false) {
             executor.execute {
                 api.logout()
                 runOnUiThread { toast("Sesión cerrada."); refresh() }
             }
         }
-        showFormDialog("Configuración de conexión", scrollForm(form), "Guardar y probar") { dialog ->
+        settingsDialog = showFormDialog("Configuración de conexión", scrollForm(form), "Guardar y probar") { dialog ->
             val newUrl = urlField.text.toString().trim()
             if (!newUrl.startsWith("https://")) { toast("La URL debe comenzar con https://."); return@showFormDialog }
             if (newUrl != api.baseUrl) { api.session.clear(); api.cache.clear(); api.pinner.pin = null }
@@ -1282,7 +1296,8 @@ class MainActivity : Activity() {
 
     // ==================== Licencia por período ====================
 
-    /** Ejecuta [action] solo si hay licencia vigente; si no, muestra la activación (no se puede omitir).
+    /** Ejecuta [action] solo si hay licencia vigente; si no, la app entra en la vista de
+     *  Licencia (no se puede omitir): allí se genera la solicitud y se envía por WhatsApp.
      *  Igual que la web: al arrancar, lo primero es la licencia. Con licencias desactivadas
      *  (sin clave pública) avisa una vez y continúa, como el aviso de la página Licencia web. */
     private fun licenseGate(action: () -> Unit) {
@@ -1310,21 +1325,23 @@ class MainActivity : Activity() {
             if (left <= 7) toast("⏳ Su licencia (${info.planName}) vence en $left día(s): ${info.expiryText()}")
             action()
         } catch (e: LicenseCore.LicenseException) {
-            openLicense(forced = true, reason = e.message ?: "", onActivated = action)
+            licenseAction = action
+            openLicenseView()
         }
     }
 
-    /** Diálogo informativo cuando las licencias están desactivadas en el servidor. */
-    private fun openLicenseDisabled() {
-        if (licenseDialog?.isShowing == true) return
-        val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(4)) }
-        form.addView(label("🛡 Licencias desactivadas (sin clave pública configurada).", 13f, WARNING, true).apply { setPadding(0, 0, 0, dp(10)) })
-        form.addView(label(
-            "El proveedor aún no creó la clave de firma. Desde la aplicación web abra el «Creador de Licencias» " +
-            "(menú Licencia → Abrir Creador de Licencias): la clave se crea una sola vez y el sistema se activa al " +
-            "instante. Después recompile este APK con la nueva clave pública.", 12f, MUTED))
-        form.addView(label("ID Dispositivo (cifrado)", 11f, MUTED, true).apply { setPadding(0, dp(12), 0, dp(2)) })
-        form.addView(TextView(this).apply {
+    /** La app entra en la vista de Licencia (pantalla completa): desde aquí se genera la
+     *  solicitud de licencia, se envía por WhatsApp y se pega la licencia recibida. */
+    private fun openLicenseView() {
+        currentTab = "Licencia"
+        updateTabStyle()
+        renderPage()
+    }
+
+    /** Bloque «ID Dispositivo (cifrado)»: el código de solicitud de este teléfono. */
+    private fun licenseIdBlock() {
+        addText(content, "ID Dispositivo (cifrado)", 11f, MUTED, true, bottom = 2)
+        content.addView(TextView(this).apply {
             text = license.requestCode
             typeface = Typeface.MONOSPACE
             textSize = 14f
@@ -1332,60 +1349,54 @@ class MainActivity : Activity() {
             setTextIsSelectable(true)
             background = rounded(GREEN_DARK, 10)
             setPadding(dp(12), dp(10), dp(12), dp(10))
-        })
-        form.addView(makeButton("📋 Copiar código", false) {
-            val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
-            cm.setPrimaryClip(android.content.ClipData.newPlainText("ID Dispositivo IPV", license.requestCode))
-            toast("Código copiado")
-        }.apply { setPadding(0, dp(8), 0, 0) })
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("🔑 Licencia")
-            .setView(ScrollView(this).apply { addView(form) })
-            .setPositiveButton("Cerrar", null)
-            .create()
-        licenseDialog = dialog
-        dialog.show()
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
+        addText(content, "Envíe este código al proveedor para recibir la licencia. No contiene datos del equipo: es un resumen SHA-256 irreversible.", 11f, MUTED, bottom = 8)
     }
 
-    private fun openLicense(forced: Boolean, reason: String = "", onActivated: () -> Unit) {
-        if (licenseDialog?.isShowing == true) return
-        if (!LicenseCore.enforced) { openLicenseDisabled(); return }
-        val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), dp(4)) }
-        val current = runCatching { license.current() }.getOrNull()
-        val status = when {
-            current != null -> "✅ Licencia vigente: ${current.planName} a nombre de ${current.user}. Vence el ${current.expiryText()} " +
-                "(${current.daysLeft(System.currentTimeMillis() / 1000)} días). Serie ${current.serial}."
-            reason.isNotBlank() -> "🔒 $reason"
-            else -> "🔒 Este teléfono necesita una licencia."
+    /** Vista de Licencia: estado, solicitud por WhatsApp y activación de la licencia. */
+    private fun renderLicensePage() {
+        addHeading(content, "Licencia de uso", "La licencia se firma digitalmente y queda atada a este teléfono.")
+        if (!LicenseCore.enforced) {
+            addText(content, "🛡 Licencias desactivadas (sin clave pública configurada).", 13f, WARNING, true, bottom = 8)
+            addText(
+                content,
+                "El proveedor aún no creó la clave de firma. Desde la aplicación web abra el «Creador de Licencias» " +
+                    "(menú Licencia → Abrir Creador de Licencias): la clave se crea una sola vez y el sistema se activa al " +
+                    "instante. Después recompile este APK con la nueva clave pública.",
+                12f, MUTED, bottom = 12
+            )
+            licenseIdBlock()
+            return
         }
-        form.addView(label(status, 13f, if (current != null) SUCCESS else ERROR, true).apply { setPadding(0, 0, 0, dp(10)) })
-        form.addView(label("1. Escriba su nombre y elija el plan.\n2. Envíe la solicitud por WhatsApp.\n3. Pegue la licencia recibida y pulse Activar.", 12f, MUTED))
-        val user = EditText(this).apply { hint = "Usuario (nombre o empresa)"; setSingleLine() }
-        form.addView(user)
+        val result = runCatching { license.current() }
+        val current = result.getOrNull()
+        val now = System.currentTimeMillis() / 1000
+        if (current != null) {
+            addText(content, "✅ Licencia vigente: ${current.planName} a nombre de ${current.user}.", 13f, SUCCESS, true)
+            addText(content, "Vence el ${current.expiryText()} (${current.daysLeft(now)} días). Serie ${current.serial}.", 12f, MUTED, bottom = 12)
+        } else {
+            connectionLabel.text = "●  Sin licencia vigente · genere la solicitud y envíela por WhatsApp"
+            connectionLabel.setTextColor(WARNING)
+            addText(content, "🔒 ${result.exceptionOrNull()?.message ?: "Este teléfono necesita una licencia."}", 13f, ERROR, true)
+            addText(content, "1. Escriba su nombre y elija el plan.\n2. Envíe la solicitud por WhatsApp.\n3. Pegue la licencia recibida y pulse Activar.", 12f, MUTED, bottom = 12)
+        }
+        val user = field(content, "Usuario (nombre o empresa)")
         val planKeys = LicenseCore.PLANS.keys.filter { it != "PX" }
         val plan = Spinner(this).apply {
-                adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+            adapter = ArrayAdapter(
+                this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
                 planKeys.map { key -> "${LicenseCore.PLANS.getValue(key).first} — ${LicenseCore.PLANS.getValue(key).third} USD" })
             setSelection(1)
         }
-        form.addView(plan)
-        form.addView(label("ID Dispositivo (cifrado)", 11f, MUTED, true).apply { setPadding(0, dp(10), 0, dp(2)) })
-        form.addView(TextView(this).apply {
-            text = license.requestCode
-            typeface = Typeface.MONOSPACE
-            textSize = 14f
-            setTextColor(LIME_VIVID)
-            setTextIsSelectable(true)
-            background = rounded(GREEN_DARK, 10)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-        })
+        content.addView(plan, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(10) })
+        licenseIdBlock()
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, dp(8)) }
         row.addView(makeButton("📋 Copiar", false) {
             val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
             cm.setPrimaryClip(android.content.ClipData.newPlainText("ID Dispositivo IPV", license.requestCode))
             toast("Código copiado")
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(6) })
-        row.addView(makeButton("💬 WhatsApp", true) {
+        row.addView(makeButton("💬 Generar solicitud y enviarla por WhatsApp", true) {
             val planName = "${LicenseCore.PLANS.getValue(planKeys[plan.selectedItemPosition]).first} (${planKeys[plan.selectedItemPosition]})"
             val text = license.whatsappMessage(user.text.toString().trim(), planName)
             val uri = android.net.Uri.parse("https://wa.me/${LicenseCore.WHATSAPP_NUMBER}?text=${android.net.Uri.encode(text)}")
@@ -1395,54 +1406,44 @@ class MainActivity : Activity() {
                 toast("No se encontró WhatsApp. Copie el código y envíelo manualmente.")
             }
         }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        form.addView(row)
+        content.addView(row)
+        addText(content, "ACTIVAR LICENCIA", 9f, MUTED, true, bottom = 4)
         val token = EditText(this).apply {
-            hint = "Pegue aquí la licencia (IPV1.…)"
+            hint = "Pegue aquí la licencia recibida (IPV1.…)"
             minLines = 3
             typeface = Typeface.MONOSPACE
             textSize = 12f
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         }
-        form.addView(token)
-        form.addView(label("La licencia está firmada digitalmente y solo funciona en este teléfono.", 11f, MUTED).apply { setPadding(0, dp(6), 0, 0) })
-        val dialog = AlertDialog.Builder(this)
-            .setTitle(if (current != null) "🔑 Renovar licencia" else "🔑 Activar licencia")
-            .setView(ScrollView(this).apply { addView(form) })
-            .setPositiveButton("Activar", null)
-            .setNegativeButton(if (forced) "Salir" else "Cerrar", null)
-            .setCancelable(!forced)
-            .create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                try {
-                    val info = license.activate(token.text.toString())
-                    val now = System.currentTimeMillis() / 1000
-                    if (info.validFrom > now) {
-                        dialog.dismiss()
-                        licenseDialog = AlertDialog.Builder(this)
-                            .setTitle("Licencia programada")
-                            .setMessage("Quedó guardada. Comenzará el ${info.validFromDate} (UTC) y vencerá el ${info.expiryText()}; la aplicación se habilitará desde esa fecha.")
-                            .setPositiveButton("Cerrar aplicación") { _, _ -> finish() }
-                            .setCancelable(false)
-                            .show()
-                        return@setOnClickListener
-                    }
-                    toast("✅ Licencia activada: ${info.planName}, vence el ${info.expiryText()}")
-                    dialog.dismiss()
-                    onActivated()
-                } catch (e: LicenseCore.LicenseException) {
-                    token.error = e.message
-                } catch (e: org.json.JSONException) {
-                    token.error = "La licencia está dañada."
+        content.addView(token, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
+        addText(content, "La licencia está firmada digitalmente y solo funciona en este teléfono.", 11f, MUTED, bottom = 8)
+        addButton(content, if (current != null) "🔓 Renovar / cambiar licencia" else "🔓 Activar licencia", true) {
+            try {
+                val info = license.activate(token.text.toString())
+                val nowSec = System.currentTimeMillis() / 1000
+                if (info.validFrom > nowSec) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Licencia programada")
+                        .setMessage("Quedó guardada. Comenzará el ${info.validFromDate} (UTC) y vencerá el ${info.expiryText()}; la aplicación se habilitará desde esa fecha.")
+                        .setPositiveButton("Cerrar aplicación") { _, _ -> finish() }
+                        .setCancelable(false)
+                        .show()
+                    return@addButton
                 }
-            }
-            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
-                dialog.dismiss()
-                if (forced) finish()
+                toast("✅ Licencia activada: ${info.planName}, vence el ${info.expiryText()}")
+                currentTab = "Resumen"
+                updateTabStyle()
+                val next = licenseAction ?: { unlockThen { refresh() } }
+                licenseAction = null
+                next()
+            } catch (e: LicenseCore.LicenseException) {
+                token.error = e.message
+                toast(e.message ?: "La licencia no es válida.")
+            } catch (e: org.json.JSONException) {
+                token.error = "La licencia está dañada."
+                toast("La licencia está dañada.")
             }
         }
-        licenseDialog = dialog
-        dialog.show()
     }
 
     // ==================== Seguridad de la cuenta ====================

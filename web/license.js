@@ -34,6 +34,14 @@
     return `https://wa.me/${encodeURIComponent(info.whatsapp || '')}?text=${encodeURIComponent(text)}`;
   }
 
+  /** La app entra primero en la vista de Licencia (app.js). Sin esa vista (app.js
+      no cargó) se usa el diálogo de activación como reserva. */
+  function enter(st = null) {
+    document.querySelector('.login-layer')?.remove();
+    if (typeof window.IPVLicenseEnter === 'function') { window.IPVLicenseEnter(st); return; }
+    show(st);
+  }
+
   function show(info = null, { closable = false } = {}) {
     if (layer) return;
     const render = (data) => {
@@ -97,7 +105,9 @@
     try {
       const st = await status();
       if (!st.enforced) return;
-      if (!st.valid) { document.querySelector('.login-layer')?.remove(); show(st); return; }
+      /* Sin licencia activada o vencida: lo primero es la vista de Licencia,
+         donde se genera la solicitud y se envía por WhatsApp. */
+      if (!st.valid) { enter(st); return; }
       if (st.days_left <= 7) {
         const bar = el('div', { class: 'lic-banner', role: 'status' },
           `⏳ Su licencia (${st.plan_name}) vence el ${fmtDate(st.expires_at)}: quedan ${st.days_left} día(s). `,
@@ -107,6 +117,6 @@
     } catch { /* servidor sin conexión: lo gestiona app.js */ }
   }
 
-  window.IPVLicense = { show: (info) => show(info, { closable: !!info?.valid }), status, renew: async () => show(await status(), { closable: true }) };
+  window.IPVLicense = { show: (info) => show(info, { closable: !!info?.valid }), status, renew: async () => show(await status(), { closable: true }), enter, waLink };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();

@@ -146,13 +146,15 @@ Se usan las tasas indicadas por el cliente, tomadas como vigentes:
 ```
  Cliente (PC o móvil)                       Usted (proveedor)
  ────────────────────                       ─────────────────
- 1. La app muestra «Activar licencia»:
+ 1. La app entra en la vista de Licencia
+    (sin licencia activada o vencida):
     Usuario · Plan · ID Dispositivo
     (IPVW-… en PC / IPVA-… en móvil)
- 2. Botón «Solicitar por WhatsApp» ───────► 3. Pega Usuario, ID Dispositivo y Plan
-                                               en el Keygen → «Generar licencia»
-                                               (queda copiada y registrada en el CSV)
- 5. Pega la licencia y pulsa «Activar» ◄──── 4. La envía por WhatsApp (IPV1.…)
+ 2. Botón «Generar solicitud y enviarla     ► 3. Pega Usuario, ID Dispositivo y Plan
+    por WhatsApp»                              en el Keygen → «Generar licencia»
+                                               (queda registrada en el CSV)
+ 5. Pega la licencia en la vista de       ◄──── 4. Botón «Enviar licencia por WhatsApp»
+    Licencia y pulsa «Activar»                 (IPV1.…)
 ```
 
 **ID del dispositivo, cifrado:** el identificador de hardware nunca sale del equipo. Lo que se envía es un **resumen SHA-256 con sal**, irreversible, más dos dígitos de control que detectan errores al copiarlo.
