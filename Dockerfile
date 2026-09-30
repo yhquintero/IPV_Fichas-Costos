@@ -54,6 +54,9 @@ COPY security.py .
 COPY dbcrypt.py .
 COPY offsite.py .
 COPY licencia.py .
+COPY permisos.py .
+COPY creador_licencias.py .
+COPY keygen/ ./keygen/
 COPY web/ ./web/
 COPY docs/ ./docs/
 

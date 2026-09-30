@@ -21,7 +21,7 @@ import javax.crypto.spec.GCMParameterSpec
 
    · SecureStore: cifrado AES-256-GCM con clave no exportable en Android Keystore.
    · Session: tokens JWT (access/refresh) y usuario, siempre cifrados en reposo.
-   · OfflineCache: últimas respuestas GET cifradas para trabajar sin conexión.
+   · OfflineCache: soporte heredado; el cliente ya no sirve datos sin revalidar.
    · RealtimeClient: escucha /api/events (Server-Sent Events) en segundo plano.
    ========================================================================== */
 
@@ -88,11 +88,15 @@ class Session(context: Context) {
 
     val isLoggedIn: Boolean get() = refreshToken != null
     val role: String get() = user?.optString("role", "viewer") ?: "viewer"
+    val permissions: JSONObject? get() = store.get("permissions")?.let { runCatching { JSONObject(it) }.getOrNull() }
+    fun can(module: String, permission: String): Boolean =
+        permissions?.optJSONObject(module)?.optBoolean(permission, false) == true
 
     fun save(response: JSONObject) {
         accessToken = response.getString("access_token")
         refreshToken = response.getString("refresh_token")
         user = response.getJSONObject("user")
+        store.put("permissions", response.optJSONObject("permissions")?.toString())
     }
 
     fun clear() = store.clear()
@@ -174,6 +178,12 @@ class MfaRequiredException(message: String) : java.io.IOException(message)
 
 /** La contraseña caducó o el administrador exige cambiarla: solo se permite cambiarla. */
 class PasswordExpiredException(message: String) : java.io.IOException(message)
+
+/** Licencia del servidor vencida: nunca se usa la caché local. */
+class LicenseServerException(message: String) : java.io.IOException(message)
+
+/** El servidor cambió los permisos de este usuario. */
+class PermissionDeniedException(message: String) : java.io.IOException(message)
 
 /** El certificado presentado no coincide con la huella fijada: posible interceptación. */
 class PinMismatchException(message: String) : java.io.IOException(message)

@@ -7,7 +7,7 @@ Permisos finos por módulo, aplicados a las dos pestañas de la entrada
 
   * view  — puede abrir el apartado y consultar sus datos
   * edit  — puede crear, modificar, ajustar existencias, restaurar y enviar a la papelera
-  * costs — puede ver precios, importes y valores en dinero (se ocultan del API y de la web)
+  * costs — puede ver y administrar precios, importes y valores en dinero (se ocultan del API y de la web)
 
 Los permisos efectivos salen del rol (admin / editor / viewer) y se ajustan por
 usuario en la tabla `user_permissions`. El administrador los cambia desde
@@ -46,7 +46,8 @@ PERM_LABELS = {"view": "Ver", "edit": "Editar", "costs": "Ver costos"}
 # Campos con información económica que se ocultan sin el permiso `costs`
 MONEY_FIELDS = ("unit_price", "stock_value", "total_value")
 # Importes propios de fichas, controles y analítica (mismo criterio, otro módulo)
-COST_FIELDS = ("total_cost", "unit_cost", "subtotal", "snapshot_total", "checked_total", "avg_cost")
+COST_FIELDS = ("total_cost", "unit_cost", "subtotal", "snapshot_total", "checked_total",
+               "avg_cost", "cost_per_serving", "ficha_total")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS user_permissions (
@@ -209,7 +210,7 @@ def rule_for(path: str, method: str):
     if path == "/api/statistics":
         return ("fichas", permiso)  # analítica de costos de las fichas
     if path == "/api/demo/seed":
-        return ("materials", "edit")  # escribe en valores, productos y fichas a la vez
+        return ("materials", "edit")  # escribe en valores, productos, fichas y controles
     return None
 
 
@@ -217,12 +218,14 @@ def denial_message(module: str, perm: str) -> str:
     nombre = MODULES.get(module, module)
     if perm == "edit":
         return f"Su usuario no tiene permiso para modificar «{nombre}»."
+    if perm == "costs":
+        return f"Su usuario no tiene permiso para administrar costos de «{nombre}»."
     return f"Su usuario no tiene permiso para consultar «{nombre}»."
 
 
 def seed_requires() -> tuple:
     """Módulos que deben poder editarse para cargar los datos de prueba."""
-    return ("products", "materials", "fichas")
+    return ("products", "materials", "fichas", "controls")
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +309,8 @@ def filter_response(path: str, payload, user):
 
     # Valores del IPV: lista, detalle, altas/bajas y existencias sin precios ni importes
     if path.startswith("/api/materials"):
+        if isinstance(payload, dict) and not can(perms, "fichas", "view"):
+            payload = {**payload, "used_by": [], "usage_count": 0}
         if not costos:
             if isinstance(payload, list):
                 return [_ocultar_importes(dict(m)) if isinstance(m, dict) else m for m in payload]
@@ -313,6 +318,9 @@ def filter_response(path: str, payload, user):
                 return _ocultar_importes(dict(payload))
         return payload
     if path.startswith("/api/inventory") and isinstance(payload, dict):
+        if not can(perms, "fichas", "view"):
+            payload = {**payload, "items": [{**m, "used_by": [], "usage_count": 0}
+                                             for m in payload.get("items", [])]}
         if not costos:
             salida = dict(payload)
             salida["items"] = [_ocultar_importes(dict(m)) for m in payload.get("items", [])]
@@ -328,6 +336,18 @@ def filter_response(path: str, payload, user):
         salida["data"] = [_ocultar_importes(dict(r)) for r in payload.get("data", [])]
         salida["costs_hidden"] = True
         return salida
+    # El detalle de productos contiene fichas de otro módulo: no dar acceso
+    # indirecto a sus costos (ni a sus metadatos si no puede ver fichas).
+    if path.startswith("/api/products"):
+        if isinstance(payload, dict) and "fichas" in payload:
+            payload = dict(payload)
+            payload["fichas"] = payload["fichas"] if can(perms, "fichas", "view") else []
+            if not can(perms, "fichas", "costs"):
+                payload["fichas"] = _ocultar_campos(payload["fichas"], COST_FIELDS)
+        elif isinstance(payload, list) and not can(perms, "fichas", "view"):
+            payload = [{**p, **{k: None for k in ("ficha_count", "last_status", "last_ficha_id",
+                                                  "last_yield_qty", "last_yield_unit") if k in p}} for p in payload]
+        return payload
     # Resumen: cada tarjeta y panel depende del módulo que la alimenta
     if path == "/api/dashboard" and isinstance(payload, dict):
         return _filtrar_dashboard(payload, perms, costos)

@@ -242,6 +242,111 @@ class PermisosAPITest(unittest.TestCase):
         self.assertIn("edición", err["error"])
         self.assertTrue(err["permission_denied"].startswith("seed:"))
 
+    def test_almacen_no_puede_escribir_precios_ni_moneda(self):
+        almacen, jefe = self.token(ALMACEN), self.token(ADMIN)
+        base = {"code": "SEC-ALM-001", "name": "Prueba de existencias", "unit": "kg",
+                "category": "Insumos", "stock": "3"}
+        try:
+            for field, value in (("unit_price", "10"), ("currency", "USD")):
+                status, _ = self.req("POST", "/api/materials", {**base, field: value}, token=almacen)[:2]
+                self.assertEqual(status, 403, field)
+            status, material = self.req("POST", "/api/materials", base, token=almacen)[:2]
+            self.assertEqual(status, 201, material)
+            ident = material["id"]
+            self.assertIsNone(material["unit_price"])
+            for field, value in (("unit_price", "25"), ("currency", "EUR")):
+                status, _ = self.req("PUT", f"/api/materials/{ident}", {field: value}, token=almacen)[:2]
+                self.assertEqual(status, 403, field)
+            status, _ = self.req("PUT", f"/api/materials/{ident}", {"name": "Nueva etiqueta"}, token=almacen)[:2]
+            self.assertEqual(status, 200)
+            status, denied = self.req("POST", "/api/materials/bulk-update",
+                                      {"updates": [{"id": ident, "unit_price": "99"}]}, token=almacen)[:2]
+            self.assertEqual(status, 403, denied)
+            self.assertEqual(denied["permission_denied"], "materials.costs")
+            updated = self.req("GET", f"/api/materials/{ident}", token=jefe)[1]
+            self.assertEqual(updated["name"], "Nueva etiqueta")
+            self.assertEqual(float(updated["unit_price"]), 0)
+        finally:
+            with server.connect() as conn:
+                row = conn.execute("SELECT id FROM materials WHERE code=?", (base["code"],)).fetchone()
+            if row:
+                self.req("DELETE", f"/api/materials/{row['id']}", token=jefe)
+                self.req("DELETE", f"/api/trash/materials/{row['id']}", token=jefe)
+
+    def test_papelera_requiere_permiso_propio_y_de_cada_modulo(self):
+        jefe, editor = self.token(ADMIN), self.token(EDITOR)
+        uid = self.user_id(EDITOR[0])
+        code = "SEC-TRASH-001"
+        try:
+            status, material = self.req("POST", "/api/materials",
+                                        {"code": code, "name": "Temporal", "unit": "kg", "category": "Insumos",
+                                         "unit_price": "7"}, token=jefe)[:2]
+            self.assertEqual(status, 201, material)
+            ident = material["id"]
+            self.assertEqual(self.req("DELETE", f"/api/materials/{ident}", token=jefe)[0], 200)
+            self.req("PUT", f"/api/users/{uid}", {"permissions": {"trash": {"edit": False}}}, token=jefe)
+            for method, route in (("POST", f"/api/trash/materials/{ident}/restore"),
+                                  ("DELETE", f"/api/trash/materials/{ident}"),
+                                  ("POST", "/api/trash/empty")):
+                status, denied = self.req(method, route, {}, token=editor)[:2]
+                self.assertEqual(status, 403, route)
+                self.assertEqual(denied["permission_denied"], "trash.edit")
+            for kind in ("fichas", "controls"):
+                status, denied = self.req("POST", f"/api/{kind}/987654/restore", {}, token=editor)[:2]
+                self.assertEqual(status, 403)
+                self.assertEqual(denied["permission_denied"], "trash.edit")
+            self.req("PUT", f"/api/users/{uid}", {"permissions": {"trash": {"edit": True},
+                                                   "materials": {"edit": False}}}, token=jefe)
+            for method, route in (("POST", f"/api/trash/materials/{ident}/restore"),
+                                  ("DELETE", f"/api/trash/materials/{ident}"),
+                                  ("POST", "/api/trash/empty")):
+                status, denied = self.req(method, route, {}, token=editor)[:2]
+                self.assertEqual(status, 403, route)
+                self.assertEqual(denied["permission_denied"], "materials.edit")
+            self.req("PUT", f"/api/users/{uid}", {"permissions": {"materials": {"edit": True},
+                                                   "controls": {"edit": False}}}, token=jefe)
+            status, denied = self.req("POST", "/api/trash/empty", {}, token=editor)[:2]
+            self.assertEqual(status, 403)
+            self.assertEqual(denied["permission_denied"], "controls.edit")
+            self.assertEqual(self.req("POST", f"/api/trash/materials/{ident}/restore", {}, token=editor)[0], 200)
+        finally:
+            self.req("PUT", f"/api/users/{uid}", {"reset_permissions": True}, token=jefe)
+            with server.connect() as conn:
+                row = conn.execute("SELECT id FROM materials WHERE code=?", (code,)).fetchone()
+            if row:
+                self.req("DELETE", f"/api/materials/{row['id']}", token=jefe)
+                self.req("DELETE", f"/api/trash/materials/{row['id']}", token=jefe)
+
+    def test_sembrar_datos_requiere_controles(self):
+        jefe, editor = self.token(ADMIN), self.token(EDITOR)
+        uid = self.user_id(EDITOR[0])
+        try:
+            self.req("PUT", f"/api/users/{uid}", {"permissions": {"controls": {"edit": False}}}, token=jefe)
+            status, denied = self.req("POST", "/api/demo/seed", {}, token=editor)[:2]
+            self.assertEqual(status, 403)
+            self.assertIn("controls", denied["permission_denied"])
+            self.req("PUT", f"/api/users/{uid}", {"permissions": {"controls": {"edit": True},
+                                                   "materials": {"costs": False}}}, token=jefe)
+            status, denied = self.req("POST", "/api/demo/seed", {}, token=editor)[:2]
+            self.assertEqual(status, 403)
+            self.assertEqual(denied["permission_denied"], "materials.costs")
+        finally:
+            self.req("PUT", f"/api/users/{uid}", {"reset_permissions": True}, token=jefe)
+
+    def test_linea_libre_no_permitida_sin_costos_de_fichas(self):
+        jefe, editor = self.token(ADMIN), self.token(EDITOR)
+        uid = self.user_id(EDITOR[0])
+        products = self.req("GET", "/api/products", token=jefe)[1]
+        try:
+            self.req("PUT", f"/api/users/{uid}", {"permissions": {"fichas": {"costs": False}}}, token=jefe)
+            body = {"product_id": products[0]["id"], "items": [
+                {"description": "Libre", "unit": "kg", "quantity": "1", "unit_cost": "999"}]}
+            status, denied = self.req("POST", "/api/fichas", body, token=editor)[:2]
+            self.assertEqual(status, 403, denied)
+            self.assertIn("costos", denied["error"])
+        finally:
+            self.req("PUT", f"/api/users/{uid}", {"reset_permissions": True}, token=jefe)
+
     def test_resumen_recortado_por_modulo(self):
         """El resumen mezcla apartados: cada usuario ve solo lo que puede consultar."""
         almacen = self.token(ALMACEN)

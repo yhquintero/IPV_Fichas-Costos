@@ -394,8 +394,8 @@ class LicenseStore:
         if not self.enforced:
             return {**base, "valid": True, "reason": "Licencias desactivadas (sin clave pública configurada)."}
         with self.lock:
-            if use_cache and self._cache and now - self._cache[0] < 60:
-                return {**base, **self._cache[1]}
+            # Validar firma, fechas y estado en cada solicitud; nunca extender
+            # artificialmente el acceso tras el vencimiento o cambio del archivo.
             token = self._read("licencia.lic")
             last = self._last_seen()
             try:
@@ -439,7 +439,22 @@ def install(srv) -> LicenseStore:
         if not original_pre(self):
             return False
         path = self._api_path()
-        if store.enforced and path.startswith("/api") and not path.startswith(LICENSE_FREE):
+        bootstrap = not store.enforced and getattr(srv, "REQUIRE_LICENSE", False)
+        bootstrap_allowed = path in ("/api/auth/login", "/api/auth/refresh",
+                                     "/api/auth/logout", "/api/auth/password",
+                                     "/api/auth/2fa/setup", "/api/auth/2fa/enable") or path.startswith("/api/keygen/")
+        if bootstrap and path.startswith("/api") and not (path.startswith(LICENSE_FREE) or bootstrap_allowed):
+            self.send_json({"error": "Configure la firma y active una licencia para usar la aplicación.",
+                            "license_required": True, "request_code": store.code}, 402)
+            return False
+        # Solo funciones de cuenta de un administrador autenticado para que pueda
+        # cambiar contraseña o activar MFA antes de recuperar la licencia.
+        admin_account = ("/api/auth/password", "/api/auth/me", "/api/auth/sessions",
+                         "/api/auth/2fa/setup", "/api/auth/2fa/enable",
+                         "/api/security/status")
+        recovery = path in ("/api/auth/maintenance-login", "/api/auth/maintenance-refresh") or (
+            path in admin_account and (getattr(self, "user", None) or {}).get("role") == "admin")
+        if store.enforced and path.startswith("/api") and path not in LICENSE_FREE and not recovery and not path.startswith("/api/keygen/"):
             st = store.status()
             if not st["valid"]:
                 self.send_json({"error": f"Licencia requerida: {st['reason']}", "license_required": True,
@@ -461,7 +476,11 @@ def install(srv) -> LicenseStore:
         if self._api_path() != "/api/license":
             return original_get(self)
         if _license_pre(self):
-            self.send_json(store.status())
+            info = store.status()
+            if getattr(srv, "REQUIRE_LICENSE", False) and not store.enforced:
+                info.update({"valid": False, "setup_required": True,
+                             "reason": "Configure la clave de firma con un administrador."})
+            self.send_json(info)
 
     def do_POST(self):
         self._normalize_version()

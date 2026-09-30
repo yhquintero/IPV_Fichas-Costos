@@ -130,7 +130,7 @@ cd IPV_Fichas-Costos
 
 > 📘 **¿Primera vez?** La guía [docs/acceso-seguro-https.md](docs/acceso-seguro-https.md) explica **todos los pasos desde cero**: instalar la CA, entrar desde la propia PC, desde otro equipo de la red y desde el móvil Android, cifrar la base de datos y resolver los errores más comunes.
 
-Sin `IPV_JWT_SECRET` el servidor funciona en **modo abierto** (solo para redes de confianza y pruebas).
+El servidor **no inicia** sin `IPV_JWT_SECRET` de al menos 32 bytes ni un administrador activo. La contraseña inicial debe cumplir la política de contraseñas fuertes. Configure `IPV_ADMIN_EMAIL` y `IPV_ADMIN_PASSWORD` para crearlo en la primera ejecución; en instalaciones existentes basta con un administrador activo. El modo abierto solo existe en pruebas que instancian `Handler` sin iniciar el servidor.
 
 ### Acceso seguro (HTTPS)
 
@@ -183,7 +183,7 @@ El servidor y la app Android se activan con una **licencia firmada (ECDSA P-256)
 2. El proveedor crea la licencia con el **Creador de Licencias** integrado (menú lateral, solo administradores): pega el código de solicitud, elige el plan y pulsa *Crear licencia*; después la **envía por WhatsApp** al cliente desde el propio botón *Enviar licencia por WhatsApp*. También puede usar el **Keygen** de escritorio (`python keygen\keygen.py`, GUI o CLI); ambos comparten clave y registro.
 3. El cliente pega la licencia en la misma vista de Licencia y pulsa **Activar**. Sin licencia vigente la API responde `402` y la app queda bloqueada; 7 días antes del vencimiento se avisa.
 
-**Primera vez (activar el sistema de licencias):** abra **Creador de Licencias** en la web, escriba una contraseña (mín. 10) y su WhatsApp, y pulse *Crear clave de firma y activar licencias*. Las licencias quedan **activadas al instante**, sin reiniciar: la clave pública se escribe en `licencia.py` y `License.kt` (recompile el APK para el móvil). El equivalente en consola es `python keygen\keygen.py init --whatsapp 53XXXXXXXX`. La clave privada se guarda cifrada en `keygen/clave_privada.json`; la contraseña **no** se guarda en el servidor. Si el propio servidor se queda sin licencia, las rutas `/api/keygen` siguen accesibles para que el administrador se la emita a sí mismo. Precios, estudio de mercado y guía completa: **[docs/precios-y-licencias.md](docs/precios-y-licencias.md)**.
+**Primera vez (activar el sistema de licencias):** genere la clave con `python keygen/keygen.py init --whatsapp 53XXXXXXXX` **antes de arrancar** (en Docker, antes de construir la imagen); alternativamente un administrador puede iniciar sesión y crear la clave desde la API `/api/keygen/init` durante el bootstrap. Las licencias quedan **activadas al instante**, sin reiniciar: la clave pública se escribe en `licencia.py` y `License.kt` (recompile el APK para el móvil). La clave privada se guarda cifrada en `keygen/clave_privada.json`; la contraseña **no** se guarda en el servidor. Si el propio servidor se queda sin licencia, las rutas `/api/keygen` siguen accesibles para que el administrador se la emita a sí mismo. Precios, estudio de mercado y guía completa: **[docs/precios-y-licencias.md](docs/precios-y-licencias.md)**.
 
 ### Formato monetario
 
@@ -212,7 +212,7 @@ Cada usuario tiene permisos propios, independientes de su rol, sobre cada aparta
 |---|---|---|
 | `view` | Abrir el apartado y consultar sus datos | La entrada se oculta del menú y el API responde `403 {"permission_denied":"materials.view"}` |
 | `edit` | Crear, editar, ajustar existencias, restaurar, purgar, importar CSV y cargar datos de prueba | Se ocultan los botones y el servidor rechaza la escritura con `403` |
-| `costs` | Ver precio unitario, valor en almacén y totales en dinero | Los importes **no se envían**: `unit_price`, `stock_value` y `totals.stock_value` llegan como `null`, con `costs_hidden: true`; la web muestra 🔒 |
+| `costs` | Ver importes y administrar precios o costos manuales (junto con `edit`) | Los importes **no se envían**: `unit_price`, `stock_value` y `totals.stock_value` llegan como `null`, con `costs_hidden: true`; la web muestra 🔒 |
 
 El permiso `costs` existe en los cinco módulos: en *Valores del IPV* tapa `unit_price` y el valor de
 las existencias; en *Fichas de costo* tapa `total_cost`, `unit_cost` y `subtotal`; en *Controles de IPV*
@@ -232,6 +232,14 @@ tarjeta y cada panel dependen del módulo que los alimenta: sin `view` sobre *Pr
 contadores y el catálogo por categoría llegan en `null` / `[]`; sin `view` sobre *Fichas de costo* no
 llegan las fichas recientes ni la distribución de costos; y la línea de actividad solo incluye los
 apartados que el usuario puede consultar. La web dibuja 🔒 en lugar de las tarjetas bloqueadas.
+
+Almacén puede editar existencias sin ver costos, pero no enviar `unit_price` ni `currency`
+(incluida la actualización masiva de precios); esos campos se omiten del formulario.
+Las líneas libres de fichas con costo manual exigen `fichas.costs`. Restaurar o
+purgar un elemento exige `trash.edit` **y** el permiso `edit` de su módulo; vaciar
+la papelera exige `trash.edit` y `edit` en todos los módulos. Los datos de prueba
+requieren `edit` en materiales, productos, fichas y controles, más `materials.costs`
+porque crean precios de ejemplo.
 
 **Solo se envía lo que cambia.** Los permisos ausentes en la petición conservan el valor del rol, así
 que `{ "permissions": { "fichas": { "costs": false } } }` quita los importes de las fichas sin cerrar el
@@ -290,7 +298,7 @@ docker compose up -d    # contenedor de solo lectura, sin privilegios, usuario n
 - `POST /api/products` - Crear producto
 - `PUT /api/products/:id` - Actualizar (incluido el rendimiento del lote)
 - `DELETE /api/products/:id` - Enviar a la papelera
-- `POST /api/products/:id/restore` - Restaurar (404 si ya está activo)
+- `POST /api/trash/products/:id/restore` - Restaurar (404 si ya está activo; exige `trash.edit` y `products.edit`)
 
 ### Valores del IPV (módulo `materials`: pestañas Valores e Inventario)
 - `GET /api/materials` - Listar materiales (`materials.view`; sin `materials.costs`, `unit_price` llega como `null`)
@@ -300,7 +308,7 @@ docker compose up -d    # contenedor de solo lectura, sin privilegios, usuario n
 - `POST /api/materials/:id/stock` - Entrada/salida de existencias (`delta` o `set`)
 - `POST /api/materials/bulk-update` - Actualización masiva
 - `DELETE /api/materials/:id` - Enviar a la papelera
-- `POST /api/materials/:id/restore` · `POST /api/trash/materials/:id/restore` - Restaurar
+- `POST /api/trash/materials/:id/restore` - Restaurar (exige `trash.edit` y `materials.edit`)
 
 ### Inventario y papelera
 - `GET /api/inventory` - Existencias, valor y raciones posibles por receta (pestaña *Inventario* de la misma entrada; sin `materials.costs` los importes llegan como `null` y `costs_hidden: true`)
@@ -463,3 +471,11 @@ Proyecto de uso profesional. Todos los derechos reservados.
 ---
 
 **Hecho con ❤️ en Cuba**
+
+### Orden de acceso seguro (Web y Android)
+
+En producción, configure JWT y un administrador **antes** de arrancar. Durante la primera instalación, genere la clave de firma en el equipo de confianza con `python keygen/keygen.py init` antes de iniciar la interfaz web (o use la API del Creador con un JWT de administrador). Hasta configurar la clave, la API de datos responde `402` (solo se permite login, configurar MFA/contraseña y el Creador). Después, active la licencia web del equipo con `/api/license` y una licencia firmada para el código IPVW mostrado. La activación inicial admite el token firmado sin sesión; con licencia vigente la renovación requiere administrador. La app Android exige además su propia licencia IPVA; el servidor vuelve a verificar JWT, permisos y licencia web en cada petición. Con la licencia vencida, la vista de Licencia ofrece **Entrar como administrador**: usa `/api/auth/maintenance-login` (contraseña y MFA si procede) y permite abrir el Creador y emitir una renovación. Los usuarios de otros roles no pueden usar ese acceso; cualquier consulta o modificación de datos sigue devolviendo `402` hasta activar una licencia válida. La renovación del token de mantenimiento usa `/api/auth/maintenance-refresh`. Las conexiones de eventos en tiempo real también dejan de enviar datos cuando vence la licencia, se revoca la sesión o se pierde el permiso del módulo.
+
+No use `IPV_API_TOKEN` como sustituto de usuarios: el token heredado es de **solo lectura** y no administra claves, usuarios ni licencias. La app móvil no muestra datos offline: sin servidor no puede comprobar cambios de rol o vencimiento de la licencia web. Antes de distribuir el APK, asegúrese de haber generado la clave pública en `License.kt` (un APK sin ella no exige licencia Android).
+
+**Docker con sistema de archivos de solo lectura:** genere la clave con el Keygen en el equipo de compilación *antes* de `docker compose build`, incorpore la clave pública en el código, y conserve la clave privada fuera de la imagen. La creación/rotación de claves desde la web necesita archivos de código y directorio `keygen/` escribibles: no está disponible dentro del contenedor `read_only`. Emita licencias desde el Keygen fuera del contenedor y péguelas en la pantalla de activación. No monte la clave privada en el servidor público salvo que sea imprescindible.
