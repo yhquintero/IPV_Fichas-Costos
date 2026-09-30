@@ -8,7 +8,7 @@ const state = {
   view: 'dashboard', dashboard: null, matTab: 'valores',
   products: [], materials: [], fichas: [], controls: [],
   trash: [], inventory: null, license: null, categories: { materials: [], products: [] },
-  search: '',
+  search: '', licenseBlocked: false,
   filters: { materials: { category: '', status: '' }, products: { category: '' }, inventory: { category: '', low: false } },
 };
 const $ = (s, r = document) => r.querySelector(s);
@@ -130,10 +130,12 @@ async function api(path, opts = {}, retried = false) {
   }
   const d = await r.json().catch(() => ({}));
   if (r.status === 402 && d.license_required && window.IPVLicense) {
-    /* Dentro del Creador de Licencias no se tapa la pantalla: allí mismo se emite
-       y activa la licencia de este equipo con el código de solicitud. */
+    /* Sin licencia activada o vencida, la app entra en la vista de Licencia:
+       allí se genera la solicitud y se envía por WhatsApp. Dentro del Creador
+       de Licencias solo se avisa: allí mismo se emite y activa la licencia. */
+    state.licenseBlocked = true;
     if (state.view === 'creator') toast(`🔒 Emita la licencia de este equipo con su código ${d.request_code || ''} y pulse «Activar en este equipo».`, 'info');
-    else window.IPVLicense.show(null);
+    else window.IPVLicense.enter();
   }
   if (r.status === 403 && d.password_expired && window.IPVAuth?.forcePasswordChange && !retried) {
     if (await window.IPVAuth.forcePasswordChange()) return api(path, opts, true);
@@ -142,6 +144,7 @@ async function api(path, opts = {}, retried = false) {
     const err = new Error(d.error || `Error ${r.status}`);
     err.status = r.status;
     err.denied = d.permission_denied || '';  // permiso denegado por el Sistema de Seguridad por Usuarios
+    err.licenseRequired = r.status === 402 && !!d.license_required;
     throw err;
   }
   return d;
@@ -179,6 +182,12 @@ async function refreshData(quiet = false) {
     applyPermissionNav();
     render();
   } catch (e) {
+    if (e.licenseRequired) {
+      /* La API está bloqueada por licencia: la app ya entró en la vista de Licencia. */
+      setConn(false, 'Licencia requerida');
+      toast('🔒 Sin licencia vigente: genere la solicitud y envíela por WhatsApp.', 'error');
+      return;
+    }
     setConn(false, 'No se pudo conectar');
     if (!quiet) toast(e.message, 'error');
     content.innerHTML = `<div class="empty-state panel"><div class="empty-icon">⌁</div><b>No se pudo conectar con la base de datos</b><p>Verifique que el servidor esté activo y actualice la página. La web no conserva una copia local de los datos; los cambios requieren confirmación del servidor.</p><button class="primary-btn" data-action="refresh">Reintentar conexión</button></div>`;
@@ -210,9 +219,14 @@ function setView(v) {
   render();
 }
 function render() {
-  /* El Creador de Licencias funciona aunque la API esté bloqueada por licencia (402):
-     sus rutas están exentas y es donde se emite la licencia del propio equipo. */
-  if (!state.dashboard && state.view !== 'creator') return;
+  /* La vista de Licencia y el Creador de Licencias funcionan aunque la API esté
+     bloqueada por licencia (402): /api/license y las rutas del Creador están exentas
+     y son donde se genera y activa la licencia de este equipo. */
+  if (state.licenseBlocked && state.view !== 'creator' && state.view !== 'license') {
+    content.innerHTML = `<div class="empty-state panel"><div class="empty-icon">🔒</div><b>Licencia requerida</b><p>Este equipo no tiene una licencia vigente. Abra la vista de Licencia para generar la solicitud y enviarla por WhatsApp.</p><button class="primary-btn" data-action="open-license-view">🔑 Ir a Licencia</button></div>`;
+    return;
+  }
+  if (!state.dashboard && state.view !== 'creator' && state.view !== 'license') return;
   const fns = {
     dashboard: renderDashboard, products: renderProducts, materials: renderMaterials,
     inventory: renderInventory, fichas: renderFichas, controls: renderControls,
@@ -602,24 +616,46 @@ function loadLicenseInto(box) {
       const cls = lic.valid ? (days <= 7 ? 'bad' : 'ok') : 'bad';
       const icon = lic.valid ? (days <= 7 ? '⏳' : '✅') : '🔒';
       const plans = Object.entries(lic.plans || {});
+      const planOpts = plans.map(([k, p], i) =>
+        `<option value="${esc(`${p.name} (${k})`)}" ${i === Math.min(1, plans.length - 1) ? 'selected' : ''}>${esc(p.name)} — ${p.usd} USD</option>`).join('');
       box.innerHTML = `
         <div class="lic-status-card ${cls}"><div class="lic-status-icon">${icon}</div>
-          <div class="lic-status-copy"><h3>${lic.valid ? `Licencia vigente — ${esc(lic.plan_name || '')}` : 'Este equipo no tiene licencia'}</h3>
+          <div class="lic-status-copy"><h3>${lic.valid ? `Licencia vigente — ${esc(lic.plan_name || '')}` : (/venc/i.test(lic.reason || '') ? 'Licencia vencida' : 'Este equipo no tiene licencia')}</h3>
           <p>${lic.valid ? `A nombre de ${esc(lic.user || '')} · serie ${esc(lic.serial || '')}` : esc(lic.reason || '')}</p></div>
-          <button class="primary-btn" data-action="open-license">${lic.valid ? 'Renovar' : 'Activar'}</button></div>
+          ${lic.valid ? '<button class="primary-btn" data-action="open-license">Renovar</button>' : ''}</div>
         ${lic.valid ? `<div class="lic-kv">
           <div><small>Plan</small><b>${esc(lic.plan_name)}</b></div>
           <div><small>Emitida</small><b>${fmtDate(lic.issued_at)}</b></div>
           ${lic.valid_from ? `<div><small>Válida desde</small><b>${esc(lic.valid_from)} (UTC)</b></div>` : ''}
           <div><small>Vence</small><b>${lic.valid_until ? `${esc(lic.valid_until)} (UTC)` : fmtDate(lic.expires_at)}</b></div>
           <div><small>Días restantes</small><b style="color:${days <= 7 ? 'var(--orange)' : 'var(--green)'}">${days}</b></div>
-        </div>` : ''}
+        </div>` : `
         <div class="panel">
+          <div class="panel-heading"><div><h2 class="panel-title">Generar solicitud de licencia</h2>
+            <p class="panel-subtitle">1. Escriba su nombre y elija el plan · 2. Envíe la solicitud por WhatsApp · 3. Pegue aquí la licencia recibida</p></div></div>
+          <div class="form-grid">
+            <div class="form-field"><label for="lic-user">Usuario</label><input id="lic-user" maxlength="80" placeholder="Nombre o empresa" autocomplete="organization"></div>
+            <div class="form-field"><label for="lic-plan">Plan</label><select id="lic-plan">${planOpts}</select></div>
+          </div>
+          <div class="form-field"><label>ID Dispositivo (cifrado)</label>
+            <div class="lic-code-row"><code class="lic-code">${esc(lic.request_code || '')}</code><button class="secondary-btn" data-action="copy-device">📋 Copiar</button></div>
+            <p class="small-note" style="margin-top:8px">Cifrado con SHA-256: no contiene datos del equipo.</p>
+          </div>
+          <button class="primary-btn lic-wa" data-action="whatsapp-request">💬 Generar solicitud y enviarla por WhatsApp</button>
+        </div>
+        <div class="panel">
+          <div class="panel-heading"><div><h2 class="panel-title">Activar licencia</h2>
+            <p class="panel-subtitle">Pegue la licencia completa que recibirá por WhatsApp (empieza por IPV1.)</p></div></div>
+          <textarea class="lic-input lic-token" id="lic-activate-token" rows="4" placeholder="IPV1.…" spellcheck="false"></textarea>
+          <div class="lic-actions" style="margin-top:10px"><button class="primary-btn" data-action="activate-license">🔓 Activar licencia</button></div>
+          <p class="lic-msg" id="lic-activate-msg" role="alert" hidden></p>
+        </div>`}
+        ${lic.valid ? `<div class="panel">
           <div class="panel-heading"><div><h2 class="panel-title">ID de este equipo</h2><p class="panel-subtitle">Cifrado con SHA-256: no contiene datos del equipo</p></div>
             <button class="secondary-btn" data-action="copy-device">📋 Copiar</button></div>
           <code class="lic-code">${esc(lic.request_code || '')}</code>
           <p class="small-note" style="margin-top:10px">Envíe este código al proveedor para recibir la licencia. ${lic.whatsapp ? `<button class="text-btn" data-action="whatsapp-license">💬 Solicitar por WhatsApp</button>` : ''}</p>
-        </div>
+        </div>` : ''}
         <div class="panel">
           <div class="panel-heading"><div><h2 class="panel-title">Planes disponibles</h2><p class="panel-subtitle">Precios de referencia del proveedor</p></div></div>
           <div class="plan-grid">${plans.map(([k, p]) => `<div class="plan-card"><b>${esc(p.name)}</b><div class="plan-usd">${p.usd} USD</div><small>${p.days} días de uso</small></div>`).join('')}</div>
@@ -663,13 +699,17 @@ function creatorResultPanel(r) {
     <div class="panel-heading"><div><h2 class="panel-title">✅ Licencia creada — ${esc(r.plan_name)}</h2>
       <p class="panel-subtitle">${esc(r.app_name)} · Usuario: ${esc(r.user)} · Serie ${esc(r.serial)} · ${r.valid_from ? `vigencia ${esc(r.valid_from)} a ${esc(r.valid_until)} (UTC)` : `vence el ${fmtDate(r.expires_at)}`} · ${r.price_usd} USD ≈ ${money(r.price_cup)}</p></div></div>
     <textarea class="lic-input lic-token" id="creator-token" rows="4" readonly spellcheck="false">${esc(r.license)}</textarea>
+    <div class="form-grid" style="margin-top:10px">
+      <div class="form-field"><label for="creator-wa-client">WhatsApp del cliente (opcional)</label><input id="creator-wa-client" inputmode="numeric" autocomplete="off" placeholder="5355555555 — vacío = elegir el chat en WhatsApp"></div>
+    </div>
     <div class="lic-actions">
+      <button class="primary-btn" data-action="creator-whatsapp">💬 Enviar licencia por WhatsApp</button>
       <button class="secondary-btn" data-action="creator-copy" data-target="#creator-token">📋 Copiar licencia</button>
       <button class="secondary-btn" data-action="creator-copy" data-target="#creator-reply">📋 Copiar mensaje de WhatsApp</button>
       ${self ? '<button class="primary-btn" data-action="creator-activate-here">🔓 Activar en este equipo</button>' : ''}
     </div>
     <pre id="creator-reply" hidden>${esc(r.reply)}</pre>
-    <p class="small-note" style="margin-top:10px">Pegue la licencia en el equipo o teléfono del cliente (botón Activar licencia) o envíela por WhatsApp con el mensaje copiado. Quedó registrada en el historial.</p></div>`;
+    <p class="small-note" style="margin-top:10px">La licencia quedó generada y registrada en el historial: envíela por WhatsApp al cliente o péguela en su equipo o teléfono (botón Activar licencia).</p></div>`;
 }
 
 function renderCreator() {
@@ -1337,7 +1377,33 @@ async function runAction(action, id, el, extra = {}) {
     case 'purge-trash': return purgeFromTrash(el.dataset.kind, id);
     case 'empty-trash': return emptyTrash();
     case 'open-license': return window.IPVLicense?.renew();
+    case 'open-license-view': return setView('license');
     case 'reload-license': return loadLicenseInto($('#lic-body'));
+    case 'whatsapp-request': {
+      /* Genera la solicitud con el ID de este equipo y la envía por WhatsApp */
+      const lic = state.license || {};
+      const user = $('#lic-user')?.value.trim() || '';
+      const plan = $('#lic-plan')?.value || '';
+      if (!lic.whatsapp) return toast('El proveedor no configuró un número de WhatsApp. Copie el ID y envíelo manualmente.', 'error');
+      window.open(window.IPVLicense.waLink({ ...lic, _user: user }, plan), '_blank', 'noopener');
+      return toast('Solicitud lista: elija el chat del proveedor en WhatsApp.', 'success');
+    }
+    case 'activate-license': {
+      /* Pega la licencia recibida y activa este equipo sin salir de la vista */
+      const token = $('#lic-activate-token')?.value || '';
+      const msg = $('#lic-activate-msg');
+      const fail = (t) => { if (msg) { msg.textContent = t; msg.hidden = false; } };
+      if (!token.trim()) return fail('Pegue la licencia completa (IPV1.…).');
+      try {
+        const auth = window.IPVAuth ? window.IPVAuth.headers() : {};
+        const r = await fetch('/api/license', { method: 'POST', headers: { 'Content-Type': 'application/json', ...auth }, body: JSON.stringify({ license: token }) });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) return fail(d.error || `Error ${r.status}`);
+        toast(`Licencia activada: ${d.plan_name}, vence el ${fmtDate(d.expires_at)}`, 'success');
+        setTimeout(() => location.reload(), 900);
+      } catch (ex) { fail(ex.message); }
+      return;
+    }
     case 'open-creator': return setView('creator');
     case 'creator-refresh': return loadCreatorInto($('#creator-body'));
     case 'creator-ledger': return loadCreatorLedger();
@@ -1345,6 +1411,14 @@ async function runAction(action, id, el, extra = {}) {
       const src = $(el.dataset.target);
       await navigator.clipboard.writeText(src?.value || src?.textContent || '').catch(() => {});
       return toast('Copiado al portapapeles.', 'success');
+    }
+    case 'creator-whatsapp': {
+      /* La licencia ya está generada: se envía por WhatsApp al cliente */
+      const reply = $('#creator-reply')?.textContent || '';
+      if (!reply.trim()) return toast('No hay licencia generada para enviar.', 'error');
+      const num = ($('#creator-wa-client')?.value || '').replace(/\D/g, '');
+      window.open(`https://wa.me/${num}?text=${encodeURIComponent(reply)}`, '_blank', 'noopener');
+      return;
     }
     case 'creator-activate-here': {
       const token = $('#creator-token')?.value || '';
@@ -1456,11 +1530,28 @@ document.addEventListener('ipv:auth', async () => {
 /* ── Init ── */
 updateCreatorNav();
 applyPermissionNav();
+/* license.js llama a esta función cuando la licencia no está activada o venció:
+   la app entra en la vista de Licencia (generar solicitud y enviarla por WhatsApp). */
+window.IPVLicenseEnter = () => { if (state.view !== 'license') setView('license'); };
 /* enterprise.js define IPVAuth (sesión + permisos) un instante después de app.js:
    se espera para que la primera carga de datos viaje ya autenticada. Sin esto, el
    primer lote de peticiones salía sin cabecera y terminaba en 401 + renovación. */
 (async function boot() {
   for (let i = 0; i < 40 && !window.IPVAuth; i++) await new Promise(r => setTimeout(r, 25));
+  /* La licencia manda: si no está activada o está vencida, la app entra PRIMERO en
+     la vista de Licencia y no carga datos (la API responde 402 hasta activarla). */
+  if (window.IPVLicense) {
+    try {
+      const lic = await window.IPVLicense.status();
+      if (lic.enforced && !lic.valid) {
+        state.license = lic;
+        state.licenseBlocked = true;
+        setView('license');
+        document.querySelector('.login-layer')?.remove();
+        return;
+      }
+    } catch { /* sin conexión: lo gestiona refreshData */ }
+  }
   if (window.IPVAuth?.user) {
     await window.IPVAuth.reloadPermissions?.();
     applyPermissionNav();

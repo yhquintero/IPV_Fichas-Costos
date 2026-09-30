@@ -16,7 +16,7 @@ Autor: **Ing. Yosvany Hernández Quintero**
 - **Rendimiento de fichas**: cada plato indica comensales (o copas/vasos) y el costo por unidad; el inventario calcula cuántas raciones salen
 - **Papelera de reciclaje** en todos los módulos: restaurar o borrar definitivamente
 - **Columna «Id»** al principio de cada tabla y lista (1, 2, 3 …) con el contador de ítems en la barra de herramientas: se sabe al instante cuántos productos, valores, fichas o controles hay
-- **Licencia**: pantalla propia con ID del equipo, planes, WhatsApp y activación/renovación
+- **Licencia**: pantalla propia (la primera que se ve si la licencia no está activada o venció) con ID del equipo, planes, solicitud por WhatsApp y activación/renovación
 - **Creador de Licencias** (web, administradores): crea la clave de firma, activa las licencias al instante y emite, verifica y registra licencias para PC y móvil
 - **Datos de prueba**: catálogo amplio de comidas, licores, bebidas e inventario para aprender
 - **La app Android replica la web** y comparte la misma base de datos SQLite del servidor
@@ -179,9 +179,9 @@ IPV_BACKUP_S3_SECRET_KEY=...
 
 El servidor y la app Android se activan con una **licencia firmada (ECDSA P-256)** atada al dispositivo:
 
-1. La app muestra **Activar licencia** con el *ID Dispositivo* cifrado (`IPVW-…` en PC, `IPVA-…` en móvil) y un botón **Solicitar por WhatsApp**. La web y el móvil lo hacen **al arrancar, antes del inicio de sesión**.
-2. El proveedor crea la licencia con el **Creador de Licencias** integrado (menú lateral, solo administradores): pega el código de solicitud, elige el plan y pulsa *Crear licencia*. También puede usar el **Keygen** de escritorio (`python keygen\keygen.py`, GUI o CLI); ambos comparten clave y registro.
-3. El cliente pega la licencia y pulsa **Activar**. Sin licencia vigente la API responde `402` y la app queda bloqueada; 7 días antes del vencimiento se avisa.
+1. **La app entra primero en la vista de Licencia** (web y Android) cuando la licencia no está activada o está vencida, **antes del inicio de sesión** y del resto de pantallas. Allí se **genera la solicitud** con el *ID Dispositivo* cifrado (`IPVW-…` en PC, `IPVA-…` en móvil), usuario y plan, y se **envía por WhatsApp** con un botón único.
+2. El proveedor crea la licencia con el **Creador de Licencias** integrado (menú lateral, solo administradores): pega el código de solicitud, elige el plan y pulsa *Crear licencia*; después la **envía por WhatsApp** al cliente desde el propio botón *Enviar licencia por WhatsApp*. También puede usar el **Keygen** de escritorio (`python keygen\keygen.py`, GUI o CLI); ambos comparten clave y registro.
+3. El cliente pega la licencia en la misma vista de Licencia y pulsa **Activar**. Sin licencia vigente la API responde `402` y la app queda bloqueada; 7 días antes del vencimiento se avisa.
 
 **Primera vez (activar el sistema de licencias):** abra **Creador de Licencias** en la web, escriba una contraseña (mín. 10) y su WhatsApp, y pulse *Crear clave de firma y activar licencias*. Las licencias quedan **activadas al instante**, sin reiniciar: la clave pública se escribe en `licencia.py` y `License.kt` (recompile el APK para el móvil). El equivalente en consola es `python keygen\keygen.py init --whatsapp 53XXXXXXXX`. La clave privada se guarda cifrada en `keygen/clave_privada.json`; la contraseña **no** se guarda en el servidor. Si el propio servidor se queda sin licencia, las rutas `/api/keygen` siguen accesibles para que el administrador se la emita a sí mismo. Precios, estudio de mercado y guía completa: **[docs/precios-y-licencias.md](docs/precios-y-licencias.md)**.
 

@@ -164,7 +164,7 @@
             const f = layer.querySelector('.otp-field');
             if (f.hidden) { f.hidden = false; form.elements.otp.focus(); err.textContent = d.error; err.hidden = false; err.classList.add('info'); return; }
           }
-          if (r.status === 402 && d.license_required && window.IPVLicense) { layer.remove(); window.IPVLicense.show(null); resolve(false); return; }
+          if (r.status === 402 && d.license_required && window.IPVLicense) { layer.remove(); window.IPVLicense.enter(); resolve(false); return; }
           if (!r.ok) throw new Error(d.error || 'No se pudo iniciar sesión.');
           Auth.save(d);
           layer.remove();
