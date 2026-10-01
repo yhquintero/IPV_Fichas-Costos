@@ -37,23 +37,33 @@ import java.util.concurrent.Executors
    Autor: Ing. Yosvany Hernández Quintero
    ========================================================================== */
 
-// Design tokens — Paleta vibrante profesional
-private val GREEN = 0xFF183B34.toInt()
-private val GREEN_DARK = 0xFF122D28.toInt()
-private val GREEN_LIGHT = 0xFF2A7057.toInt()
-private val GREEN_PALE = 0xFFE8F2EC.toInt()
-private val LIME = 0xFFD7E78D.toInt()
-private val LIME_VIVID = 0xFFA8D850.toInt()
-private val INK = 0xFF20352C.toInt()
-private val MUTED = 0xFF626E68.toInt() // contraste mínimo 4.5:1 sobre superficies claras
-private val LINE = 0xFFE6ECE7.toInt()
-private val CANVAS = 0xFFF6F8F5.toInt()
-private val SURFACE = 0xFFFFFFFF.toInt()
-private val SUCCESS = 0xFF10B981.toInt()
-private val ERROR = 0xFFEF4444.toInt()
-private val WARNING = 0xFFF59E0B.toInt()
-private val BLUE = 0xFF3B82F6.toInt()
-private val PURPLE = 0xFF8B5CF6.toInt()
+// ===== Design tokens =====
+// Misma identidad visual que la aplicación web (web/styles.css): escala de marca
+// verde bosque → esmeralda, acento lima y neutros cálidos. Si cambia la web,
+// cambie aquí los mismos valores para que las dos caras se vean iguales.
+private val GREEN = 0xFF13382F.toInt()        // --primary      (marca 800)
+private val GREEN_DARK = 0xFF0D2A23.toInt()   // --primary-dark (marca 900)
+private val GREEN_MID = 0xFF22614E.toInt()    // marca 600
+private val GREEN_LIGHT = 0xFF2D7D63.toInt()  // --primary-light(marca 500)
+private val GREEN_PALE = 0xFFE7F1EB.toInt()
+private val LIME = 0xFFD9EF8F.toInt()         // --accent
+private val LIME_VIVID = 0xFFAADB4E.toInt()   // --accent-vivid
+private val INK = 0xFF121D1A.toInt()          // --text
+private val INK_SOFT = 0xFF3E4F48.toInt()     // --text-2
+private val MUTED = 0xFF5C6A63.toInt()        // --text-3 (contraste >= 4.5:1)
+private val LINE = 0xFFE3EAE2.toInt()         // --border
+private val LINE_STRONG = 0xFFCDD8CB.toInt()  // --border-strong
+private val CANVAS = 0xFFF3F7F3.toInt()       // --surface-2
+private val SURFACE = 0xFFFFFFFF.toInt()      // --surface
+private val SURFACE_SUNKEN = 0xFFEEF3ED.toInt()
+private val SUCCESS = 0xFF0F9F74.toInt()      // --green
+private val ERROR = 0xFFE0453F.toInt()        // --red
+private val WARNING = 0xFFE08B05.toInt()      // --orange
+private val BLUE = 0xFF2F6FED.toInt()         // --blue
+private val PURPLE = 0xFF7C5CF0.toInt()       // --purple
+
+/** Mismo color con alfa: para fondos tenues de iconos y etiquetas (como los *-glow de la web). */
+private fun tint(color: Int, alpha: Int = 26): Int = (alpha shl 24) or (color and 0x00FFFFFF)
 
 private const val APP_VERSION = "1.1.0"
 
@@ -294,7 +304,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             letterSpacing = 0.25f
             setPadding(dp(12), dp(10), dp(12), dp(10))
-            background = rounded(Color.WHITE, 8, PURPLE)
+            background = rounded(SURFACE, 12, PURPLE)
             setTextColor(INK)
         }
         otpLabel.visibility = View.GONE
@@ -349,11 +359,23 @@ class MainActivity : Activity() {
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
-    private fun rounded(color: Int, radius: Int = 12, stroke: Int? = null): GradientDrawable = GradientDrawable().apply {
+    private fun rounded(color: Int, radius: Int = 14, stroke: Int? = null): GradientDrawable = GradientDrawable().apply {
         setColor(color)
         cornerRadius = dp(radius).toFloat()
         if (stroke != null) setStroke(dp(1), stroke)
     }
+
+    /** Degradado redondeado (equivalente a los --gradient-* de la web). */
+    private fun gradient(
+        colors: IntArray,
+        radius: Int = 14,
+        orientation: GradientDrawable.Orientation = GradientDrawable.Orientation.TL_BR
+    ): GradientDrawable = GradientDrawable(orientation, colors).apply {
+        cornerRadius = dp(radius).toFloat()
+    }
+
+    /** Pastilla circular (bordes totalmente redondeados) para etiquetas y pestañas. */
+    private fun pill(color: Int, stroke: Int? = null): GradientDrawable = rounded(color, 20, stroke)
 
     private fun label(value: String, size: Float = 14f, color: Int = INK, bold: Boolean = false): TextView = TextView(this).apply {
         text = value
@@ -365,12 +387,16 @@ class MainActivity : Activity() {
 
     private fun makeButton(value: String, primary: Boolean = false, click: () -> Unit): Button = Button(this).apply {
         text = value
-        textSize = 12f
+        textSize = 12.5f
         isAllCaps = false
-        setTextColor(if (primary) Color.WHITE else GREEN)
-        background = rounded(if (primary) GREEN else 0xFFFFFFFF.toInt(), 9, if (primary) null else LINE)
-        minHeight = dp(42)
-        setPadding(dp(14), dp(3), dp(14), dp(3))
+        setTextColor(if (primary) Color.WHITE else GREEN_LIGHT)
+        // Primario: mismo degradado que el .primary-btn de la web; secundario: superficie con borde.
+        background = if (primary) gradient(intArrayOf(GREEN, GREEN_MID, GREEN_LIGHT), 12)
+                     else rounded(SURFACE, 12, LINE_STRONG)
+        elevation = if (primary) dp(3).toFloat() else dp(1).toFloat()
+        stateListAnimator = null
+        minHeight = dp(46)
+        setPadding(dp(16), dp(3), dp(16), dp(3))
         setOnClickListener { click() }
     }
 
@@ -383,27 +409,33 @@ class MainActivity : Activity() {
         // Header with accent stripe
         val accentStripe = View(this).apply {
             minimumHeight = dp(4)
-            background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(LIME_VIVID.toInt(), LIME.toInt(), GREEN_LIGHT))
+            background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(LIME_VIVID, LIME, GREEN_LIGHT))
         }
         root.addView(accentStripe, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(4)))
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(18), dp(14), dp(12), dp(14))
-            setBackgroundColor(GREEN)
+            setPadding(dp(18), dp(16), dp(12), dp(16))
+            // Degradado de marca igual al de la barra lateral de la web.
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(GREEN_DARK, GREEN, GREEN_LIGHT)
+            )
+            elevation = dp(6).toFloat()
         }
         val brand = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val logo = label("iv   IPV", 19f, LIME, true)
-        val subtitle = label("FICHAS Y COSTOS · GESTIÓN INTEGRAL", 9f, 0xFFD1DFD5.toInt(), true)
+        val logo = label("iv   IPV", 20f, LIME, true).apply { letterSpacing = 0.01f }
+        val subtitle = label("FICHAS Y COSTOS · GESTIÓN INTEGRAL", 9f, 0xFFC6D8CD.toInt(), true).apply { letterSpacing = 0.12f }
         brand.addView(logo)
         brand.addView(subtitle)
         header.addView(brand, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
         val statsBtn = makeButton("📊", false) { openStatistics() }.apply {
             setTextColor(Color.WHITE)
-            background = rounded(0x2AFFFFFF, 9)
-            minWidth = dp(45)
+            background = rounded(0x26FFFFFF, 12, 0x33FFFFFF)
+            elevation = 0f
+            minWidth = dp(46)
             contentDescription = "Estadísticas"
         }
         statsButton = statsBtn
@@ -411,25 +443,27 @@ class MainActivity : Activity() {
 
         val aboutBtn = makeButton("ℹ", false) { openAbout() }.apply {
             setTextColor(Color.WHITE)
-            background = rounded(0x2AFFFFFF, 9)
-            minWidth = dp(45)
+            background = rounded(0x26FFFFFF, 12, 0x33FFFFFF)
+            elevation = 0f
+            minWidth = dp(46)
             contentDescription = "Acerca de IPV"
         }
         header.addView(aboutBtn)
 
         val settings = makeButton("⚙", false) { openSettings() }.apply {
             setTextColor(Color.WHITE)
-            background = rounded(0x2AFFFFFF, 9)
-            minWidth = dp(45)
+            background = rounded(0x26FFFFFF, 12, 0x33FFFFFF)
+            elevation = 0f
+            minWidth = dp(46)
             contentDescription = "Configuración"
         }
         header.addView(settings)
         root.addView(header)
 
         // Connection indicator
-        connectionLabel = label("Conectando…", 10f, MUTED).apply {
-            setPadding(dp(18), dp(8), dp(18), dp(8))
-            setBackgroundColor(SURFACE)
+        connectionLabel = label("Conectando…", 10.5f, MUTED, true).apply {
+            setPadding(dp(18), dp(9), dp(18), dp(9))
+            setBackgroundColor(SURFACE_SUNKEN)
         }
         root.addView(connectionLabel)
 
@@ -437,15 +471,15 @@ class MainActivity : Activity() {
         val horizontal = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; setBackgroundColor(SURFACE) }
         val nav = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(10), dp(5), dp(10), dp(7))
-            setBackgroundColor(Color.WHITE)
+            setPadding(dp(10), dp(8), dp(10), dp(10))
+            setBackgroundColor(SURFACE)
         }
         tabs.forEach { tab ->
             val navButton = TextView(this).apply {
                 text = tab
-                textSize = 11f
+                textSize = 11.5f
                 gravity = Gravity.CENTER
-                setPadding(dp(12), dp(9), dp(12), dp(9))
+                setPadding(dp(14), dp(9), dp(14), dp(9))
                 setOnClickListener { currentTab = tab; refresh() }
             }
             navButton.tag = tab
@@ -478,7 +512,10 @@ class MainActivity : Activity() {
             item.visibility = if (tabModule[item.tag as String]?.let { can(it) } == false) View.GONE else View.VISIBLE
             val selected = item.tag == currentTab
             item.setTextColor(if (selected) Color.WHITE else MUTED)
-            item.background = rounded(if (selected) GREEN else Color.WHITE, 8)
+            item.setTypeface(item.typeface, if (selected) Typeface.BOLD else Typeface.NORMAL)
+            // Pestaña activa: pastilla con el degradado de marca (como .nav-item.active en la web).
+            item.background = if (selected) gradient(intArrayOf(GREEN, GREEN_LIGHT), 20)
+                              else pill(SURFACE_SUNKEN, LINE)
         }
     }
 
@@ -781,8 +818,8 @@ class MainActivity : Activity() {
     }
 
     private fun addHeading(parent: LinearLayout, title: String, subtitle: String) {
-        addText(parent, title, 20f, INK, true, bottom = 2)
-        addText(parent, subtitle, 11f, MUTED, false, bottom = 12)
+        addText(parent, title, 21f, INK, true, bottom = 3)
+        addText(parent, subtitle, 11.5f, MUTED, false, bottom = 14)
     }
 
     /** Contador de la lista: «▤ 33 ítems». Así se sabe cuántos hay sin contar a mano. */
@@ -803,48 +840,53 @@ class MainActivity : Activity() {
     private fun card(title: String, subtitle: String, index: Int = 0): LinearLayout {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            background = rounded(SURFACE, 12, LINE)
+            setPadding(dp(16), dp(15), dp(16), dp(15))
+            background = rounded(SURFACE, 16, LINE)
             isClickable = true
             isFocusable = true
             elevation = dp(2).toFloat()
         }
-        // Accent stripe at top
+        // Franja de acento: misma pista visual que el borde superior de las tarjetas web.
         val stripe = View(this).apply {
-            minimumHeight = dp(3)
-            background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(LIME_VIVID.toInt(), GREEN_LIGHT))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(LIME_VIVID, GREEN_LIGHT)
+            ).apply { cornerRadius = dp(2).toFloat() }
         }
-        row.addView(stripe, LinearLayout.LayoutParams(dp(40), dp(3)).apply { bottomMargin = dp(8) })
-        row.addView(label(if (index > 0) "$index.  $title" else title, 14f, INK, true))
-        row.addView(label(subtitle, 10f, MUTED).apply { setPadding(0, dp(4), 0, 0) })
-        content.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
+        row.addView(stripe, LinearLayout.LayoutParams(dp(36), dp(3)).apply { bottomMargin = dp(10) })
+        row.addView(label(if (index > 0) "$index.  $title" else title, 14.5f, INK, true))
+        row.addView(label(subtitle, 10.5f, MUTED).apply { setPadding(0, dp(5), 0, 0) })
+        content.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(10) })
         return row
     }
 
     private var statIndex = 0
     private fun statRow(parent: LinearLayout, title: String, value: String, note: String) {
-        val accentColors = intArrayOf(SUCCESS, BLUE, WARNING.toInt(), PURPLE)
+        val accentColors = intArrayOf(SUCCESS, BLUE, WARNING, PURPLE)
         val accent = accentColors[statIndex % accentColors.size]
         statIndex++
 
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = rounded(SURFACE, 12, LINE)
-            elevation = dp(1).toFloat()
+            setPadding(dp(14), dp(14), dp(16), dp(14))
+            background = rounded(SURFACE, 16, LINE)
+            elevation = dp(2).toFloat()
         }
-        // Colored indicator
-        val indicator = View(this).apply {
-            background = rounded(accent, 6)
+        // Indicador de color + halo tenue: réplica del .stat-icon de la web.
+        val indicator = View(this).apply { background = rounded(accent, 3) }
+        val indicatorBox = LinearLayout(this).apply {
+            gravity = Gravity.CENTER
+            background = rounded(tint(accent, 28), 12)
+            addView(indicator, LinearLayout.LayoutParams(dp(4), dp(22)))
         }
-        row.addView(indicator, LinearLayout.LayoutParams(dp(4), dp(36)).apply { rightMargin = dp(12) })
+        row.addView(indicatorBox, LinearLayout.LayoutParams(dp(34), dp(38)).apply { rightMargin = dp(12) })
         val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        left.addView(label(title, 11f, MUTED, true))
-        left.addView(label(note, 9f, 0xFF9AA49E.toInt()).apply { setPadding(0, dp(3), 0, 0) })
+        left.addView(label(title, 11.5f, INK_SOFT, true))
+        left.addView(label(note, 9.5f, MUTED).apply { setPadding(0, dp(3), 0, 0) })
         row.addView(left, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        row.addView(label(value, 24f, INK, true))
-        parent.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(6) })
+        row.addView(label(value, 25f, INK, true))
+        parent.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
     }
 
     /** Importes en formato $ 3,163,138.00 CUP: $ delante, miles con coma y decimales con punto. */
@@ -867,11 +909,11 @@ class MainActivity : Activity() {
             this.hint = hint
             this.inputType = inputType
             setText(value)
-            textSize = 13f
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-            background = rounded(Color.WHITE, 8, LINE)
+            textSize = 13.5f
+            setPadding(dp(13), dp(12), dp(13), dp(12))
+            background = rounded(SURFACE, 12, LINE_STRONG)
             setTextColor(INK)
-            setHintTextColor(0xFFBCC5BF.toInt())
+            setHintTextColor(0xFFA9B5AE.toInt())
         }
         parent.addView(editText, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(10) })
         return editText

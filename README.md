@@ -20,6 +20,7 @@ Autor: **Ing. Yosvany Hernández Quintero**
 - **Creador de Licencias** (web, administradores): crea la clave de firma, activa las licencias al instante y emite, verifica y registra licencias para PC y móvil
 - **Datos de prueba**: catálogo amplio de comidas, licores, bebidas e inventario para aprender
 - **La app Android replica la web** y comparte la misma base de datos SQLite del servidor
+- **Sistema de diseño unificado** (v2): escala de marca verde bosque → esmeralda con acento lima, fondo ambiental con degradados, elevación por capas, radios y foco coherentes en toda la aplicación; **la app Android usa exactamente los mismos tokens**
 - **Diseño moderno** con glassmorphism, neumorphism y efectos 3D
 - **Modo oscuro/claro** con transiciones suaves
 - **Animaciones avanzadas**: confetti, parallax, morphing shapes, ripple effects
@@ -92,6 +93,7 @@ Autor: **Ing. Yosvany Hernández Quintero**
 
 | Guía | Para qué |
 |---|---|
+| [Inicio rápido HTTPS en local](docs/inicio-rapido-https-local.md) | **Versión corta**: tres órdenes para arrancar cifrado, cómo comprobar que funciona y los errores más frecuentes |
 | [Acceso seguro por HTTPS](docs/acceso-seguro-https.md) | **Todos los pasos desde el principio**: CA, certificado, primer inicio, otro equipo de la red, móvil Android, uso diario y solución de problemas |
 | [Plan de mejora continua](docs/plan-mejora-continua.md) | Cómo evolucionan la web y el móvil: ciclo de trabajo, criterios de calidad, métricas, hoja de ruta y cómo pedir una mejora |
 | [Estudio estratégico para competir por el liderazgo](docs/estudio-estrategico-top1.md) | Diagnóstico técnico y de producto, riesgos, prioridades, hoja de ruta de 12 meses y cuadro de mando |
@@ -128,7 +130,11 @@ cd IPV_Fichas-Costos
 # https://sqlserver:8443
 ```
 
+> ⚡ **Versión corta:** [docs/inicio-rapido-https-local.md](docs/inicio-rapido-https-local.md) — arrancar por HTTPS, comprobarlo y resolver los fallos típicos.
+>
 > 📘 **¿Primera vez?** La guía [docs/acceso-seguro-https.md](docs/acceso-seguro-https.md) explica **todos los pasos desde cero**: instalar la CA, entrar desde la propia PC, desde otro equipo de la red y desde el móvil Android, cifrar la base de datos y resolver los errores más comunes.
+
+**`server.py` carga el archivo `.env` al arrancar** (módulo `entorno.py`), así que `python server.py` también levanta HTTPS y el inicio de sesión sin depender del script de PowerShell. Lo que ya exista en el entorno del proceso tiene prioridad sobre `.env`.
 
 El servidor **no inicia** sin `IPV_JWT_SECRET` de al menos 32 bytes ni un administrador activo. La contraseña inicial debe cumplir la política de contraseñas fuertes. Configure `IPV_ADMIN_EMAIL` y `IPV_ADMIN_PASSWORD` para crearlo en la primera ejecución; en instalaciones existentes basta con un administrador activo. El modo abierto solo existe en pruebas que instancian `Handler` sin iniciar el servidor.
 

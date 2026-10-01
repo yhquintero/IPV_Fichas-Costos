@@ -3,7 +3,7 @@
 // · Recursos estáticos: stale-while-revalidate.
 // · API: nunca se almacena; exige licencia y permisos actuales en el servidor.
 // · Nunca se almacenan respuestas autenticadas ni el flujo de eventos en tiempo real.
-const CACHE = 'ipv-fichas-costos-v11';
+const CACHE = 'ipv-fichas-costos-v12';  // súbalo en cada cambio de estilos/scripts: fuerza la recarga del diseño nuevo
 const STATIC = ['/', '/index.html', '/styles.css', '/app.js', '/enterprise.js', '/qr.js', '/license.js', '/ux.js', '/manifest.json', '/fonts/dm-sans.woff2', '/fonts/manrope.woff2'];
 
 self.addEventListener('install', e => {
