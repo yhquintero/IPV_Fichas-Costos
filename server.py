@@ -25,11 +25,18 @@ import re
 import secrets
 import sqlite3
 
-import dbcrypt
-import permisos
-import threading
-import tls_seguro
-import time
+import entorno
+
+# El archivo `.env` se carga ANTES de importar los módulos que leen variables de
+# entorno al cargarse (dbcrypt, tls_seguro, auth…). Lo ya definido en el entorno
+# tiene prioridad, de modo que iniciar-https.ps1 y Docker siguen mandando.
+entorno.cargar()
+
+import dbcrypt  # noqa: E402
+import permisos  # noqa: E402
+import threading  # noqa: E402
+import tls_seguro  # noqa: E402
+import time  # noqa: E402
 from collections import defaultdict
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
@@ -1599,7 +1606,7 @@ def main():
             cert_line = f"  Certificado: {info.get('subject') or '—'} · caduca en {info['days_left']} día(s)"
         redirector = tls_seguro.start_redirector(HTTP_REDIRECT_PORT, PORT, HOST)
     print("═══════════════════════════════════════════════════")
-    print("  IPV · Fichas y Costos v1.0")
+    print("  IPV · Fichas y Costos v1.1")
     print(f"  {scheme}://{HOST}:{PORT}")
     print(f"  SQLite: {DB_PATH}")
     print(f"  TLS: {'✓ ' + TLS_MIN if TLS_CERT else '✗'}  Auth: {'✓' if API_TOKEN else '✗'}  Rate limit: {RATE_LIMIT_MAX}/{RATE_LIMIT_WINDOW}s")
